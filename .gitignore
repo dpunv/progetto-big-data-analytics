@@ -1,0 +1,5 @@
+.vscode/*
+qdrant_storage*
+old*
+wikisent2*
+embeddings*

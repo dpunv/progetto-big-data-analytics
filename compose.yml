@@ -1,0 +1,20 @@
+
+services:
+  qdrant-1:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-1
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage_1:/qdrant/storage:z
+    restart: unless-stopped
+  qdrant-2:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-2
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - ./qdrant_storage_2:/qdrant/storage:z
+    restart: unless-stopped
