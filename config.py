@@ -224,6 +224,93 @@ ALTERNATIVE:
 """
 
 # ============================================================================
+# 5. PARAMETRI LOAD-AWARE ASSIGNMENT - Bilanciamento semantica vs carico
+# ============================================================================
+
+ALPHA_SEMANTIC = 0.7
+"""
+Peso della similarità semantica nell'assegnazione sub-cluster.
+
+SCOPO:
+- Controlla quanto è importante la località semantica
+- Valore alto (0.7-0.9): privilegia semantica, tollera sbilanciamento
+- Valore basso (0.3-0.5): privilegia bilanciamento carico
+
+RANGE: [0.0, 1.0]
+
+ESEMPIO:
+- α=0.9: Semantica domina, sub-cluster vanno quasi sempre sul nodo LSH-preferito
+- α=0.5: Bilanciato, semantica e carico hanno peso uguale
+- α=0.3: Carico domina, sub-cluster vanno sui nodi più vuoti
+
+RACCOMANDAZIONE:
+- Per query semantiche intensive: 0.7-0.8
+- Per carico uniforme: 0.4-0.6
+"""
+
+BETA_LOAD = 0.3
+"""
+Peso della capacità del nodo nell'assegnazione sub-cluster.
+
+RELAZIONE: ALPHA_SEMANTIC + BETA_LOAD = 1.0
+
+SCOPO:
+- Controlla quanto è importante evitare nodi sovraccarichi
+- Valore alto (0.5-0.7): forza redistribuzione uniforme
+- Valore basso (0.1-0.3): accetta sbilanciamento per località
+
+INTERPRETAZIONE:
+- β=0.3: "Considera il carico, ma non sacrificare troppo la semantica"
+- β=0.5: "Carico e semantica ugualmente importanti"
+- β=0.7: "Evita hotspot a tutti i costi, anche perdendo località"
+
+NOTA:
+- Se modifichi ALPHA_SEMANTIC, aggiorna BETA_LOAD = 1.0 - ALPHA_SEMANTIC
+"""
+
+# Verifica che somma sia 1.0
+assert abs(ALPHA_SEMANTIC + BETA_LOAD - 1.0) < 0.001, \
+    f"ALPHA_SEMANTIC ({ALPHA_SEMANTIC}) + BETA_LOAD ({BETA_LOAD}) must equal 1.0"
+
+# ============================================================================
+# 6. PARAMETRI NODE-LEVEL BALANCING - Soglie per bilanciamento nodi
+# ============================================================================
+
+NODE_BALANCE_TOLERANCE = 0.3
+"""
+Tolleranza percentuale per considerare il sistema bilanciato.
+
+SCOPO:
+- Definisce quanto sbilanciamento è accettabile prima di triggerare rebalancing
+- Evita rebalancing continuo per piccole fluttuazioni
+
+INTERPRETAZIONE:
+- 0.3 = ±30% dalla media è accettabile
+- Se nodo ha carico tra 70% e 130% della media → OK
+- Se nodo ha carico < 70% o > 130% → rebalancing
+
+ESEMPI:
+Tolerance 0.3 (30%):
+- Media: 16,666 vettori
+- Range OK: 11,666 - 21,666
+- node-1: 20,000 → OK (20% over)
+- node-2: 25,000 → OVERLOADED (50% over)
+
+Tolerance 0.5 (50%):
+- Range OK: 8,333 - 25,000
+- node-2: 25,000 → OK (più permissivo)
+
+Tolerance 0.1 (10%):
+- Range OK: 15,000 - 18,333
+- node-1: 20,000 → OVERLOADED (più rigoroso)
+
+RACCOMANDAZIONE:
+- Produzione: 0.2-0.3 (bilanciamento moderato)
+- Testing: 0.3-0.5 (permissivo per vedere effetti)
+- Strict: 0.1-0.15 (bilanciamento rigoroso)
+"""
+
+# ============================================================================
 # RIEPILOGO FLUSSO CON QUESTI PARAMETRI
 # ============================================================================
 """
