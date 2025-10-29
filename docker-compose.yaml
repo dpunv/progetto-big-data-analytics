@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  qdrant-node-1:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-1
+    ports:
+      - "6333:6333" # API REST
+      - "6334:6334" # gRPC
+    volumes:
+      - ./qdrant_data/node-1:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+
+  qdrant-node-2:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-2
+    ports:
+      - "7333:6333"
+      - "7334:6334"
+    volumes:
+      - ./qdrant_data/node-2:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+
+  qdrant-node-3:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-3
+    ports:
+      - "8333:6333"
+      - "8334:6334"
+    volumes:
+      - ./qdrant_data/node-3:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334

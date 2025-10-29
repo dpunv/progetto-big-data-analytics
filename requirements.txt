@@ -1,0 +1,6 @@
+qdrant-client
+numpy
+scikit-learn
+faiss-cpu  # o faiss-gpu se hai una GPU
+joblib
+tqdm
