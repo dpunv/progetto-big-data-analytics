@@ -229,43 +229,15 @@ ALTERNATIVE:
 
 ALPHA_SEMANTIC = 0.7
 """
-Peso della similarità semantica nell'assegnazione sub-cluster.
+NOTA: Con la nuova strategia semantica, questi parametri sono usati solo
+durante lo split dei cluster, non nell'assegnazione iniziale.
 
-SCOPO:
-- Controlla quanto è importante la località semantica
-- Valore alto (0.7-0.9): privilegia semantica, tollera sbilanciamento
-- Valore basso (0.3-0.5): privilegia bilanciamento carico
-
-RANGE: [0.0, 1.0]
-
-ESEMPIO:
-- α=0.9: Semantica domina, sub-cluster vanno quasi sempre sul nodo LSH-preferito
-- α=0.5: Bilanciato, semantica e carico hanno peso uguale
-- α=0.3: Carico domina, sub-cluster vanno sui nodi più vuoti
-
-RACCOMANDAZIONE:
-- Per query semantiche intensive: 0.7-0.8
-- Per carico uniforme: 0.4-0.6
+L'assegnazione iniziale ora si basa su ordinamento semantico dei centroidi.
 """
 
 BETA_LOAD = 0.3
 """
-Peso della capacità del nodo nell'assegnazione sub-cluster.
-
-RELAZIONE: ALPHA_SEMANTIC + BETA_LOAD = 1.0
-
-SCOPO:
-- Controlla quanto è importante evitare nodi sovraccarichi
-- Valore alto (0.5-0.7): forza redistribuzione uniforme
-- Valore basso (0.1-0.3): accetta sbilanciamento per località
-
-INTERPRETAZIONE:
-- β=0.3: "Considera il carico, ma non sacrificare troppo la semantica"
-- β=0.5: "Carico e semantica ugualmente importanti"
-- β=0.7: "Evita hotspot a tutti i costi, anche perdendo località"
-
-NOTA:
-- Se modifichi ALPHA_SEMANTIC, aggiorna BETA_LOAD = 1.0 - ALPHA_SEMANTIC
+NOTA: Vedi sopra - usato solo per split, non per assegnazione iniziale.
 """
 
 # Verifica che somma sia 1.0
@@ -311,33 +283,42 @@ RACCOMANDAZIONE:
 """
 
 # ============================================================================
-# RIEPILOGO FLUSSO CON QUESTI PARAMETRI
+# RIEPILOGO FLUSSO CON NUOVA STRATEGIA SEMANTICA
 # ============================================================================
 """
 SETUP INIZIALE:
 1. 3 nodi Qdrant (node-1, node-2, node-3)
-2. 10 cluster semantici (0-9)
-3. Round-robin: cluster 5 → node-2
+2. 10 cluster semantici (0-9) via K-means
+3. NUOVO: Ordinamento semantico + assegnazione contigua
+
+ESEMPIO CON 10 CLUSTER:
+
+Step 1 - K-means clustering:
+- 10 centroidi che rappresentano aree semantiche
+
+Step 2 - Ordinamento semantico (MST):
+- Calcola distanze tra centroidi
+- Ordina via Minimum Spanning Tree
+- Risultato: [0,1,2,3,4,5,6,7,8,9] (ordinato per similarità)
+
+Step 3 - Assegnazione contigua:
+- 10 cluster / 3 nodi = ~3 cluster per nodo
+- node-1: cluster [0, 1, 2] (area semantica A)
+- node-2: cluster [3, 4, 5, 6] (area semantica B)
+- node-3: cluster [7, 8, 9] (area semantica C)
+
+BENEFICI:
+- Query su tema A → cerca SOLO node-1
+- Query su tema B → cerca SOLO node-2
+- No broadcast multi-nodo
+- Carico distribuito equamente (3-4 cluster per nodo)
 
 INGESTION:
 1. Inserimento 50K vettori
 2. 70% (35K) → cluster 5 (node-2 sovraccarico)
 3. 30% (15K) → altri 9 cluster (~1.6K ciascuno)
 
-MONITORING:
-1. Conta vettori per cluster
-2. Cluster 5: 35K vettori > 5K threshold → HOTSPOT
-
-REBALANCING:
-1. Split cluster 5 in 3 sub-cluster:
-   - 5.0: ~11.6K vettori → resta su node-2
-   - 5.1: ~11.6K vettori → migrato su node-1
-   - 5.2: ~11.6K vettori → migrato su node-3
-2. Update routing table
-3. Carico distribuito equamente
-
-RISULTATO:
-- Prima: node-2 aveva 35K vettori (sovraccarico)
-- Dopo: ogni nodo ha ~11-12K vettori (bilanciato)
-- Latency ridotta, throughput aumentato
+MONITORING & REBALANCING:
+- Stesso sistema di prima (split, migrate)
+- Ma ora con contesto semantico più forte
 """

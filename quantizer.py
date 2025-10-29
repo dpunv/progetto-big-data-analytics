@@ -8,18 +8,146 @@ def build_quantizer(embeddings_sample: np.ndarray, n_clusters: int, save_path: s
     """
     Costruisce un quantizzatore K-means usando Faiss e lo salva su disco.
     
-    SCOPO:
-    - Crea un modello K-means che divide lo spazio vettoriale in N cluster semantici
-    - Questo permette di raggruppare vettori simili insieme
+    ═══════════════════════════════════════════════════════════════════════
+    SPIEGAZIONE DETTAGLIATA: COS'È LA CLUSTERIZZAZIONE K-MEANS
+    ═══════════════════════════════════════════════════════════════════════
     
-    COME FUNZIONA:
-    - Faiss K-means trova N centroidi ottimali analizzando un campione di embeddings
-    - I centroidi rappresentano i "punti centrali" di ogni cluster semantico
-    - Questi centroidi vengono salvati su disco per riutilizzo futuro
+    1. OBIETTIVO:
+    - Dividere N vettori in K gruppi (cluster) omogenei
+    - Ogni cluster contiene vettori "simili tra loro"
+    - Ogni cluster è rappresentato da un centroide (punto centrale)
     
-    PERCHÉ È IMPORTANTE:
-    - Permette di fare "sharding semantico": vettori simili vanno nello stesso cluster
-    - È più efficiente del random sharding perché query simili cercano nello stesso nodo
+    2. ALGORITMO (Lloyd's Algorithm):
+    
+    Passo 0 - Inizializzazione:
+    ```
+    Scegli K centroidi iniziali casualmente tra i vettori
+    Es. con 10K vettori e K=10 cluster:
+    - Centroide 0: vettore random #234
+    - Centroide 1: vettore random #1567
+    - ...
+    - Centroide 9: vettore random #8921
+    ```
+    
+    Passo 1 - Assignment (assegnazione):
+    ```
+    Per ogni vettore:
+        Calcola distanza da ogni centroide
+        Assegna al cluster con centroide più vicino
+    
+    Esempio:
+    Vettore X = [0.5, 0.3, -0.2, ...]
+    
+    Distanze:
+    - da centroide 0: 1.2
+    - da centroide 1: 0.4  ← minima!
+    - da centroide 2: 2.1
+    - ...
+    
+    → X assegnato a cluster 1
+    ```
+    
+    Passo 2 - Update (ricalcolo centroidi):
+    ```
+    Per ogni cluster:
+        Calcola media di tutti i vettori nel cluster
+        Questa media diventa il nuovo centroide
+    
+    Esempio cluster 1:
+    Vettori: [v1, v2, v3, ..., v_n]
+    Nuovo centroide = (v1 + v2 + v3 + ... + v_n) / n
+    ```
+    
+    Passo 3 - Iterazione:
+    ```
+    Ripeti Passo 1 e 2 finché:
+    - Centroidi non cambiano più (convergenza)
+    - Oppure raggiunto numero massimo iterazioni (es. 20)
+    ```
+    
+    3. ESEMPIO VISIVO (2D per semplicità):
+    
+    Iterazione 0 (iniziale):
+    ```
+    Vettori:  •  •    •
+              • •   •  •
+                •  •   •
+    
+    Centroidi iniziali: ⊕  ⊕  ⊕  (random)
+    ```
+    
+    Iterazione 1 (dopo assignment):
+    ```
+    Cluster 0:  •  •       (rosso)
+                • •
+    
+    Cluster 1:      •  •   (blu)
+                   •  •
+    
+    Cluster 2:        •    (verde)
+    
+    Nuovi centroidi: ⊕ (centro massa rossi)
+                       ⊕ (centro massa blu)
+                         ⊕ (centro massa verde)
+    ```
+    
+    Iterazione finale (convergenza):
+    ```
+    Cluster 0:  • •        Centroide: ⊕ (stabile)
+                • •
+    
+    Cluster 1:      • •    Centroide:   ⊕ (stabile)
+                    • •
+    
+    Cluster 2:        •    Centroide:     ⊕ (stabile)
+    ```
+    
+    4. MATEMATICA (con vettori reali 128-dim):
+    
+    Distanza euclidea:
+    ```
+    d(v, c) = √[(v₁-c₁)² + (v₂-c₂)² + ... + (v₁₂₈-c₁₂₈)²]
+    ```
+    
+    Centroide (media):
+    ```
+    c = (v₁ + v₂ + ... + vₙ) / n
+    
+    Per ogni dimensione i:
+    cᵢ = (v₁ᵢ + v₂ᵢ + ... + vₙᵢ) / n
+    ```
+    
+    5. PERCHÉ FAISS:
+    - Ottimizzato per vettori ad alta dimensione (128, 768, etc.)
+    - Usa GPU se disponibile (100x più veloce)
+    - Implementazione efficiente con SIMD, cache-friendly
+    
+    6. PARAMETRI:
+    - niter=20: massimo 20 iterazioni (di solito converge prima)
+    - verbose=True: stampa progresso iterazioni
+    
+    7. OUTPUT:
+    - kmeans.centroids: array [K, dim] con i K centroidi finali
+    - Es. [10, 128] = 10 centroidi di 128 dimensioni ciascuno
+    
+    8. INTERPRETAZIONE SEMANTICA:
+    
+    Se i vettori sono embeddings di documenti:
+    ```
+    Centroide 0: [0.8, 0.1, -0.3, ...] → area "tecnologia"
+    Centroide 1: [0.2, 0.9, 0.1, ...]  → area "sport"
+    Centroide 2: [-0.1, 0.3, 0.7, ...] → area "cucina"
+    ...
+    ```
+    
+    Ogni centroide rappresenta il "tema medio" del suo cluster.
+    
+    9. USO NEL SISTEMA:
+    - Training: fatto UNA VOLTA su sample rappresentativo
+    - Inference: usa predict_cluster() per assegnare nuovi vettori
+    - Routing: cluster_id determina quale nodo Qdrant
+    
+    ═══════════════════════════════════════════════════════════════════════
     
     Args:
         embeddings_sample: Campione di vettori per training del K-means

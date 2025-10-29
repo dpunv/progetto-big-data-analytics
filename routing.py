@@ -1,77 +1,36 @@
 # routing.py
 import threading
 import numpy as np
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse.csgraph import minimum_spanning_tree
 
 class RoutingTable:
     """
     Gestisce la mappatura tra cluster_id e nodi Qdrant.
     È thread-safe per gestire aggiornamenti concorrenti.
     
-    SCOPO GENERALE:
-    - Mantiene la "mappa" che dice: "Il cluster X si trova sul nodo Y"
-    - Permette di sapere dove cercare/inserire i dati per ogni cluster
-    - Gestisce dinamicamente gli split dei cluster (quando vengono divisi)
-    
-    PERCHÉ SERVE:
-    - È il "cervello" del routing: senza questa mappa non sapremmo dove sono i dati
-    - Thread-safe: più processi possono leggere/aggiornare simultaneamente
-    - Supporta cluster gerarchici (es. cluster "5" diventa "5.0", "5.1", "5.2")
+    NUOVO APPROCCIO:
+    - Ordina cluster per similarità semantica (centroidi vicini nello spazio)
+    - Assegna cluster contigui allo stesso nodo
+    - Preserva località semantica senza LSH
     """
     def __init__(self, node_names: list[str]):
         """
         Inizializza la tabella di routing.
         
-        COSA FA:
-        - Memorizza i nomi dei nodi Qdrant disponibili (es. ["node-1", "node-2", "node-3"])
-        - Crea una mappa vuota cluster→nodi
-        - Inizializza un lock per thread-safety
-        
         Args:
             node_names: Lista dei nomi dei nodi Qdrant disponibili
         """
-        self._node_names = node_names  # Es. ["node-1", "node-2", "node-3"]
-        self._routing_map = {}  # Mappa: cluster_id → [lista di nodi]
-        self._lock = threading.Lock()  # Per operazioni atomiche thread-safe
+        self._node_names = node_names
+        self._routing_map = {}
+        self._lock = threading.Lock()
+        self._cluster_order = []  # NUOVO: ordine semantico dei cluster
 
     def assign_initial_clusters(self, n_clusters: int):
         """
-        Assegna i cluster iniziali ai nodi in modo round-robin.
-        
-        SCOPO:
-        - Distribuisce equamente i cluster iniziali sui nodi disponibili
-        - È il setup iniziale del sistema prima di qualsiasi split
-        
-        COME FUNZIONA (ROUND-ROBIN):
-        - Cluster 0 → node-1
-        - Cluster 1 → node-2
-        - Cluster 2 → node-3
-        - Cluster 3 → node-1 (ricomincia)
-        - Cluster 4 → node-2
-        - etc.
-        
-        PERCHÉ ROUND-ROBIN:
-        - Distribuzione bilanciata iniziale
-        - Semplice e deterministico
-        - Ogni nodo riceve circa lo stesso numero di cluster
-        
-        ESEMPIO:
-        - Se hai 10 cluster e 3 nodi:
-        - node-1: cluster 0, 3, 6, 9
-        - node-2: cluster 1, 4, 7
-        - node-3: cluster 2, 5, 8
-        
-        Args:
-            n_clusters: Numero totale di cluster iniziali (dal K-means)
+        DEPRECATO: Usare assign_clusters_by_semantic_similarity invece.
         """
-        with self._lock:  # Lock per thread-safety
-            for i in range(n_clusters):
-                # Operatore modulo (%) per ciclare sui nodi: i % 3 → 0,1,2,0,1,2,...
-                node = self._node_names[i % len(self._node_names)]
-                
-                # Mappa a una lista per supportare futuri split
-                # Es. {"0": ["node-1"], "1": ["node-2"], ...}
-                self._routing_map[str(i)] = [node]
-            print("Initial routing table created.")
+        raise NotImplementedError("Use assign_clusters_by_semantic_similarity instead")
 
     def get_nodes(self, cluster_id: str) -> list[str]:
         """
@@ -177,95 +136,258 @@ class RoutingTable:
         
         print(f"Routing table updated for split of cluster {old_cluster_id}.")
 
-    def assign_initial_clusters_lsh(self, n_clusters: int, centroids: np.ndarray):
+    def assign_clusters_by_semantic_similarity(self, n_clusters: int, centroids: np.ndarray):
         """
-        Assegna i cluster iniziali ai nodi usando Locality-Sensitive Hashing (LSH).
+        Assegna cluster ai nodi raggruppando cluster semanticamente simili.
         
-        SCOPO:
-        - Distribuisce cluster PRESERVANDO la località semantica
-        - Cluster semanticamente vicini vanno sullo stesso nodo
-        - Migliore del round-robin per query semantiche
+        STRATEGIA NUOVA:
+        1. Calcola matrice di distanze tra tutti i centroidi
+        2. Ordina cluster per similarità usando Minimum Spanning Tree (MST)
+        3. Divide la sequenza ordinata in N parti uguali (N = numero nodi)
+        4. Assegna ogni parte contigua a un nodo diverso
         
-        COME FUNZIONA (LSH con Random Projection):
-        1. Genera vettori casuali di proiezione (hyperplanes)
-        2. Per ogni centroide, calcola su quale lato degli hyperplanes cade
-        3. Questo genera un "hash" binario che preserva similarità
-        4. Centroidi con hash simili → stesso nodo
+        PERCHÉ QUESTA STRATEGIA:
+        - Cluster contigui sono semanticamente vicini
+        - Ogni nodo diventa "esperto" di un'area semantica
+        - Query su topic simili → singolo nodo (no broadcast)
         
-        ESEMPIO MATEMATICO:
-        - Hyperplane: vettore random [0.3, -0.7, 0.5, ...]
-        - Centroide A: [1.2, 0.3, -0.5, ...] → dot product = 0.8 > 0 → bit 1
-        - Centroide B: [1.1, 0.4, -0.6, ...] → dot product = 0.7 > 0 → bit 1 (stesso!)
-        - Centroide C: [-0.5, 1.2, 0.3, ...] → dot product = -0.9 < 0 → bit 0 (diverso!)
-        - A e B hanno hash simili → stesso nodo
+        ESEMPIO CON 9 CLUSTER E 3 NODI:
         
-        PERCHÉ LSH È MEGLIO:
-        Round-robin:
-        - node-1: cluster 0, 3, 6, 9 (semanticamente casuali)
-        - Query su topic "tech" → cerca su tutti i nodi
+        Step 1 - Centroidi nello spazio:
+        ```
+        Cluster 0: [tech, AI]
+        Cluster 1: [tech, ML]
+        Cluster 2: [tech, data]
+        Cluster 3: [sport, football]
+        Cluster 4: [sport, basketball]
+        Cluster 5: [sport, tennis]
+        Cluster 6: [food, italian]
+        Cluster 7: [food, asian]
+        Cluster 8: [food, desserts]
+        ```
         
-        LSH:
-        - node-1: cluster 0, 1, 2 (tutti topic "tech")
-        - node-2: cluster 3, 4, 5 (tutti topic "lifestyle")
-        - node-3: cluster 6, 7, 8, 9 (tutti topic "science")
-        - Query su topic "tech" → cerca SOLO su node-1!
+        Step 2 - Matrice distanze (esempio semplificato):
+        ```
+        Distanze euclidee:
+        0-1: 0.3 (molto simili, entrambi AI)
+        0-2: 0.5 (simili, tech)
+        0-3: 2.5 (distanti, tech vs sport)
+        1-2: 0.4
+        3-4: 0.6 (simili, entrambi sport)
+        6-7: 0.7 (simili, entrambi food)
+        ...
+        ```
         
-        ALGORITMO:
-        1. Genera log2(n_nodi) hyperplanes random
-        2. Per ogni centroide: calcola hash binario
-        3. Hash modulo n_nodi → assegna nodo
-        4. Centroidi vicini nello spazio → hash simili → stesso nodo
+        Step 3 - MST per ordinare:
+        ```
+        MST trova il percorso che connette tutti i cluster minimizzando distanze:
+        0 → 1 (0.3) → 2 (0.4) → 3 (2.5) → 4 (0.6) → 5 (0.8) → 6 (3.0) → 7 (0.7) → 8 (0.9)
+        
+        Ordine risultante: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+        ```
+        
+        Step 4 - Divisione equa:
+        ```
+        9 cluster / 3 nodi = 3 cluster per nodo
+        
+        node-1: cluster [0, 1, 2]      ← area "tech"
+        node-2: cluster [3, 4, 5]      ← area "sport"
+        node-3: cluster [6, 7, 8]      ← area "food"
+        ```
+        
+        BENEFICI:
+        - Query "AI technology" → predice cluster 0 o 1 → cerca SOLO su node-1
+        - Query "basketball stats" → predice cluster 4 → cerca SOLO su node-2
+        - No broadcast, no overhead multi-nodo
+        
+        ALGORITMO DETTAGLIATO:
+        
+        1. CALCOLO DISTANZE:
+        ```python
+        distances[i][j] = ||centroid_i - centroid_j||₂
+        ```
+        
+        2. MINIMUM SPANNING TREE:
+        - Algoritmo: Kruskal o Prim
+        - Input: grafo completo pesato (pesi = distanze)
+        - Output: albero che connette tutti i nodi con peso minimo totale
+        - Proprietà: percorre cluster in ordine di similarità
+        
+        3. DFS SUL MST:
+        - Traversal depth-first dall'origine
+        - Visita nodi in ordine che rispetta vicinanza
+        - Risultato: lista ordinata di cluster ID
+        
+        4. PARTIZIONAMENTO:
+        ```
+        n_per_node = n_clusters / n_nodes
+        node-1 riceve cluster [0 : n_per_node]
+        node-2 riceve cluster [n_per_node : 2*n_per_node]
+        ...
+        ```
         
         Args:
-            n_clusters: Numero totale di cluster iniziali
-            centroids: Array numpy [n_clusters, dimensione] con i centroidi K-means
+            n_clusters: Numero totale di cluster K-means
+            centroids: Array [n_clusters, dimensione] con centroidi
         """
         with self._lock:
             n_nodes = len(self._node_names)
-            d = centroids.shape[1]  # Dimensione vettori
             
-            # Numero di hyperplanes: log2(n_nodi) arrotondato per eccesso
-            # Con 3 nodi: ceil(log2(3)) = 2 hyperplanes
-            n_hyperplanes = int(np.ceil(np.log2(n_nodes)))
+            print(f"\n{'='*70}")
+            print(f"SEMANTIC CLUSTERING ASSIGNMENT")
+            print(f"{'='*70}")
+            print(f"Total clusters: {n_clusters}")
+            print(f"Available nodes: {n_nodes}")
+            print(f"Strategy: Group semantically similar clusters on same node\n")
             
-            print(f"LSH: Using {n_hyperplanes} random hyperplanes for {n_nodes} nodes")
+            # --- STEP 1: CALCOLA MATRICE DISTANZE ---
+            print("Step 1: Computing pairwise centroid distances...")
             
-            # Genera hyperplanes random (vettori normali unitari)
-            np.random.seed(42)  # Seed fisso per riproducibilità
-            hyperplanes = np.random.randn(n_hyperplanes, d)
-            # Normalizza a vettori unitari
-            hyperplanes = hyperplanes / np.linalg.norm(hyperplanes, axis=1, keepdims=True)
+            # Calcola distanze euclidee tra tutti i centroidi
+            # pdist restituisce condensed distance matrix (vettore)
+            distances_condensed = pdist(centroids, metric='euclidean')
+            # squareform converte in matrice NxN simmetrica
+            distance_matrix = squareform(distances_condensed)
             
-            # Calcola hash LSH per ogni centroide
-            for i in range(n_clusters):
-                centroid = centroids[i]
+            print(f"  Distance matrix shape: {distance_matrix.shape}")
+            print(f"  Min distance: {np.min(distance_matrix[distance_matrix > 0]):.4f}")
+            print(f"  Max distance: {np.max(distance_matrix):.4f}")
+            print(f"  Mean distance: {np.mean(distance_matrix[distance_matrix > 0]):.4f}\n")
+            
+            # --- STEP 2: COSTRUISCI MINIMUM SPANNING TREE ---
+            print("Step 2: Building Minimum Spanning Tree (MST)...")
+            
+            # MST trova l'albero che connette tutti i cluster minimizzando distanze totali
+            mst = minimum_spanning_tree(distance_matrix)
+            mst_array = mst.toarray()
+            
+            print(f"  MST edges: {np.count_nonzero(mst_array)}")
+            print(f"  Total MST weight: {mst_array.sum():.4f}\n")
+            
+            # --- STEP 3: ORDINA CLUSTER CON DFS SUL MST ---
+            print("Step 3: Ordering clusters via MST traversal...")
+            
+            cluster_order = self._dfs_mst_traversal(mst_array, n_clusters)
+            self._cluster_order = cluster_order
+            
+            print(f"  Cluster order: {cluster_order}\n")
+            
+            # Stampa alcune distanze consecutive per verificare
+            print("  Verification - Distances between consecutive clusters:")
+            for i in range(min(5, len(cluster_order) - 1)):
+                c1, c2 = cluster_order[i], cluster_order[i+1]
+                dist = distance_matrix[c1, c2]
+                print(f"    Cluster {c1} → {c2}: distance = {dist:.4f}")
+            print()
+            
+            # --- STEP 4: DIVIDI EQUAMENTE TRA NODI ---
+            print("Step 4: Partitioning clusters across nodes...")
+            
+            # Calcola quanti cluster per nodo
+            clusters_per_node = n_clusters // n_nodes
+            remainder = n_clusters % n_nodes
+            
+            print(f"  Base clusters per node: {clusters_per_node}")
+            if remainder > 0:
+                print(f"  Extra clusters to distribute: {remainder}\n")
+            
+            # Assegna cluster ai nodi
+            current_idx = 0
+            
+            for node_idx, node_name in enumerate(self._node_names):
+                # Primi nodi ricevono un cluster extra se c'è remainder
+                n_clusters_for_node = clusters_per_node + (1 if node_idx < remainder else 0)
                 
-                # Proietta il centroide su ogni hyperplane
-                # Se dot product > 0 → bit 1, altrimenti bit 0
-                projections = np.dot(hyperplanes, centroid)
-                hash_bits = (projections > 0).astype(int)
+                # Prendi slice contigua dalla sequenza ordinata
+                node_clusters = cluster_order[current_idx : current_idx + n_clusters_for_node]
                 
-                # Converti hash binario in intero
-                # Es. [1, 0, 1] → 5 in decimale
-                hash_value = int(''.join(map(str, hash_bits)), 2)
+                # Assegna alla routing map
+                for cluster_id in node_clusters:
+                    self._routing_map[str(cluster_id)] = [node_name]
                 
-                # Assegna nodo: hash modulo numero_nodi
-                # Questo garantisce distribuzione, mantenendo località
-                node_idx = hash_value % n_nodes
-                node = self._node_names[node_idx]
+                print(f"  {node_name}: {len(node_clusters)} clusters {node_clusters}")
                 
-                self._routing_map[str(i)] = [node]
-                print(f"  Cluster {i}: hash={hash_bits} ({hash_value}) → {node}")
+                # Calcola centroide medio di questo nodo per vedere "tema" semantico
+                node_centroid = np.mean(centroids[node_clusters], axis=0)
+                avg_intra_distance = np.mean([
+                    distance_matrix[node_clusters[i], node_clusters[j]]
+                    for i in range(len(node_clusters))
+                    for j in range(i+1, len(node_clusters))
+                ]) if len(node_clusters) > 1 else 0
+                
+                print(f"    → Average intra-node distance: {avg_intra_distance:.4f}")
+                
+                current_idx += n_clusters_for_node
             
-            print("\nLSH routing table created with semantic locality preservation.")
+            print(f"\n{'='*70}")
+            print("✅ Semantic assignment complete!")
+            print(f"{'='*70}\n")
+
+    def _dfs_mst_traversal(self, mst_array: np.ndarray, n_clusters: int) -> list[int]:
+        """
+        Attraversa il MST con DFS per ottenere ordine cluster semanticamente coerente.
+        
+        PERCHÉ DFS:
+        - DFS visita l'albero in profondità
+        - Garantisce che cluster vicini nel MST siano vicini nella sequenza
+        - Preserva "percorso" semantico
+        
+        ESEMPIO MST:
+        ```
+              0
+             / \
+            1   2
+           /     \
+          3       4
+        ```
+        
+        DFS traversal: [0, 1, 3, 2, 4]
+        - Visita rami completamente prima di cambiare
+        - Cluster vicini nell'albero → vicini nella lista
+        
+        Args:
+            mst_array: Matrice NxN del MST (simmetrica, sparse)
+            n_clusters: Numero totale di cluster
             
-            # Stampa distribuzione per verificare bilanciamento
-            node_counts = {}
-            for node_name in self._node_names:
-                count = sum(1 for nodes in self._routing_map.values() if nodes[0] == node_name)
-                node_counts[node_name] = count
+        Returns:
+            Lista ordinata di cluster ID
+        """
+        visited = set()
+        order = []
+        
+        def dfs(node):
+            """Recursive DFS helper."""
+            visited.add(node)
+            order.append(node)
             
-            print("\nCluster distribution per node:")
-            for node, count in node_counts.items():
-                cluster_ids = [cid for cid, nodes in self._routing_map.items() if nodes[0] == node]
-                print(f"  {node}: {count} clusters {sorted(cluster_ids)}")
+            # Trova vicini nel MST
+            neighbors = np.where(mst_array[node] > 0)[0].tolist()
+            # Aggiungi anche vicini nella direzione opposta (MST è simmetrico)
+            neighbors += np.where(mst_array[:, node] > 0)[0].tolist()
+            neighbors = list(set(neighbors))  # Rimuovi duplicati
+            
+            # Ordina vicini per distanza (visita prima i più vicini)
+            neighbors.sort(key=lambda n: mst_array[node, n] + mst_array[n, node])
+            
+            # Visita vicini non ancora visitati
+            for neighbor in neighbors:
+                if neighbor not in visited:
+                    dfs(neighbor)
+        
+        # Inizia DFS dal cluster 0 (arbitrario, ma consistente)
+        dfs(0)
+        
+        # Se ci sono cluster disconnessi (non dovrebbe succedere con MST), aggiungili
+        for cluster_id in range(n_clusters):
+            if cluster_id not in visited:
+                dfs(cluster_id)
+        
+        return order
+
+    def assign_initial_clusters_lsh(self, n_clusters: int, centroids: np.ndarray):
+        """
+        DEPRECATO: LSH rimosso, usare assign_clusters_by_semantic_similarity.
+        """
+        raise NotImplementedError(
+            "LSH assignment removed. Use assign_clusters_by_semantic_similarity instead."
+        )

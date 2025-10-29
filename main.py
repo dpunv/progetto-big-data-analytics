@@ -106,38 +106,28 @@ def main():
 
     # --- 3. INITIALIZE ROUTING ---
     """
-    Crea la routing table che mappa cluster→nodi usando LSH.
+    Crea la routing table che mappa cluster→nodi usando SIMILARITÀ SEMANTICA.
     
-    COSA FA:
-    - Crea oggetto RoutingTable con i nomi dei nodi
-    - Assegna i cluster iniziali usando Locality-Sensitive Hashing
+    NUOVA STRATEGIA (no più LSH):
+    - Ordina cluster per similarità (centroidi vicini)
+    - Divide sequenza ordinata in N parti uguali
+    - Ogni nodo riceve cluster contigui semanticamente
     
-    PERCHÉ LSH INVECE DI ROUND-ROBIN:
-    - LSH preserva località semantica: cluster simili → stesso nodo
-    - Round-robin distribuiva cluster casuali su ogni nodo
-    - Con LSH: query semantiche cercano su 1 nodo invece di N nodi
+    BENEFICI:
+    - Nodo diventa "esperto" di un'area semantica
+    - Query semantiche cercano 1 nodo invece di N
+    - Distribuzione naturale basata su contenuto
     
-    DIFFERENZA:
-    ROUND-ROBIN (prima):
-    - node-1: cluster 0, 3, 6, 9 (semanticamente scollegati)
-    - node-2: cluster 1, 4, 7
-    - node-3: cluster 2, 5, 8
-    - Query "tech topic" → potrebbe servire tutti e 3 i nodi
+    ESEMPIO:
+    - node-1: cluster tech [0,1,2] (AI, ML, data)
+    - node-2: cluster sport [3,4,5] (football, basketball, tennis)
+    - node-3: cluster food [6,7,8] (italian, asian, desserts)
     
-    LSH (ora):
-    - node-1: cluster 0, 1, 2 (regione semantica coerente)
-    - node-2: cluster 3, 4, 5 (altra regione coerente)
-    - node-3: cluster 6, 7, 8, 9 (terza regione)
-    - Query "tech topic" → serve SOLO 1 nodo (quello con cluster tech)
-    
-    COME FUNZIONA:
-    - LSH usa random projections (hyperplanes)
-    - Centroidi vicini nello spazio → hash simili → stesso nodo
-    - Mantiene distribuzione bilanciata (modulo operation)
+    Query "machine learning" → predice cluster 1 → cerca SOLO node-1
     """
-    print("\n--- 3. Initializing Routing Table with LSH ---")
+    print("\n--- 3. Initializing Routing Table with Semantic Similarity ---")
     routing_table = RoutingTable(list(QDRANT_NODES.keys()))
-    routing_table.assign_initial_clusters_lsh(N_CLUSTERS, quantizer_centroids)
+    routing_table.assign_clusters_by_semantic_similarity(N_CLUSTERS, quantizer_centroids)
 
     # --- 4. INITIAL DATA INGESTION (con hotspot) ---
     """
