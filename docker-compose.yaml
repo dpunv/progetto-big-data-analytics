@@ -1,35 +1,69 @@
-version: '3.8'
+# docker-compose.yaml
+# 
+# SCOPO GENERALE:
+# - Definisce l'infrastruttura multi-nodo Qdrant per il sistema di sharding distribuito
+# - Crea 3 nodi Qdrant indipendenti che il nostro codice Python orchestra manualmente
+# - Ogni nodo è un'istanza isolata di Qdrant con le proprie porte e storage
+#
+# PERCHÉ DOCKER COMPOSE:
+# - Permette di simulare un cluster distribuito in locale
+# - Facile da avviare/fermare con un comando (docker-compose up/down)
+# - Ogni servizio è isolato ma può comunicare tra loro
+# - In produzione, questi sarebbero server fisici separati
 
 services:
+  # NODO 1: Primo nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 0, 3, 6, 9 (round-robin iniziale)
   qdrant-node-1:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:latest  # Immagine ufficiale Qdrant
     container_name: qdrant-node-1
     ports:
-      - "6333:6333" # API REST
-      - "6334:6334" # gRPC
+      - "6333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "6334:6334"  # gRPC - protocollo più veloce per operazioni bulk
     volumes:
+      # Mappa cartella locale → container per persistenza dati
+      # I dati sopravvivono al riavvio del container
       - ./qdrant_data/node-1:/qdrant/storage
     environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
 
+  # NODO 2: Secondo nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 1, 4, 7 (round-robin iniziale)
+  # DIFFERENZA: Usa porte 7333/7334 per evitare conflitti con node-1
   qdrant-node-2:
     image: qdrant/qdrant:latest
     container_name: qdrant-node-2
     ports:
-      - "7333:6333"
-      - "7334:6334"
+      - "7333:6333"  # Mappa porta host 7333 → porta container 6333
+      - "7334:6334"  # Mappa porta host 7334 → porta container 6334
     volumes:
-      - ./qdrant_data/node-2:/qdrant/storage
+      - ./qdrant_data/node-2:/qdrant/storage  # Storage separato per node-2
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
 
+  # NODO 3: Terzo nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 2, 5, 8 (round-robin iniziale)
+  # NOTA: Il cluster 5 diventerà l'hotspot e verrà splittato
   qdrant-node-3:
     image: qdrant/qdrant:latest
     container_name: qdrant-node-3
     ports:
-      - "8333:6333"
+      - "8333:6333"  # Porte 8333/8334 per evitare conflitti
       - "8334:6334"
     volumes:
-      - ./qdrant_data/node-3:/qdrant/storage
+      - ./qdrant_data/node-3:/qdrant/storage  # Storage separato per node-3
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
+
+# COME SI USA:
+# 1. Avvia i nodi: docker-compose up -d
+# 2. Verifica: docker ps (dovresti vedere 3 container)
+# 3. Accedi a Qdrant dashboard: http://localhost:6333/dashboard (node-1)
+# 4. Esegui il codice Python: python main.py
+# 5. Ferma i nodi: docker-compose down
+#
+# ARCHITETTURA RISULTANTE:
+# - 3 nodi Qdrant indipendenti (no clustering nativo Qdrant)
+# - Il nostro codice Python fa da "orchestratore"
+# - Routing manuale tramite RoutingTable
+# - Migrazione dati manuale tramite Rebalancer
