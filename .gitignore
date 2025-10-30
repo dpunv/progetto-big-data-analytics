@@ -3,3 +3,5 @@ qdrant_storage*
 old*
 wikisent2*
 embeddings*
+__pycache__*
+out*

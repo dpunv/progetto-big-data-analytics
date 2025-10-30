@@ -7,23 +7,7 @@ from dataclasses import dataclass, asdict
 import uuid
 import json
 import numpy as np  # --- NEW IMPORT ---
-
-# --- NEW UTILITY FUNCTION ---
-def cosine_similarity(v1: List[float], v2: List[float]) -> float:
-    """Calculates cosine similarity between two vectors."""
-    a = np.array(v1)
-    b = np.array(v2)
-    
-    dot_product = np.dot(a, b)
-    norm_a = np.linalg.norm(a)
-    norm_b = np.linalg.norm(b)
-    
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-        
-    return dot_product / (norm_a * norm_b)
-# --- END NEW UTILITY FUNCTION ---
-
+import utils
 
 # Pydantic models for request/response validation
 class VectorDataModel(BaseModel):
@@ -77,7 +61,7 @@ class QdrantNodeWrapper:
                  qdrant_port: int = 6335, 
                  collection_name: str = "vectors",
                  self_url: str = "http://localhost:8000", # New: Node's own URL for registration
-                 vector_size: int = 128):                  # New: Vector dimension
+                 vector_size: int = 384):                  # New: Vector dimension
         """
         Initialize the Qdrant node wrapper.
         
@@ -143,10 +127,10 @@ class QdrantNodeWrapper:
             
         best_node_id = self.node_id
         # Cosine similarity: higher is better (closer to 1.0)
-        best_similarity = cosine_similarity(vector, self.node_vector)
+        best_similarity = utils.cosine_similarity(vector, self.node_vector)
         
         for peer_id, peer_vector in self.peer_node_vectors.items():
-            sim = cosine_similarity(vector, peer_vector)
+            sim = utils.cosine_similarity(vector, peer_vector)
             print(f"node {peer_id} has similarity {sim}")
             if sim > best_similarity:
                 best_similarity = sim
@@ -807,7 +791,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
 # --- MODIFIED FUNCTION ---
 def run_node(node_id: str, port: int, qdrant_host: str = "localhost", 
              qdrant_port: int = 6333, collection_name: str = "vectors",
-             vector_size: int = 5):  # Add vector_size parameter
+             vector_size: int = 384):  # Add vector_size parameter
     """
     Run a Qdrant node with FastAPI server
     """
@@ -870,7 +854,7 @@ if __name__ == "__main__":
         port = int(sys.argv[2])
         db_port = int(sys.argv[3])
         # Note: You must pass vector_size if you're not using the default
-        run_node(node_id, port, "localhost", db_port, vector_size=128) # Defaulting to size 4 for tests
+        run_node(node_id, port, "localhost", db_port, vector_size=384) # Defaulting to size 4 for tests
     else:
         print("Usage: python script.py <node_id> <port> <db_port>")
         print("Example: python script.py node1 8001 6333")
@@ -878,4 +862,4 @@ if __name__ == "__main__":
         # Default: run node1 on port 8001
         print("\nStarting default node1 on port 8001 attached to Qdrant localhost:6333...")
         # Note: Set vector_size=4 to match test_cluster.py
-        run_node("node1", 8001, qdrant_port=6333, vector_size=128)
+        run_node("node1", 8001, qdrant_port=6333, vector_size=384)
