@@ -35,8 +35,26 @@ def main():
     clients = {name: QdrantClient(url=url) for name, url in QDRANT_NODES.items()}
     setup_qdrant_collections(clients)
     
-    # --- 2. BUILD/LOAD QUANTIZER ---
-    print("\n--- Step 2: Building K-means Quantizer ---")
+    # --- 2. LOAD WIKIPEDIA EMBEDDINGS ---
+    print("\n--- Step 2: Loading Wikipedia Embeddings ---")
+    print(f"Downloading {TOTAL_VECTORS_TO_INSERT} Wikipedia sentences ({WIKIPEDIA_LANGUAGE})...")
+    
+    # CARICA EMBEDDINGS REALI (non random!)
+    from wikipedia_loader import WikipediaEmbeddingGenerator
+    
+    generator = WikipediaEmbeddingGenerator(language=WIKIPEDIA_LANGUAGE)
+    wikipedia_embeddings, wikipedia_sentences = generator.download_and_embed(
+        n_samples=TOTAL_VECTORS_TO_INSERT,
+        cache_path=WIKIPEDIA_CACHE_PATH
+    )
+    
+    print(f"✓ Loaded {len(wikipedia_embeddings)} real Wikipedia embeddings")
+    print(f"\nSample sentences:")
+    for i in range(min(5, len(wikipedia_sentences))):
+        print(f"  {i+1}. {wikipedia_sentences[i][:80]}...")
+    
+    # --- 3. BUILD/LOAD QUANTIZER ---
+    print("\n--- Step 3: Building K-means Quantizer ---")
     
     need_retrain = False
     
@@ -59,40 +77,42 @@ def main():
         need_retrain = True
     
     if need_retrain:
-        # SOLO WIKIPEDIA: nessuna opzione random
-        print(f"Downloading Wikipedia embeddings ({WIKIPEDIA_LANGUAGE})...")
-        sample_embeddings = load_wikipedia_embeddings(
-            n_samples=SAMPLE_DATA_SIZE_FOR_TRAINING,
-            language=WIKIPEDIA_LANGUAGE,
-            cache_path=WIKIPEDIA_CACHE_PATH
-        )
+        # Usa subset Wikipedia per training K-means
+        training_size = min(SAMPLE_DATA_SIZE_FOR_TRAINING, len(wikipedia_embeddings))
+        sample_embeddings = wikipedia_embeddings[:training_size]
         
         quantizer_centroids = build_quantizer(sample_embeddings, N_CLUSTERS, QUANTIZER_PATH)
     
-    # --- 3. SEMANTIC ROUTING ---
-    print("\n--- Step 3: Creating Semantic Routing Table ---")
+    # --- 4. SEMANTIC ROUTING ---
+    print("\n--- Step 4: Creating Semantic Routing Table ---")
     routing_table = RoutingTable(list(QDRANT_NODES.keys()))
     routing_table.assign_clusters_by_semantic_similarity(N_CLUSTERS, quantizer_centroids)
     
-    # --- 4. DATA INGESTION ---
-    print(f"\n--- Step 4: Ingesting {TOTAL_VECTORS_TO_INSERT} vectors ---")
+    # --- 5. INGESTION WIKIPEDIA REALE ---
+    print(f"\n--- Step 5: Ingesting {len(wikipedia_embeddings)} REAL Wikipedia vectors ---")
     points_buffer = {node: [] for node in QDRANT_NODES.keys()}
     
-    for _ in tqdm(range(TOTAL_VECTORS_TO_INSERT), desc="Inserting vectors"):
-        # Genera vettore random
-        vector = np.random.rand(VECTOR_DIMENSION).astype('float32')
-        
-        # Predici cluster
+    for idx, (vector, sentence) in enumerate(tqdm(
+        zip(wikipedia_embeddings, wikipedia_sentences), 
+        total=len(wikipedia_embeddings),
+        desc="Inserting Wikipedia data"
+    )):
+        # Predici cluster per questo embedding REALE
         cluster_id = predict_cluster(quantizer_centroids, vector)
         
         # Trova nodo target
         target_node = routing_table.get_nodes(str(cluster_id))[0]
         
-        # Crea punto
+        # Crea punto con METADATA RICCO
         point = models.PointStruct(
             id=str(uuid.uuid4()),
             vector=vector.tolist(),
-            payload={"cluster_id": str(cluster_id)}
+            payload={
+                "cluster_id": str(cluster_id),
+                "sentence": sentence,  # Testo originale
+                "source": "wikipedia",
+                "index": idx
+            }
         )
         points_buffer[target_node].append(point)
         
@@ -114,10 +134,10 @@ def main():
                 wait=True
             )
     
-    print("✓ Ingestion complete")
+    print("✓ Wikipedia ingestion complete")
     
-    # --- 5. STATISTICHE FINALI ---
-    print("\n--- Step 5: Final Statistics ---")
+    # --- 6. STATISTICHE FINALI ---
+    print("\n--- Step 6: Final Statistics ---")
     
     print("\nVectors per node:")
     for node_name, client in clients.items():
@@ -154,34 +174,58 @@ def main():
         node = routing_table.get_nodes(cid)[0]
         print(f"  Cluster {cid}: {count:,} vectors on {node}")
     
-    # --- 6. QUERY DEMO ---
-    print("\n--- Step 6: Query Demonstration ---")
+    # --- 7. SAMPLE DATA PER CLUSTER ---
+    print("\n--- Step 7: Sample Sentences per Cluster ---")
     
-    # Query su cluster 0
-    test_cluster = 0
-    query_vector = quantizer_centroids[test_cluster] + np.random.normal(0, 0.01, VECTOR_DIMENSION)
-    query_vector = query_vector.astype('float32')
+    for cluster_id in range(min(3, N_CLUSTERS)):  # Mostra primi 3 cluster
+        print(f"\n📂 Cluster {cluster_id} samples:")
+        
+        target_node = routing_table.get_nodes(str(cluster_id))[0]
+        
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+        
+        samples = clients[target_node].scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="cluster_id", match=MatchValue(value=str(cluster_id)))
+            ]),
+            limit=5,
+            with_payload=True,
+            with_vectors=False
+        )[0]
+        
+        for i, sample in enumerate(samples, 1):
+            sentence = sample.payload.get("sentence", "N/A")
+            print(f"  {i}. {sentence[:100]}...")
     
-    target_node = routing_table.get_nodes(str(test_cluster))[0]
+    # --- 8. QUERY DEMO ---
+    print("\n--- Step 8: Query Demonstration ---")
     
-    print(f"\nQuery semantically belongs to cluster {test_cluster}")
-    print(f"Routing to: {target_node}")
+    # Query con frase Wikipedia reale
+    test_idx = 0
+    test_vector = wikipedia_embeddings[test_idx]
+    test_sentence = wikipedia_sentences[test_idx]
     
-    from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+    cluster_id = predict_cluster(quantizer_centroids, test_vector)
+    target_node = routing_table.get_nodes(str(cluster_id))[0]
+    
+    print(f"\nTest query:")
+    print(f"  Sentence: {test_sentence[:100]}...")
+    print(f"  Predicted cluster: {cluster_id}")
+    print(f"  Routing to: {target_node}")
     
     results = clients[target_node].query_points(
         collection_name=COLLECTION_NAME,
-        query=query_vector.tolist(),
-        query_filter=Filter(must=[
-            FieldCondition(key="cluster_id", match=MatchValue(value=str(test_cluster)))
-        ]),
+        query=test_vector.tolist(),
         limit=5
     ).points
     
     if results:
-        print(f"\n✓ Found {len(results)} results:")
+        print(f"\n✓ Found {len(results)} similar results:")
         for i, result in enumerate(results, 1):
-            print(f"  {i}. Score: {result.score:.4f}, Cluster: {result.payload['cluster_id']}")
+            result_sentence = result.payload.get("sentence", "N/A")
+            print(f"  {i}. Score: {result.score:.4f}")
+            print(f"     {result_sentence[:80]}...")
     else:
         print("⚠️  No results found")
     
