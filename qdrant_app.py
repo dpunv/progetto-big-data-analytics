@@ -17,7 +17,7 @@ except ValueError:
 
 print(f"--- Running Qdrant App for {NUM_NODES} nodes ---")
 
-NUM_VECTORS = 9950 # Use 1000 for a quick test
+NUM_VECTORS = 99995 # Use 1000 for a quick test
 VECTOR_SIZE = 384    # IMPORTANT: This MUST match the vector_size in run_node()
 
 # Check if VECTOR_SIZE is large enough for our one-hot encoding
@@ -25,22 +25,6 @@ if VECTOR_SIZE < NUM_NODES:
     print(f"Error: VECTOR_SIZE ({VECTOR_SIZE}) must be >= NUM_NODES ({NUM_NODES})")
     print("Please increase VECTOR_SIZE in qdrant_app.py and server.py")
     sys.exit(1)
-
-# --- Dynamic Node Configuration ---
-NODE_URLS = []
-NODE_VECS = []
-
-for i in range(1, NUM_NODES + 1):
-    # e.g., http://localhost:8001, http://localhost:8002, ...
-    NODE_URLS.append(f"http://localhost:{8000 + i}")
-    
-    # Create a unique representative vector for each node (one-hot encoding)
-    # node1 -> [1.0, 0.0, 0.0, ...]
-    # node2 -> [0.0, 1.0, 0.0, ...]
-    # node3 -> [0.0, 0.0, 1.0, ...]
-    vec = [0.0] * VECTOR_SIZE
-    vec[i-1] = 1.0  # Set the i-th dimension to 1.0
-    NODE_VECS.append(vec)
 
 # --- Helper Functions ---
 data = {}
@@ -56,6 +40,28 @@ except FileNotFoundError:
     print("embeddings.json not found. Generating random data...")
     for i in range(NUM_VECTORS + 1):
         data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
+
+
+vectors = [i['embedding'] for i in data][:int(NUM_VECTORS * 0.01)]
+calculated_centroids = utils.find_kmeans_centroids(vectors, NUM_NODES)
+
+# --- Dynamic Node Configuration ---
+NODE_URLS = []
+NODE_VECS = calculated_centroids.tolist()
+
+for i in range(1, NUM_NODES + 1):
+    # e.g., http://localhost:8001, http://localhost:8002, ...
+    NODE_URLS.append(f"http://localhost:{8000 + i}")
+    
+    # METHOD 1: one hot vectors
+    # Create a unique representative vector for each node (one-hot encoding)
+    # node1 -> [1.0, 0.0, 0.0, ...]
+    # node2 -> [0.0, 1.0, 0.0, ...]
+    # node3 -> [0.0, 0.0, 1.0, ...]
+    # vec = [0.0] * VECTOR_SIZE
+    # vec[i-1] = 1.0  # Set the i-th dimension to 1.0
+    # METHOD 2: k-means centroid calculation:
+    #NODE_VECS.append(vec)
 
 
 def register_peers():
