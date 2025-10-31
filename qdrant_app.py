@@ -4,7 +4,7 @@ import uuid
 import time
 import json
 import sys
-import os  # <-- NEW IMPORT
+import os
 import utils
 
 # --- Configuration ---
@@ -18,11 +18,17 @@ print(f"--- Running Qdrant App for {NUM_NODES} nodes ---")
 
 NUM_VECTORS = 140000
 VECTOR_SIZE = 384
-BATCH_SIZE = 128
 
-# --- NEW: Training Configuration ---
-TRAINING_VECTORS = 10000  # Fixed size for training
-CENTROIDS_FILE = 'centroids.json'  # File to save/load "weights"
+# --- NEW: Adaptive Batch Configuration ---
+BATCH_SIZE_OPTIMAL = 512   # Start optimistic (good for fast networks)
+BATCH_SIZE_MIN = 64        # Never go below this (last resort)
+MAX_RETRIES = 3            # Maximum retry attempts per batch
+# -----------------------------------
+
+# --- Training Configuration ---
+TRAINING_VECTORS = 10000
+CENTROIDS_FILE = 'centroids.json'
+
 # -----------------------------------
 
 if VECTOR_SIZE < NUM_NODES:
@@ -110,6 +116,209 @@ NODE_URLS = []
 for i in range(1, NUM_NODES + 1):
     NODE_URLS.append(f"http://localhost:{8000 + i}")
 
+# --- NEW: Adaptive Batch Sender Class ---
+class AdaptiveBatchMetrics:
+    """
+    Tracks batch sending metrics and adjusts batch size dynamically.
+    """
+    def __init__(self):
+        self.current_batch_size = BATCH_SIZE_OPTIMAL
+        self.success_count = 0
+        self.failure_count = 0
+        self.total_retries = 0
+        self.total_splits = 0
+        
+    def on_success(self, batch_size: int):
+        """Called when a batch succeeds."""
+        self.success_count += 1
+        self.failure_count = 0  # Reset failure counter
+        
+        # After 20 consecutive successes, try increasing batch size
+        if self.success_count >= 20 and self.current_batch_size < BATCH_SIZE_OPTIMAL:
+            old_size = self.current_batch_size
+            self.current_batch_size = min(int(self.current_batch_size * 1.5), BATCH_SIZE_OPTIMAL)
+            print(f"📈 Increasing batch size: {old_size} → {self.current_batch_size} (after {self.success_count} successes)")
+            self.success_count = 0
+    
+    def on_failure(self):
+        """Called when a batch fails."""
+        self.failure_count += 1
+        self.success_count = 0  # Reset success counter
+        
+        # After 2 consecutive failures, reduce batch size preventively
+        if self.failure_count >= 2:
+            old_size = self.current_batch_size
+            self.current_batch_size = max(self.current_batch_size // 2, BATCH_SIZE_MIN)
+            print(f"📉 Reducing batch size preventively: {old_size} → {self.current_batch_size} (after {self.failure_count} failures)")
+    
+    def on_retry(self):
+        """Called when a retry happens."""
+        self.total_retries += 1
+    
+    def on_split(self):
+        """Called when a batch is split."""
+        self.total_splits += 1
+    
+    def get_stats(self):
+        """Returns statistics summary."""
+        return {
+            "current_batch_size": self.current_batch_size,
+            "total_retries": self.total_retries,
+            "total_splits": self.total_splits,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count
+        }
+
+# Global metrics instance
+batch_metrics = AdaptiveBatchMetrics()
+
+# --- NEW: Dynamic Timeout Calculator ---
+def calculate_timeout(batch_size: int, base_timeout: int = 10) -> int:
+    """
+    Calculate adaptive timeout based on batch size.
+    
+    Args:
+        batch_size: Number of vectors in batch
+        base_timeout: Minimum timeout in seconds
+    
+    Returns:
+        Timeout in seconds
+        
+    Rationale:
+        - Base: 10s for HTTP overhead + server processing
+        - Per-vector: 20ms (384-dim vector similarity calc + routing)
+        - Max: 120s to avoid indefinite hangs
+        - Formula ensures linear scaling with batch size
+    """
+    per_vector_time = 0.02  # 20ms per vector (empirically reasonable)
+    timeout = base_timeout + int(batch_size * per_vector_time)
+    
+    # Clamp between 10s and 120s
+    return max(10, min(timeout, 120))
+
+# --- NEW: Retry with Splitting Logic ---
+def send_batch_with_retry(
+    vectors_batch: list,
+    node_url: str,
+    sent_to_node_id: str,
+    retry_count: int = 0
+) -> tuple:
+    """
+    Send a batch with intelligent retry and splitting.
+    
+    Algorithm:
+    1. Try sending full batch
+    2. On timeout/error → Split in half and retry recursively
+    3. Track metrics for adaptive adjustment
+    
+    Args:
+        vectors_batch: List of vector data dicts
+        node_url: Target node URL
+        sent_to_node_id: Node ID for logging
+        retry_count: Current retry depth (for recursion limit)
+    
+    Returns:
+        (success: bool, response_data: dict)
+    """
+    batch_size = len(vectors_batch)
+    
+    # Base case: Empty batch (shouldn't happen but safe)
+    if batch_size == 0:
+        return True, {"batches": {}}
+    
+    # Safety: Limit recursion depth
+    if retry_count > MAX_RETRIES:
+        print(f"❌ Max retries ({MAX_RETRIES}) exceeded for batch of {batch_size} vectors")
+        batch_metrics.on_failure()
+        return False, {}
+    
+    # Calculate adaptive timeout
+    timeout = calculate_timeout(batch_size)
+    
+    try:
+        response = requests.post(
+            f"{node_url}/add_vectors_bulk",
+            json=vectors_batch,
+            timeout=timeout
+        )
+        response.raise_for_status()
+        
+        # SUCCESS!
+        res_data = response.json()
+        batch_metrics.on_success(batch_size)
+        return True, res_data
+        
+    except requests.exceptions.Timeout:
+        # TIMEOUT: Batch too large or network slow
+        print(f"⏱️  Timeout with batch size {batch_size} (timeout: {timeout}s), splitting...")
+        batch_metrics.on_retry()
+        
+        # If batch is already minimum size, we can't split further
+        if batch_size <= BATCH_SIZE_MIN:
+            print(f"❌ Failed even with minimum batch size {BATCH_SIZE_MIN}")
+            batch_metrics.on_failure()
+            return False, {}
+        
+        # SPLIT STRATEGY: Divide in half
+        batch_metrics.on_split()
+        mid = batch_size // 2
+        first_half = vectors_batch[:mid]
+        second_half = vectors_batch[mid:]
+        
+        print(f"🔀 Splitting batch: {batch_size} → {len(first_half)} + {len(second_half)}")
+        
+        # Recursively send both halves
+        success1, data1 = send_batch_with_retry(first_half, node_url, sent_to_node_id, retry_count + 1)
+        success2, data2 = send_batch_with_retry(second_half, node_url, sent_to_node_id, retry_count + 1)
+        
+        # Merge results
+        if success1 and success2:
+            merged_batches = {}
+            for node_id in set(data1.get('batches', {}).keys()) | set(data2.get('batches', {}).keys()):
+                merged_batches[node_id] = (
+                    data1.get('batches', {}).get(node_id, 0) +
+                    data2.get('batches', {}).get(node_id, 0)
+                )
+            return True, {"batches": merged_batches}
+        else:
+            batch_metrics.on_failure()
+            return False, {}
+            
+    except requests.exceptions.RequestException as e:
+        # OTHER ERROR: Network issue, server error, etc.
+        print(f"❌ Network error with batch size {batch_size}: {e}")
+        batch_metrics.on_retry()
+        
+        # Retry with exponential backoff (but only once per batch)
+        if retry_count == 0:
+            wait_time = 2 ** retry_count  # 1s, 2s, 4s...
+            print(f"⏳ Waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
+            
+            return send_batch_with_retry(vectors_batch, node_url, sent_to_node_id, retry_count + 1)
+        else:
+            # Already retried, now split
+            if batch_size > BATCH_SIZE_MIN:
+                batch_metrics.on_split()
+                mid = batch_size // 2
+                first_half = vectors_batch[:mid]
+                second_half = vectors_batch[mid:]
+                
+                success1, data1 = send_batch_with_retry(first_half, node_url, sent_to_node_id, retry_count + 1)
+                success2, data2 = send_batch_with_retry(second_half, node_url, sent_to_node_id, retry_count + 1)
+                
+                if success1 and success2:
+                    merged_batches = {}
+                    for node_id in set(data1.get('batches', {}).keys()) | set(data2.get('batches', {}).keys()):
+                        merged_batches[node_id] = (
+                            data1.get('batches', {}).get(node_id, 0) +
+                            data2.get('batches', {}).get(node_id, 0)
+                        )
+                    return True, {"batches": merged_batches}
+            
+            batch_metrics.on_failure()
+            return False, {}
+
 def register_peers():
     """
     Dynamically set each node's representative vector and register them with each other.
@@ -165,26 +374,35 @@ def register_peers():
 # --- MODIFIED: Replaced insert_vectors with insert_vectors_bulk ---
 def insert_vectors_bulk():
     """
-    Insert vectors in batches, round-robin sending them to nodes for routing.
+    Insert vectors with adaptive batch sizing and intelligent retry.
     """
-    print(f"--- 2. Inserting {NUM_VECTORS} Vectors (Size {VECTOR_SIZE}) in batches of {BATCH_SIZE} ---")
+    print(f"--- 2. Inserting {NUM_VECTORS} Vectors (Size {VECTOR_SIZE}) ---")
+    print(f"   Starting with batch size: {batch_metrics.current_batch_size}")
+    print(f"   Minimum batch size: {BATCH_SIZE_MIN}")
+    print(f"   Maximum retries per batch: {MAX_RETRIES}\n")
     
-    insertions = [] # This will store the final node_id for each vector
+    insertions = []
+    vector_index = 0
+    batch_num = 0
     
-    num_batches = (NUM_VECTORS + BATCH_SIZE - 1) // BATCH_SIZE
+    start_time = time.time()
     
-    for i in range(num_batches):
-        start_index = i * BATCH_SIZE
-        end_index = min((i + 1) * BATCH_SIZE, NUM_VECTORS)
+    while vector_index < NUM_VECTORS:
+        batch_num += 1
         
-        # Determine which node to send to (round-robin for load balancing)
-        node_url_index = i % NUM_NODES
+        # Use current adaptive batch size
+        current_batch_size = batch_metrics.current_batch_size
+        end_index = min(vector_index + current_batch_size, NUM_VECTORS)
+        actual_batch_size = end_index - vector_index
+        
+        # Determine entry node (round-robin)
+        node_url_index = batch_num % NUM_NODES
         node_url = NODE_URLS[node_url_index]
         sent_to_node_id = f"node{node_url_index + 1}"
         
-        # --- Create the batch ---
+        # Create batch payload
         batch_payload = []
-        for j in range(start_index, end_index):
+        for j in range(vector_index, end_index):
             final_vec = data[j]['embedding']
             vector_data = {
                 "id": str(uuid.uuid4()),
@@ -197,39 +415,42 @@ def insert_vectors_bulk():
             }
             batch_payload.append(vector_data)
         
-        if not batch_payload:
-            continue # Should not happen, but good check
-            
-        try:
-            # Use the new /add_vectors_bulk endpoint
-            response = requests.post(
-                f"{node_url}/add_vectors_bulk",
-                json=batch_payload, # Send the list of vectors directly
-                timeout=30 # Increased timeout for bulk
-            )
-            response.raise_for_status()
-            
-            # Log the routing action
-            res_data = response.json()
-            # Server returns a dict like {"batches": {"node1": 50, "node3": 78}}
+        # Send with retry and splitting
+        success, res_data = send_batch_with_retry(batch_payload, node_url, sent_to_node_id)
+        
+        if success:
+            # Track insertions
             batches = res_data.get('batches', {})
-            
-            # This is the crucial part: update the insertions list
-            total_in_batch = 0
             for node_id, count in batches.items():
                 insertions.extend([node_id] * count)
-                total_in_batch += count
             
-            if (i + 1) % 10 == 0 or i == num_batches - 1:
-                print(f"Batch {i + 1}/{num_batches} inserted... (Sent to {sent_to_node_id}, "
-                      f"server routed {total_in_batch} vecs to {len(batches)} nodes)")
+            # Move to next batch
+            vector_index = end_index
+            
+            # Periodic logging
+            if batch_num % 10 == 0:
+                elapsed = time.time() - start_time
+                vectors_per_sec = vector_index / elapsed if elapsed > 0 else 0
+                metrics = batch_metrics.get_stats()
                 
-        except requests.exceptions.RequestException as e:
-            print(f"!!! Error inserting batch {i+1}: {e}")
-            
-    print(f"Vector bulk insertion complete.\n")
+                print(f"Batch {batch_num}: {vector_index}/{NUM_VECTORS} vectors "
+                      f"({vectors_per_sec:.0f} vec/s, size={metrics['current_batch_size']}, "
+                      f"retries={metrics['total_retries']}, splits={metrics['total_splits']})")
+        else:
+            print(f"⚠️  Batch {batch_num} failed completely, skipping {actual_batch_size} vectors")
+            vector_index = end_index  # Skip this batch and continue
+    
+    total_time = time.time() - start_time
+    avg_speed = NUM_VECTORS / total_time if total_time > 0 else 0
+    metrics = batch_metrics.get_stats()
+    
+    print(f"\n✅ Vector insertion complete in {total_time:.2f}s")
+    print(f"   Average speed: {avg_speed:.0f} vectors/second")
+    print(f"   Final batch size: {metrics['current_batch_size']}")
+    print(f"   Total retries: {metrics['total_retries']}")
+    print(f"   Total splits: {metrics['total_splits']}\n")
+    
     return insertions
-# --- END MODIFICATION ---
 
 
 def check_counts(insertions: list):
