@@ -22,9 +22,11 @@ NUM_VECTORS = 140000
 VECTOR_SIZE = 384
 
 # --- NEW: Adaptive Batch Configuration ---
-BATCH_SIZE_OPTIMAL = 512   # Start optimistic (good for fast networks)
-BATCH_SIZE_MIN = 64        # Never go below this (last resort)
-MAX_RETRIES = 3            # Maximum retry attempts per batch
+BATCH_TIERS = [800, 256, 64]  # Predefined fallback tiers
+                              # provo prima con batch size 800, poi 256, poi 64
+BATCH_SIZE_OPTIMAL = BATCH_TIERS[0]  # Start with largest
+BATCH_SIZE_MIN = BATCH_TIERS[-1]     # Never go below smallest
+MAX_RETRIES = len(BATCH_TIERS)       # One retry per tier
 # -----------------------------------
 
 # --- Training Configuration ---
@@ -202,7 +204,7 @@ def calculate_timeout(batch_size: int, base_timeout: int = 10) -> int:
     # Clamp between 10s and 120s
     return max(10, min(timeout, 120))
 
-# --- NEW: Retry with Splitting Logic ---
+# --- MODIFIED: Retry with Tier-based Splitting Logic ---
 def send_batch_with_retry(
     vectors_batch: list,
     node_url: str,
@@ -210,35 +212,66 @@ def send_batch_with_retry(
     retry_count: int = 0
 ) -> tuple:
     """
-    Send a batch with intelligent retry and splitting.
+    Send a batch with intelligent retry using predefined size tiers.
     
     Algorithm:
     1. Try sending full batch
-    2. On timeout/error → Split in half and retry recursively
-    3. Track metrics for adaptive adjustment
+    2. On timeout/error → Try next smaller tier (800 → 256 → 64)
+    3. Split batch if it exceeds current tier size
     
     Args:
         vectors_batch: List of vector data dicts
         node_url: Target node URL
         sent_to_node_id: Node ID for logging
-        retry_count: Current retry depth (for recursion limit)
+        retry_count: Current retry attempt (0-indexed tier)
     
     Returns:
         (success: bool, response_data: dict)
     """
     batch_size = len(vectors_batch)
     
-    # Base case: Empty batch (shouldn't happen but safe)
+    # Base case: Empty batch
     if batch_size == 0:
         return True, {"batches": {}}
     
-    # Safety: Limit recursion depth
-    if retry_count > MAX_RETRIES:
-        print(f"❌ Max retries ({MAX_RETRIES}) exceeded for batch of {batch_size} vectors")
+    # Safety: Limit retries to number of tiers
+    if retry_count >= len(BATCH_TIERS):
+        print(f"❌ All retry tiers exhausted for batch of {batch_size} vectors")
         batch_metrics.on_failure()
         return False, {}
     
-    # Calculate adaptive timeout
+    # Determine current tier size
+    current_tier_size = BATCH_TIERS[retry_count]
+    
+    # If batch is larger than current tier, split it
+    if batch_size > current_tier_size:
+        print(f"📦 Batch size {batch_size} exceeds tier {retry_count+1} ({current_tier_size}), splitting...")
+        batch_metrics.on_split()
+        
+        # Split into chunks of current_tier_size
+        chunks = []
+        for i in range(0, batch_size, current_tier_size):
+            chunks.append(vectors_batch[i:i+current_tier_size])
+        
+        print(f"🔀 Split into {len(chunks)} chunks of max {current_tier_size} vectors")
+        
+        # Send all chunks with current tier
+        all_results = []
+        for chunk in chunks:
+            success, data = send_batch_with_retry(chunk, node_url, sent_to_node_id, retry_count)
+            if not success:
+                return False, {}
+            all_results.append(data)
+        
+        # Merge results
+        merged_batches = {}
+        for data in all_results:
+            for node_id, count in data.get('batches', {}).items():
+                merged_batches[node_id] = merged_batches.get(node_id, 0) + count
+        
+        return True, {"batches": merged_batches}
+    
+    # Batch fits in current tier, try sending
     timeout = calculate_timeout(batch_size)
     
     try:
@@ -255,73 +288,37 @@ def send_batch_with_retry(
         return True, res_data
         
     except requests.exceptions.Timeout:
-        # TIMEOUT: Batch too large or network slow
-        print(f"⏱️  Timeout with batch size {batch_size} (timeout: {timeout}s), splitting...")
-        batch_metrics.on_retry()
-        
-        # If batch is already minimum size, we can't split further
-        if batch_size <= BATCH_SIZE_MIN:
-            print(f"❌ Failed even with minimum batch size {BATCH_SIZE_MIN}")
-            batch_metrics.on_failure()
-            return False, {}
-        
-        # SPLIT STRATEGY: Divide in half
-        batch_metrics.on_split()
-        mid = batch_size // 2
-        first_half = vectors_batch[:mid]
-        second_half = vectors_batch[mid:]
-        
-        print(f"🔀 Splitting batch: {batch_size} → {len(first_half)} + {len(second_half)}")
-        
-        # Recursively send both halves
-        success1, data1 = send_batch_with_retry(first_half, node_url, sent_to_node_id, retry_count + 1)
-        success2, data2 = send_batch_with_retry(second_half, node_url, sent_to_node_id, retry_count + 1)
-        
-        # Merge results
-        if success1 and success2:
-            merged_batches = {}
-            for node_id in set(data1.get('batches', {}).keys()) | set(data2.get('batches', {}).keys()):
-                merged_batches[node_id] = (
-                    data1.get('batches', {}).get(node_id, 0) +
-                    data2.get('batches', {}).get(node_id, 0)
-                )
-            return True, {"batches": merged_batches}
+        # TIMEOUT: Try next smaller tier
+        next_tier = retry_count + 1
+        if next_tier < len(BATCH_TIERS):
+            next_tier_size = BATCH_TIERS[next_tier]
+            print(f"⏱️  Timeout with batch size {batch_size} (tier {retry_count+1}: {current_tier_size})")
+            print(f"   Falling back to tier {next_tier+1} (max size: {next_tier_size})...")
+            batch_metrics.on_retry()
+            
+            # Retry with next tier
+            return send_batch_with_retry(vectors_batch, node_url, sent_to_node_id, next_tier)
         else:
+            print(f"❌ Timeout even with smallest tier ({current_tier_size})")
             batch_metrics.on_failure()
             return False, {}
             
     except requests.exceptions.RequestException as e:
         # OTHER ERROR: Network issue, server error, etc.
-        print(f"❌ Network error with batch size {batch_size}: {e}")
+        print(f"❌ Network error with batch size {batch_size} (tier {retry_count+1}): {e}")
         batch_metrics.on_retry()
         
-        # Retry with exponential backoff (but only once per batch)
+        # Retry with exponential backoff (but only once)
         if retry_count == 0:
-            wait_time = 2 ** retry_count  # 1s, 2s, 4s...
-            print(f"⏳ Waiting {wait_time}s before retry...")
+            wait_time = 2
+            print(f"⏳ Waiting {wait_time}s before retry with next tier...")
             time.sleep(wait_time)
-            
-            return send_batch_with_retry(vectors_batch, node_url, sent_to_node_id, retry_count + 1)
+        
+        # Try next tier
+        next_tier = retry_count + 1
+        if next_tier < len(BATCH_TIERS):
+            return send_batch_with_retry(vectors_batch, node_url, sent_to_node_id, next_tier)
         else:
-            # Already retried, now split
-            if batch_size > BATCH_SIZE_MIN:
-                batch_metrics.on_split()
-                mid = batch_size // 2
-                first_half = vectors_batch[:mid]
-                second_half = vectors_batch[mid:]
-                
-                success1, data1 = send_batch_with_retry(first_half, node_url, sent_to_node_id, retry_count + 1)
-                success2, data2 = send_batch_with_retry(second_half, node_url, sent_to_node_id, retry_count + 1)
-                
-                if success1 and success2:
-                    merged_batches = {}
-                    for node_id in set(data1.get('batches', {}).keys()) | set(data2.get('batches', {}).keys()):
-                        merged_batches[node_id] = (
-                            data1.get('batches', {}).get(node_id, 0) +
-                            data2.get('batches', {}).get(node_id, 0)
-                        )
-                    return True, {"batches": merged_batches}
-            
             batch_metrics.on_failure()
             return False, {}
 
