@@ -5,3 +5,8 @@ wikisent2*
 embeddings*
 __pycache__*
 out*
+embeddings.json
+embeddings_checkpoint.json
+logs/*
+compose.yml
+centroids.json

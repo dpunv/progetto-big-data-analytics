@@ -15,12 +15,13 @@ def find_kmeans_centroids(vectors, k):
     """
     
     # 1. Convert list to a NumPy array
-    # scikit-learn works best with NumPy arrays
     X = np.array(vectors)
+
+    # Aggiungiamo un controllo: non possiamo trovare k cluster se abbiamo meno di k vettori
+    if X.shape[0] < k:
+        raise ValueError(f"Errore: Impossibile trovare {k} cluster con solo {X.shape[0]} vettori.")
     
     # 2. Initialize the KMeans model
-    # n_init='auto' is the modern default to avoid warnings
-    # random_state=42 makes the result reproducible (no random start)
     kmeans_model = KMeans(n_clusters=k, n_init='auto', random_state=42)
     
     # 3. Fit the model to the data
@@ -32,48 +33,34 @@ def find_kmeans_centroids(vectors, k):
     return centroids
 
 # --- Example Usage ---
+# Questo blocco viene eseguito SOLO se avvii questo file direttamente
+# (es. 'python k-means.py')
+# NON viene eseguito quando 'qdrant_app.py' lo importa.
+if __name__ == "__main__":
+    
+    print("--- Test della libreria K-Means ---")
 
-# 1. Define your list of vectors
-my_vectors = [
-    [1, 2],
-    [1.5, 1.8],
-    [5, 8],
-    [8, 8],
-    [1, 0.6],
-    [9, 11],
-    [6, 7],
-    [1.2, 1.0]
-]
+    # 1. Definiamo un piccolo set di vettori di test
+    my_vectors = [
+        [1, 2],
+        [1.5, 1.8],
+        [5, 8],
+        [8, 8],
+        [1, 0.6],
+        [9, 11],
+        [6, 7],
+        [1.2, 1.0]
+    ]
+    k = 2
 
-NUM_VECTORS = 1000
-VECTOR_SIZE = 384
+    print(f"Trovando {k} centroidi da {len(my_vectors)} vettori di test...")
 
+    try:
+        # 3. Call the function
+        calculated_centroids = find_kmeans_centroids(my_vectors, k)
 
-data = {}
-try:
-    with open('embeddings.json', 'r') as f:
-        data = json.load(f)
-    if len(data) < NUM_VECTORS + 1:
-        print(f"Warning: embeddings.json has only {len(data)} items, but {NUM_VECTORS}+1 are needed.")
-        # Pad with random data if insufficient
-        for i in range(len(data), NUM_VECTORS + 1):
-            data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
-except FileNotFoundError:
-    print("embeddings.json not found. Generating random data...")
-    for i in range(NUM_VECTORS + 1):
-        data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
-
-my_vectors = [i['embedding'] for i in data]
-
-# 2. Define how many centroids you want
-k = 3
-
-# 3. Call the function
-calculated_centroids = find_kmeans_centroids(my_vectors, k)
-
-print(type(calculated_centroids.tolist()))
-
-print(f"Data: {len(my_vectors)} vectors")
-print(f"Finding k={k} centroids...\n")
-print("Calculated Centroids:")
-print(calculated_centroids)
+        print("\nCentroidi Calcolati:")
+        print(calculated_centroids)
+        
+    except ValueError as e:
+        print(f"Errore: {e}")

@@ -4,12 +4,11 @@ import uuid
 import time
 import json
 import sys
+import os  # <-- NEW IMPORT
 import utils
 
 # --- Configuration ---
-# The number of nodes is now read from the command line
 try:
-    # Read N from the first command-line argument
     NUM_NODES = int(sys.argv[1]) if len(sys.argv) > 1 else 3
 except ValueError:
     print("Invalid argument. Using default of 3 nodes.")
@@ -17,11 +16,15 @@ except ValueError:
 
 print(f"--- Running Qdrant App for {NUM_NODES} nodes ---")
 
-NUM_VECTORS = 99995 # Use 1000 for a quick test
-VECTOR_SIZE = 384    # IMPORTANT: This MUST match the vector_size in run_node()
-BATCH_SIZE = 128     # --- NEW: Batch size for bulk inserts ---
+NUM_VECTORS = 140000
+VECTOR_SIZE = 384
+BATCH_SIZE = 128
 
-# Check if VECTOR_SIZE is large enough for our one-hot encoding
+# --- NEW: Training Configuration ---
+TRAINING_VECTORS = 10000  # Fixed size for training
+CENTROIDS_FILE = 'centroids.json'  # File to save/load "weights"
+# -----------------------------------
+
 if VECTOR_SIZE < NUM_NODES:
     print(f"Error: VECTOR_SIZE ({VECTOR_SIZE}) must be >= NUM_NODES ({NUM_NODES})")
     print("Please increase VECTOR_SIZE in qdrant_app.py and server.py")
@@ -34,7 +37,6 @@ try:
         data = json.load(f)
     if len(data) < NUM_VECTORS + 1:
         print(f"Warning: embeddings.json has only {len(data)} items, but {NUM_VECTORS}+1 are needed.")
-        # Pad with random data if insufficient
         for i in range(len(data), NUM_VECTORS + 1):
             data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
 except FileNotFoundError:
@@ -42,28 +44,71 @@ except FileNotFoundError:
     for i in range(NUM_VECTORS + 1):
         data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
 
+# --- NEW LOGIC: Train-Once Centroids (Load or Calculate) ---
+print("\n--- 0. Loading/Computing Node Centroids ---")
+NODE_VECS = []  # This will contain our centroids
 
-vectors = [i['embedding'] for i in data][:int(NUM_VECTORS * 0.01)]
-calculated_centroids = utils.find_kmeans_centroids(vectors, NUM_NODES)
+try:
+    # 1. Check if centroids file exists
+    if os.path.exists(CENTROIDS_FILE):
+        print(f"📂 Found existing centroids file '{CENTROIDS_FILE}'...")
+        with open(CENTROIDS_FILE, 'r') as f:
+            NODE_VECS = json.load(f)
+        
+        # 2. Verify the number of centroids matches requested nodes
+        if len(NODE_VECS) == NUM_NODES:
+            print(f"✅ Successfully loaded {len(NODE_VECS)} centroids from '{CENTROIDS_FILE}'.")
+            print(f"   Skipping K-means training (using cached centroids).")
+        else:
+            print(f"⚠️  Warning: '{CENTROIDS_FILE}' has {len(NODE_VECS)} centroids, but {NUM_NODES} are needed.")
+            print("   Forcing re-training...")
+            NODE_VECS = []  # Force re-training
+    
+    # 3. If NODE_VECS is empty (file not found or mismatch), train
+    if not NODE_VECS:
+        if not os.path.exists(CENTROIDS_FILE):
+            print(f"Centroids file not found. Starting new training...")
+        
+        # 4. Check we have enough data for training
+        if len(data) < TRAINING_VECTORS:
+            print(f"❌ ERROR: Insufficient data for training.")
+            print(f"   Need {TRAINING_VECTORS} vectors, but 'embeddings.json' only has {len(data)}.")
+            print(f"   Please run 'python take_some.py' to generate more embeddings.")
+            sys.exit(1)
+        
+        print(f"🎓 Starting K-Means training on {TRAINING_VECTORS} vectors...")
+        start_train = time.time()
+        
+        # 5. Extract vectors for training
+        training_data_vectors = [i['embedding'] for i in data[:TRAINING_VECTORS]]
+        
+        # 6. Calculate centroids
+        calculated_centroids_np = utils.find_kmeans_centroids(training_data_vectors, NUM_NODES)
+        NODE_VECS = calculated_centroids_np.tolist()
+        
+        train_time = time.time() - start_train
+        
+        # 7. Save new centroids ("weights") to disk
+        with open(CENTROIDS_FILE, 'w') as f:
+            json.dump(NODE_VECS, f, indent=2)
+        
+        file_size_kb = os.path.getsize(CENTROIDS_FILE) / 1024
+        print(f"✅ Training completed in {train_time:.2f}s.")
+        print(f"   {len(NODE_VECS)} centroids saved to '{CENTROIDS_FILE}' ({file_size_kb:.2f} KB).")
+
+except Exception as e:
+    print(f"❌ FATAL ERROR during centroids loading/training: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# --- END NEW LOGIC ---
 
 # --- Dynamic Node Configuration ---
 NODE_URLS = []
-NODE_VECS = calculated_centroids.tolist()
 
 for i in range(1, NUM_NODES + 1):
-    # e.g., http://localhost:8001, http://localhost:8002, ...
     NODE_URLS.append(f"http://localhost:{8000 + i}")
-    
-    # METHOD 1: one hot vectors
-    # Create a unique representative vector for each node (one-hot encoding)
-    # node1 -> [1.0, 0.0, 0.0, ...]
-    # node2 -> [0.0, 1.0, 0.0, ...]
-    # node3 -> [0.0, 0.0, 1.0, ...]
-    # vec = [0.0] * VECTOR_SIZE
-    # vec[i-1] = 1.0  # Set the i-th dimension to 1.0
-    # METHOD 2: k-means centroid calculation:
-    #NODE_VECS.append(vec)
-
 
 def register_peers():
     """
@@ -76,31 +121,31 @@ def register_peers():
         for i in range(NUM_NODES):
             node_id = f"node{i+1}"
             node_url = NODE_URLS[i]
-            node_vec = NODE_VECS[i]
+            node_vec = NODE_VECS[i]  # Use loaded/calculated vectors
             
             r_set = requests.post(f"{node_url}/set_node_vector", json=node_vec, timeout=5)
             r_set.raise_for_status()
-            print(f"  {node_id}: Set representative vector (index {i} = 1.0)")
+            print(f"  {node_id}: Set representative vector (first 3 dims: {[round(v, 3) for v in node_vec[:3]]}...)")
 
         # 2. Register all peers with all other peers (N * (N-1) requests)
         print("\nRegistering peers...")
-        for i in range(NUM_NODES): # This is the "host" node
+        for i in range(NUM_NODES):
             host_id = f"node{i+1}"
             host_url = NODE_URLS[i]
             
             peers_registered = 0
-            for j in range(NUM_NODES): # This is the "peer" node
+            for j in range(NUM_NODES):
                 if i == j:
-                    continue # Don't register with self
+                    continue
                 
                 peer_id = f"node{j+1}"
                 peer_url = NODE_URLS[j]
-                peer_vec = NODE_VECS[j]
+                peer_vec = NODE_VECS[j]  # Use loaded/calculated vectors
                 
                 payload = {
                     "peer_id": peer_id,
                     "peer_url": peer_url,
-                    "node_vector": peer_vec # Send the peer's vector to the host
+                    "node_vector": peer_vec
                 }
                 
                 r_reg = requests.post(f"{host_url}/register_peer", json=payload, timeout=5)
