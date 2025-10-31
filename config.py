@@ -9,6 +9,8 @@ def generate_qdrant_nodes(num_nodes: int = 10) -> dict[str, str]:
     """
     Genera dinamicamente la configurazione dei nodi Qdrant.
     
+    MODIFICATO: Salta porta 7333 (node-2 problematico) e usa porte alternative.
+    
     Args:
         num_nodes: Numero di nodi da generare (default: 10)
         
@@ -26,7 +28,14 @@ def generate_qdrant_nodes(num_nodes: int = 10) -> dict[str, str]:
     base_port = 6333
     
     for i in range(1, num_nodes + 1):
-        port = base_port + ((i - 1) * 1000)
+        # Porte normali, MA node-2 usa 7444 invece di 7333
+        if i == 1:
+            port = 6333  # node-1
+        elif i == 2:
+            port = 7444  # PORTA CUSTOM per node-2
+        else:
+            port = base_port + (i * 1000)  # 8333, 9333, 10333, ...
+        
         node_name = f"node-{i}"
         node_url = f"http://localhost:{port}"
         nodes[node_name] = node_url

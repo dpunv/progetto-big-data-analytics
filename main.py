@@ -17,19 +17,31 @@ from rebalancer import CapacityConstrainedRebalancer, simulate_capacity_aware_as
 from replication import ReplicationManager, LoadAwareReplicaSelector
 
 def setup_qdrant_collections(clients: dict[str, QdrantClient]):
-    """Crea collections su tutti i nodi."""
+    """Crea collections su tutti i nodi con health check."""
+    healthy_clients = {}
+    
     for node_name, client in clients.items():
         try:
+            # Health check: prova a connetterti
+            client.get_collections()
+            
+            # Se successo, crea collection
             client.recreate_collection(
                 collection_name=COLLECTION_NAME,
                 vectors_config=models.VectorParams(
                     size=VECTOR_DIMENSION,
                     distance=models.Distance.COSINE
                 ),
+                timeout=5
             )
             print(f"✓ Collection '{COLLECTION_NAME}' created on {node_name}")
+            healthy_clients[node_name] = client
+            
         except Exception as e:
-            print(f"⚠️  Error on {node_name}: {e}")
+            print(f"❌ {node_name} UNREACHABLE: {str(e)[:80]}")
+            print(f"   Skipping this node...")
+    
+    return healthy_clients
 
 def parallel_upsert_batch(client: QdrantClient, 
                          collection_name: str, 
@@ -158,7 +170,19 @@ def main(num_nodes: int = None):
         print(f"Using all {len(QDRANT_NODES)} nodes from config")
     
     clients = {name: QdrantClient(url=url) for name, url in all_nodes.items()}
-    setup_qdrant_collections(clients)
+    
+    # MODIFICA: filtra solo nodi healthy
+    clients = setup_qdrant_collections(clients)
+    
+    if not clients:
+        print("\n❌ ERRORE: Nessun nodo Qdrant disponibile!")
+        print("   Assicurati che almeno 1 nodo Qdrant sia in esecuzione.")
+        sys.exit(1)
+    
+    print(f"\n✅ Using {len(clients)} healthy nodes: {list(clients.keys())}")
+    
+    # Aggiorna all_nodes per usare solo nodi healthy
+    all_nodes = {name: url for name, url in all_nodes.items() if name in clients}
     
     # --- 2. LOAD WIKIPEDIA EMBEDDINGS ---
     print("\n--- Step 2: Loading Wikipedia Embeddings ---")

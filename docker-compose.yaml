@@ -11,6 +11,23 @@
 # - Ogni servizio è isolato ma può comunicare tra loro
 # - In produzione, questi sarebbero server fisici separati
 
+# ── Defaults per tutti i servizi Qdrant (restart, healthcheck, ulimits, logging)
+x-qdrant-defaults: &qdrant_defaults
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "curl -f http://localhost:6333/collections || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 20s
+  ulimits:
+    nofile: 65536
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "3"
+
 services:
   # NODO 1: Primo nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 0, 3, 6, 9 (round-robin iniziale)
@@ -26,20 +43,21 @@ services:
       - ./qdrant_data/node-1:/qdrant/storage
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
   # NODO 2: Secondo nodo Qdrant del cluster
-  # RUOLO: Riceverà cluster 1, 4, 7 (round-robin iniziale)
-  # DIFFERENZA: Usa porte 7333/7334 per evitare conflitti con node-1
+  # MODIFICATO: Usa porta 7444 invece di 7333 (problematica)
   qdrant-node-2:
     image: qdrant/qdrant:latest
     container_name: qdrant-node-2
     ports:
-      - "7333:6333"  # Mappa porta host 7333 → porta container 6333
-      - "7334:6334"  # Mappa porta host 7334 → porta container 6334
+      - "7444:6333"  # CAMBIATO da 7333 a 7444
+      - "7445:6334"  # CAMBIATO da 7334 a 7445
     volumes:
-      - ./qdrant_data/node-2:/qdrant/storage  # Storage separato per node-2
+      - ./qdrant_data/node-2:/qdrant/storage
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
+    <<: *qdrant_defaults
 
   # NODO 3: Terzo nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 2, 5, 8 (round-robin iniziale)
@@ -54,6 +72,7 @@ services:
       - ./qdrant_data/node-3:/qdrant/storage  # Storage separato per node-3
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
+    <<: *qdrant_defaults
 
   # NODO 4: Quarto nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 3, 6, 9 (round-robin iniziale)
@@ -67,6 +86,7 @@ services:
       - ./qdrant_data/node-4:/qdrant/storage  # Storage separato per node-4
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
   # NODO 5: Quinto nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 4, 7, 0 (round-robin iniziale)
@@ -80,6 +100,7 @@ services:
       - ./qdrant_data/node-5:/qdrant/storage  # Storage separato per node-5
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
   # NODO 6: Sesto nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 5, 8, 1 (round-robin iniziale)
@@ -93,6 +114,7 @@ services:
       - ./qdrant_data/node-6:/qdrant/storage  # Storage separato per node-6
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
   # NODO 7: Settimo nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 6, 9, 2 (round-robin iniziale)
@@ -106,6 +128,7 @@ services:
       - ./qdrant_data/node-7:/qdrant/storage  # Storage separato per node-7
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
   # NODO 8: Ottavo nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 7, 0, 3 (round-robin iniziale)
@@ -119,6 +142,7 @@ services:
       - ./qdrant_data/node-8:/qdrant/storage  # Storage separato per node-8
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
   # NODO 9: Nono nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 8, 1, 4 (round-robin iniziale)
@@ -132,6 +156,7 @@ services:
       - ./qdrant_data/node-9:/qdrant/storage  # Storage separato per node-9
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
   # NODO 10: Decimo nodo Qdrant del cluster
   # RUOLO: Riceverà cluster 9, 2, 5 (round-robin iniziale)
@@ -145,6 +170,7 @@ services:
       - ./qdrant_data/node-10:/qdrant/storage  # Storage separato per node-10
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+    <<: *qdrant_defaults
 
 # COME SI USA:
 # 1. Avvia i nodi: docker-compose up -d

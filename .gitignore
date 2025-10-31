@@ -52,7 +52,7 @@ embeddings_checkpoints.json
 # Qdrant data (NUOVO - dati persistenti dei nodi)
 # ═══════════════════════════════════════════════════════════════
 
-# Cartella dati Qdrant (storage, collections, snapshots)
+# Qdrant data (storage, collections, snapshots)
 qdrant/
 qdrant_data/
 storage/
