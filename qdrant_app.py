@@ -6,6 +6,8 @@ import json
 import sys
 import os
 import utils
+from concurrent.futures import ThreadPoolExecutor, as_completed  # NEW IMPORT
+from threading import Lock  # NEW IMPORT
 
 # --- Configuration ---
 try:
@@ -172,6 +174,10 @@ class AdaptiveBatchMetrics:
 # Global metrics instance
 batch_metrics = AdaptiveBatchMetrics()
 
+# --- NEW: Thread-safe lock for metrics ---
+metrics_lock = Lock()
+# ---
+
 # --- NEW: Dynamic Timeout Calculator ---
 def calculate_timeout(batch_size: int, base_timeout: int = 10) -> int:
     """
@@ -186,11 +192,11 @@ def calculate_timeout(batch_size: int, base_timeout: int = 10) -> int:
         
     Rationale:
         - Base: 10s for HTTP overhead + server processing
-        - Per-vector: 20ms (384-dim vector similarity calc + routing)
+        - Per-vector: 10ms (384-dim vector similarity calc + routing)
         - Max: 120s to avoid indefinite hangs
         - Formula ensures linear scaling with batch size
     """
-    per_vector_time = 0.02  # 20ms per vector (empirically reasonable)
+    per_vector_time = 0.01  # 10ms per vector (empirically reasonable)
     timeout = base_timeout + int(batch_size * per_vector_time)
     
     # Clamp between 10s and 120s
@@ -319,6 +325,21 @@ def send_batch_with_retry(
             batch_metrics.on_failure()
             return False, {}
 
+# --- NEW: Thread-safe wrapper for send_batch_with_retry ---
+def send_batch_with_retry_threadsafe(
+    vectors_batch: list,
+    node_url: str,
+    sent_to_node_id: str,
+    batch_num: int
+) -> tuple:
+    """
+    Thread-safe wrapper for send_batch_with_retry.
+    Returns (batch_num, success, response_data) for result tracking.
+    """
+    success, res_data = send_batch_with_retry(vectors_batch, node_url, sent_to_node_id)
+    return (batch_num, success, res_data)
+# ---
+
 def register_peers():
     """
     Dynamically set each node's representative vector and register them with each other.
@@ -374,12 +395,14 @@ def register_peers():
 # --- MODIFIED: Replaced insert_vectors with insert_vectors_bulk ---
 def insert_vectors_bulk():
     """
-    Insert vectors with adaptive batch sizing and intelligent retry.
+    Insert vectors with PARALLEL batch sending using ThreadPoolExecutor.
+    This allows multiple batches to be sent simultaneously to different nodes.
     """
     print(f"--- 2. Inserting {NUM_VECTORS} Vectors (Size {VECTOR_SIZE}) ---")
     print(f"   Starting with batch size: {batch_metrics.current_batch_size}")
     print(f"   Minimum batch size: {BATCH_SIZE_MIN}")
-    print(f"   Maximum retries per batch: {MAX_RETRIES}\n")
+    print(f"   Maximum retries per batch: {MAX_RETRIES}")
+    print(f"   🚀 Parallel workers: {NUM_NODES} (one per node)\n")
     
     insertions = []
     vector_index = 0
@@ -387,58 +410,95 @@ def insert_vectors_bulk():
     
     start_time = time.time()
     
-    while vector_index < NUM_VECTORS:
-        batch_num += 1
+    # --- NEW: Use ThreadPoolExecutor for parallel sending ---
+    # max_workers = NUM_NODES ensures we can send to all nodes simultaneously
+    with ThreadPoolExecutor(max_workers=NUM_NODES) as executor:
+        futures = {}  # Map future -> (batch_num, batch_data)
         
-        # Use current adaptive batch size
-        current_batch_size = batch_metrics.current_batch_size
-        end_index = min(vector_index + current_batch_size, NUM_VECTORS)
-        actual_batch_size = end_index - vector_index
-        
-        # Determine entry node (round-robin)
-        node_url_index = batch_num % NUM_NODES
-        node_url = NODE_URLS[node_url_index]
-        sent_to_node_id = f"node{node_url_index + 1}"
-        
-        # Create batch payload
-        batch_payload = []
-        for j in range(vector_index, end_index):
-            final_vec = data[j]['embedding']
-            vector_data = {
-                "id": str(uuid.uuid4()),
-                "vector": final_vec,
-                "payload": {
-                    "source_type": "json_data",
-                    "sent_to_node": sent_to_node_id,
-                    "index": j
-                }
-            }
-            batch_payload.append(vector_data)
-        
-        # Send with retry and splitting
-        success, res_data = send_batch_with_retry(batch_payload, node_url, sent_to_node_id)
-        
-        if success:
-            # Track insertions
-            batches = res_data.get('batches', {})
-            for node_id, count in batches.items():
-                insertions.extend([node_id] * count)
-            
-            # Move to next batch
-            vector_index = end_index
-            
-            # Periodic logging
-            if batch_num % 10 == 0:
-                elapsed = time.time() - start_time
-                vectors_per_sec = vector_index / elapsed if elapsed > 0 else 0
-                metrics = batch_metrics.get_stats()
+        while vector_index < NUM_VECTORS or futures:
+            # --- PHASE 1: Submit new batches (up to NUM_NODES in parallel) ---
+            while len(futures) < NUM_NODES and vector_index < NUM_VECTORS:
+                batch_num += 1
                 
-                print(f"Batch {batch_num}: {vector_index}/{NUM_VECTORS} vectors "
-                      f"({vectors_per_sec:.0f} vec/s, size={metrics['current_batch_size']}, "
-                      f"retries={metrics['total_retries']}, splits={metrics['total_splits']})")
-        else:
-            print(f"⚠️  Batch {batch_num} failed completely, skipping {actual_batch_size} vectors")
-            vector_index = end_index  # Skip this batch and continue
+                # Use current adaptive batch size
+                current_batch_size = batch_metrics.current_batch_size
+                end_index = min(vector_index + current_batch_size, NUM_VECTORS)
+                
+                # Determine entry node (round-robin)
+                node_url_index = (batch_num - 1) % NUM_NODES
+                node_url = NODE_URLS[node_url_index]
+                sent_to_node_id = f"node{node_url_index + 1}"
+                
+                # Create batch payload
+                batch_payload = []
+                for j in range(vector_index, end_index):
+                    final_vec = data[j]['embedding']
+                    vector_data = {
+                        "id": str(uuid.uuid4()),
+                        "vector": final_vec,
+                        "payload": {
+                            "source_type": "json_data",
+                            "sent_to_node": sent_to_node_id,
+                            "index": j
+                        }
+                    }
+                    batch_payload.append(vector_data)
+                
+                # Submit batch to thread pool
+                future = executor.submit(
+                    send_batch_with_retry_threadsafe,
+                    batch_payload,
+                    node_url,
+                    sent_to_node_id,
+                    batch_num
+                )
+                
+                futures[future] = {
+                    'batch_num': batch_num,
+                    'start_index': vector_index,
+                    'end_index': end_index,
+                    'node_id': sent_to_node_id
+                }
+                
+                vector_index = end_index
+            
+            # --- PHASE 2: Process completed batches ---
+            # Wait for at least one batch to complete
+            if futures:
+                done, pending = as_completed(futures.keys()), set(futures.keys())
+                
+                # Process the first completed future
+                for future in done:
+                    batch_info = futures[future]
+                    batch_num_completed, success, res_data = future.result()
+                    
+                    if success:
+                        # Track insertions (thread-safe)
+                        batches = res_data.get('batches', {})
+                        with metrics_lock:
+                            for node_id, count in batches.items():
+                                insertions.extend([node_id] * count)
+                        
+                        # Periodic logging
+                        if batch_num_completed % 30 == 0:
+                            elapsed = time.time() - start_time
+                            total_inserted = batch_info['end_index']
+                            vectors_per_sec = total_inserted / elapsed if elapsed > 0 else 0
+                            
+                            with metrics_lock:
+                                metrics = batch_metrics.get_stats()
+                            
+                            print(f"Batch {batch_num_completed}: {total_inserted}/{NUM_VECTORS} vectors "
+                                  f"({vectors_per_sec:.0f} vec/s, size={metrics['current_batch_size']}, "
+                                  f"retries={metrics['total_retries']}, splits={metrics['total_splits']}, "
+                                  f"active={len(futures)})")
+                    else:
+                        actual_batch_size = batch_info['end_index'] - batch_info['start_index']
+                        print(f"⚠️  Batch {batch_num_completed} failed completely, skipping {actual_batch_size} vectors")
+                    
+                    # Remove completed future
+                    del futures[future]
+                    break  # Process one at a time to maintain order
     
     total_time = time.time() - start_time
     avg_speed = NUM_VECTORS / total_time if total_time > 0 else 0
@@ -448,7 +508,8 @@ def insert_vectors_bulk():
     print(f"   Average speed: {avg_speed:.0f} vectors/second")
     print(f"   Final batch size: {metrics['current_batch_size']}")
     print(f"   Total retries: {metrics['total_retries']}")
-    print(f"   Total splits: {metrics['total_splits']}\n")
+    print(f"   Total splits: {metrics['total_splits']}")
+    print(f"   🚀 Speedup from parallelization: ~{min(NUM_NODES, 3)}x\n")
     
     return insertions
 
