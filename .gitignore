@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ═══════════════════════════════════════════════════════════════
+# Cache files del progetto
+# ═══════════════════════════════════════════════════════════════
+
+# Wikipedia embeddings cache (troppo grande per Git)
+wikipedia_embeddings_cache.pkl
+
+# K-means quantizer (può essere rigenerato)
+quantizer_centroids.pkl
+
+# Meta-HNSW index (può essere rigenerato)
+meta_hnsw_index.pkl
+meta_hnsw_index.pkl.hnsw
+
+# Embedding checkpoints (contiene stati intermedi)
+embeddings_checkpoints.json
+
+# ═══════════════════════════════════════════════════════════════
+# Qdrant data (NUOVO - dati persistenti dei nodi)
+# ═══════════════════════════════════════════════════════════════
+
+# Cartella dati Qdrant (storage, collections, snapshots)
+qdrant/
+qdrant_data/
+storage/
+
+# Logs e temporanei
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

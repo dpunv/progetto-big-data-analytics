@@ -55,6 +55,97 @@ services:
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
 
+  # NODO 4: Quarto nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 3, 6, 9 (round-robin iniziale)
+  qdrant-node-4:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-4
+    ports:
+      - "9333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "9334:6334"  # gRPC - protocollo più veloce per operazioni bulk
+    volumes:
+      - ./qdrant_data/node-4:/qdrant/storage  # Storage separato per node-4
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+
+  # NODO 5: Quinto nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 4, 7, 0 (round-robin iniziale)
+  qdrant-node-5:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-5
+    ports:
+      - "10333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "10334:6334"  # gRPC - protocollo più veloce per operazioni bulk
+    volumes:
+      - ./qdrant_data/node-5:/qdrant/storage  # Storage separato per node-5
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+
+  # NODO 6: Sesto nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 5, 8, 1 (round-robin iniziale)
+  qdrant-node-6:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-6
+    ports:
+      - "11333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "11334:6334"  # gRPC - protocollo più veloce per operazioni bulk
+    volumes:
+      - ./qdrant_data/node-6:/qdrant/storage  # Storage separato per node-6
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+
+  # NODO 7: Settimo nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 6, 9, 2 (round-robin iniziale)
+  qdrant-node-7:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-7
+    ports:
+      - "12333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "12334:6334"  # gRPC - protocollo più veloce per operazioni bulk
+    volumes:
+      - ./qdrant_data/node-7:/qdrant/storage  # Storage separato per node-7
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+
+  # NODO 8: Ottavo nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 7, 0, 3 (round-robin iniziale)
+  qdrant-node-8:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-8
+    ports:
+      - "13333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "13334:6334"  # gRPC - protocollo più veloce per operazioni bulk
+    volumes:
+      - ./qdrant_data/node-8:/qdrant/storage  # Storage separato per node-8
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+
+  # NODO 9: Nono nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 8, 1, 4 (round-robin iniziale)
+  qdrant-node-9:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-9
+    ports:
+      - "14333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "14334:6334"  # gRPC - protocollo più veloce per operazioni bulk
+    volumes:
+      - ./qdrant_data/node-9:/qdrant/storage  # Storage separato per node-9
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+
+  # NODO 10: Decimo nodo Qdrant del cluster
+  # RUOLO: Riceverà cluster 9, 2, 5 (round-robin iniziale)
+  qdrant-node-10:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-node-10
+    ports:
+      - "15333:6333"  # API REST - interfaccia principale per query/inserimenti
+      - "15334:6334"  # gRPC - protocollo più veloce per operazioni bulk
+    volumes:
+      - ./qdrant_data/node-10:/qdrant/storage  # Storage separato per node-10
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334  # Configura porta gRPC interna
+
 # COME SI USA:
 # 1. Avvia i nodi: docker-compose up -d
 # 2. Verifica: docker ps (dovresti vedere 3 container)

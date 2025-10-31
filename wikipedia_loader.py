@@ -200,7 +200,7 @@ class WikipediaEmbeddingGenerator:
         
         return clean_sentences
     
-    def download_and_embed(self, n_samples: int = 10000, cache_path: str = 'wikipedia_embeddings_cache.pkl') -> Tuple[np.ndarray, List[str]]:
+    def download_and_embed(self, n_samples: int = 100000, cache_path: str = 'wikipedia_embeddings_cache.pkl') -> Tuple[np.ndarray, List[str]]:
         """
         Scarica articoli Wikipedia e genera embeddings.
         
@@ -226,8 +226,24 @@ class WikipediaEmbeddingGenerator:
         if os.path.exists(cache_path):
             print(f"Loading cached Wikipedia embeddings from {cache_path}...")
             data = joblib.load(cache_path)
-            print(f"✓ Loaded {len(data['embeddings'])} cached embeddings")
-            return data['embeddings'], data['sentences']
+            embeddings = data['embeddings']
+            sentences = data['sentences']
+            print(f"✓ Loaded {len(embeddings)} cached embeddings")
+            
+            # Se cache ha meno samples del richiesto, avvisa
+            if len(embeddings) < n_samples:
+                print(f"⚠️  Cache ha solo {len(embeddings)} embeddings, ma ne sono richiesti {n_samples}")
+                print(f"    Ricampiono i dati disponibili...")
+                # Ricampia con replacement per raggiungere il target
+                indices = np.random.choice(len(embeddings), n_samples, replace=True)
+                embeddings = embeddings[indices]
+                sentences = [sentences[i] for i in indices]
+            elif len(embeddings) > n_samples:
+                # Taglia se cache ha più del necessario
+                embeddings = embeddings[:n_samples]
+                sentences = sentences[:n_samples]
+            
+            return embeddings, sentences
         
         print(f"\n{'='*70}")
         print(f"DOWNLOADING WIKIPEDIA ARTICLES")
@@ -237,52 +253,66 @@ class WikipediaEmbeddingGenerator:
         print(f"Embedding model: {self.model.get_sentence_embedding_dimension()}-dim\n")
         
         topics_by_category = self.get_diverse_topics()
-        total_categories = len(topics_by_category)
-        sentences_per_category = n_samples // total_categories
-        
         all_sentences = []
         category_stats = {}
         
+        # PRIMO PASS: scarica tutti gli articoli disponibili
+        print("📥 FIRST PASS: Scaricamento massivo da tutte le categorie\n")
+        
         for category, topics in topics_by_category.items():
-            print(f"\n📚 Category: {category.upper()}")
-            print(f"   Target: {sentences_per_category} sentences")
+            print(f"📚 Category: {category.upper()}")
             
             category_sentences = []
+            articles_downloaded = 0
             
             for topic in tqdm(topics, desc=f"   Downloading {category}", leave=False):
                 try:
-                    # Scarica articolo Wikipedia
                     page = wikipedia.page(topic, auto_suggest=False)
-                    
-                    # Estrai frasi
-                    sentences = self.extract_sentences(page.content, max_sentences=50)
+                    sentences = self.extract_sentences(page.content, max_sentences=100)  # Aumenta da 50 a 100
                     category_sentences.extend(sentences)
-                    
-                    # Stop se raggiungiamo il target
-                    if len(category_sentences) >= sentences_per_category:
-                        category_sentences = category_sentences[:sentences_per_category]
-                        break
+                    articles_downloaded += 1
                 
                 except (wikipedia.exceptions.DisambiguationError, 
                         wikipedia.exceptions.PageError,
-                        Exception) as e:
-                    # Salta articoli problematici
+                        Exception):
                     continue
             
             all_sentences.extend(category_sentences)
-            category_stats[category] = len(category_sentences)
+            category_stats[category] = {
+                'sentences': len(category_sentences),
+                'articles': articles_downloaded
+            }
             
-            print(f"   ✓ Collected {len(category_sentences)} sentences")
+            print(f"   ✓ {articles_downloaded} articles → {len(category_sentences)} sentences")
         
         print(f"\n{'='*70}")
-        print(f"STATISTICS")
+        print(f"DOWNLOAD SUMMARY")
         print(f"{'='*70}")
-        for category, count in category_stats.items():
-            print(f"  {category:15s}: {count:5d} sentences")
-        print(f"  {'TOTAL':15s}: {len(all_sentences):5d} sentences")
+        total_collected = 0
+        for category, stats in category_stats.items():
+            print(f"  {category:15s}: {stats['articles']:3d} articles → {stats['sentences']:6d} sentences")
+            total_collected += stats['sentences']
+        print(f"  {'TOTAL':15s}: {total_collected:6d} sentences")
+        
+        # Verifica se abbiamo abbastanza frasi
+        if total_collected < n_samples:
+            print(f"\n⚠️  ATTENZIONE: Raccolte solo {total_collected} frasi, ma ne servono {n_samples}")
+            print(f"   Ricampiono con replacement per raggiungere il target...\n")
+            
+            # Ricampia con replacement per raggiungere il target
+            indices = np.random.choice(len(all_sentences), n_samples - total_collected, replace=True)
+            resampled = [all_sentences[i] for i in indices]
+            all_sentences.extend(resampled)
+            
+            print(f"   ✓ Aggiunte {len(resampled)} frasi ricampionate")
+            print(f"   ✓ Totale finale: {len(all_sentences)} frasi\n")
+        
+        # Taglia se abbiamo troppo
+        if len(all_sentences) > n_samples:
+            all_sentences = all_sentences[:n_samples]
         
         # Genera embeddings
-        print(f"\n🔄 Generating embeddings...")
+        print(f"🔄 Generating embeddings...")
         embeddings = self.model.encode(
             all_sentences, 
             show_progress_bar=True,
@@ -299,7 +329,8 @@ class WikipediaEmbeddingGenerator:
             'sentences': all_sentences,
             'category_stats': category_stats,
             'model_name': self.model.get_sentence_embedding_dimension(),
-            'language': self.language
+            'language': self.language,
+            'total_target': n_samples
         }, cache_path)
         
         print(f"✓ Cache saved successfully!")
