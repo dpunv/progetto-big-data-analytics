@@ -19,6 +19,7 @@ print(f"--- Running Qdrant App for {NUM_NODES} nodes ---")
 
 NUM_VECTORS = 99995 # Use 1000 for a quick test
 VECTOR_SIZE = 384    # IMPORTANT: This MUST match the vector_size in run_node()
+BATCH_SIZE = 128     # --- NEW: Batch size for bulk inserts ---
 
 # Check if VECTOR_SIZE is large enough for our one-hot encoding
 if VECTOR_SIZE < NUM_NODES:
@@ -32,10 +33,10 @@ try:
     with open('embeddings.json', 'r') as f:
         data = json.load(f)
     if len(data) < NUM_VECTORS + 1:
-         print(f"Warning: embeddings.json has only {len(data)} items, but {NUM_VECTORS}+1 are needed.")
-         # Pad with random data if insufficient
-         for i in range(len(data), NUM_VECTORS + 1):
-             data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
+        print(f"Warning: embeddings.json has only {len(data)} items, but {NUM_VECTORS}+1 are needed.")
+        # Pad with random data if insufficient
+        for i in range(len(data), NUM_VECTORS + 1):
+            data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
 except FileNotFoundError:
     print("embeddings.json not found. Generating random data...")
     for i in range(NUM_VECTORS + 1):
@@ -116,55 +117,74 @@ def register_peers():
         sys.exit(1)
 
 
-def insert_vectors():
+# --- MODIFIED: Replaced insert_vectors with insert_vectors_bulk ---
+def insert_vectors_bulk():
     """
-    Insert vectors, round-robin sending them to nodes for routing.
+    Insert vectors in batches, round-robin sending them to nodes for routing.
     """
-    print(f"--- 2. Inserting {NUM_VECTORS} Vectors (Size {VECTOR_SIZE}) ---")
+    print(f"--- 2. Inserting {NUM_VECTORS} Vectors (Size {VECTOR_SIZE}) in batches of {BATCH_SIZE} ---")
     
-    insertions = []
+    insertions = [] # This will store the final node_id for each vector
     
-    for i in range(NUM_VECTORS):
+    num_batches = (NUM_VECTORS + BATCH_SIZE - 1) // BATCH_SIZE
+    
+    for i in range(num_batches):
+        start_index = i * BATCH_SIZE
+        end_index = min((i + 1) * BATCH_SIZE, NUM_VECTORS)
+        
         # Determine which node to send to (round-robin for load balancing)
         node_url_index = i % NUM_NODES
         node_url = NODE_URLS[node_url_index]
         sent_to_node_id = f"node{node_url_index + 1}"
         
-        # Get embedding from loaded data
-        final_vec = data[i]['embedding']
-        
-        vector_data = {
-            "id": str(uuid.uuid4()),
-            "vector": final_vec,
-            "payload": {
-                "source_type": "json_data",
-                "sent_to_node": sent_to_node_id,
-                "index": i
+        # --- Create the batch ---
+        batch_payload = []
+        for j in range(start_index, end_index):
+            final_vec = data[j]['embedding']
+            vector_data = {
+                "id": str(uuid.uuid4()),
+                "vector": final_vec,
+                "payload": {
+                    "source_type": "json_data",
+                    "sent_to_node": sent_to_node_id,
+                    "index": j
+                }
             }
-        }
+            batch_payload.append(vector_data)
         
+        if not batch_payload:
+            continue # Should not happen, but good check
+            
         try:
-            # Use the /add_vector endpoint (which handles routing)
+            # Use the new /add_vectors_bulk endpoint
             response = requests.post(
-                f"{node_url}/add_vector",
-                json=vector_data,
-                timeout=10
+                f"{node_url}/add_vectors_bulk",
+                json=batch_payload, # Send the list of vectors directly
+                timeout=30 # Increased timeout for bulk
             )
             response.raise_for_status()
             
             # Log the routing action
             res_data = response.json()
-            stored_at = res_data.get('node_id')
-            insertions.append(stored_at)
+            # Server returns a dict like {"batches": {"node1": 50, "node3": 78}}
+            batches = res_data.get('batches', {})
             
-            if (i + 1) % 100 == 0:
-                print(f"Inserted {i + 1}/{NUM_VECTORS}... (Last: sent to {sent_to_node_id}, stored at {stored_at})")
+            # This is the crucial part: update the insertions list
+            total_in_batch = 0
+            for node_id, count in batches.items():
+                insertions.extend([node_id] * count)
+                total_in_batch += count
+            
+            if (i + 1) % 10 == 0 or i == num_batches - 1:
+                print(f"Batch {i + 1}/{num_batches} inserted... (Sent to {sent_to_node_id}, "
+                      f"server routed {total_in_batch} vecs to {len(batches)} nodes)")
                 
         except requests.exceptions.RequestException as e:
-            print(f"!!! Error inserting vector {i}: {e}")
+            print(f"!!! Error inserting batch {i+1}: {e}")
             
-    print(f"Vector insertion complete.\n")
+    print(f"Vector bulk insertion complete.\n")
     return insertions
+# --- END MODIFICATION ---
 
 
 def check_counts(insertions: list):
@@ -209,8 +229,8 @@ def check_counts(insertions: list):
         is_balanced = True
         
         for node_id, count in all_counts:
-             if abs(count - expected_avg) > tolerance:
-                 is_balanced = False
+            if abs(count - expected_avg) > tolerance:
+                is_balanced = False
 
         if is_balanced:
             print(f"✅  Distribution is roughly balanced (within 10%).")
@@ -281,7 +301,17 @@ def main_app():
     start_time = time.time()
     
     register_peers()
-    insertions = insert_vectors()
+    
+    # --- MODIFIED: Call the bulk function ---
+    insertions = insert_vectors_bulk()
+    # --- END MODIFICATION ---
+    
+    # --- NEW: Add a delay to allow background tasks to finish ---
+    print("--- Waiting 5s for background insertions to settle... ---")
+    time.sleep(5) 
+    # In a real system, you might need a more robust check
+    # --- END NEW ---
+    
     check_counts(insertions)
     run_queries()
     
