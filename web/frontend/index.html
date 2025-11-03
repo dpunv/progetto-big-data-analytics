@@ -1,0 +1,334 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NoSQL Topology Viewer</title>
+  <script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
+  <style>
+    :root {
+      --ok: #16a34a;
+      --link: #64748b;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      font-family: system-ui, Arial, sans-serif;
+      background: #fff;
+    }
+
+    header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #eee;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #summary {
+      color: #555;
+      font-size: 14px;
+    }
+
+    #graph {
+      height: calc(100% - 54px);
+    }
+
+    .node circle {
+      stroke: #fff;
+      stroke-width: 1.5px;
+    }
+
+    .node text {
+      font-size: 12px;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .link {
+      stroke: var(--link);
+      stroke-opacity: 0.7;
+    }
+
+    .panel {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button {
+      border: 1px solid #e5e7eb;
+      background: #fff;
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f8fafc;
+    }
+
+    .legend {
+      font-size: 12px;
+      color: #444;
+      margin-left: 12px;
+    }
+
+    .pill {
+      font-size: 12px;
+      border: 1px solid #e5e7eb;
+      padding: 2px 8px;
+      border-radius: 999px;
+      color: #374151;
+      background: #f9fafb;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+    }
+
+    .modal {
+      width: min(520px, 92vw);
+      background: white;
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    }
+
+    .modal h2 {
+      margin: 0 0 12px 0;
+      font-size: 18px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 120px;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      font-family: inherit;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      justify-content: flex-end;
+    }
+
+    .error {
+      color: #b91c1c;
+      font-size: 12px;
+      min-height: 16px;
+    }
+
+    .muted {
+      color: #6b7280;
+      font-size: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <strong>NoSQL Topology Viewer</strong>
+    <div id="summary" class="muted">Enter a node to begin…</div>
+    <div class="panel">
+      <span id="source" class="pill">—</span>
+      <button id="fit">Fit</button>
+      <button id="shuffle">Shuffle</button>
+      <button id="change">Change node…</button>
+    </div>
+  </header>
+  <div id="graph"></div>
+
+  <div id="modal-backdrop" class="modal-backdrop" style="display:none">
+    <div class="modal">
+      <h2>Connect to a node</h2>
+      <div class="muted">Enter <b>IP:port</b> or a <b>DNS name</b> (optional port). Examples:
+        <code>localhost:8001</code>, <code>10.0.0.12:8080</code>, <code>my-node.cluster.local:8080</code>
+      </div>
+      <div class="row">
+        <input id="hostport" type="text" placeholder="e.g. localhost:8001" />
+        <button id="connect">Connect</button>
+      </div>
+      <div class="actions">
+      </div>
+      <div id="error" class="error"></div>
+      <div class="muted">The viewer will request <code>http(s)://host:port/get-topology</code>. You may need to enable
+        CORS on your server.</div>
+    </div>
+  </div>
+
+  <script>
+    const W = () => document.getElementById('graph').clientWidth;
+    const H = () => document.getElementById('graph').clientHeight;
+
+    const svg = d3.select('#graph').append('svg').attr('width', '100%').attr('height', '100%');
+    const g = svg.append('g');
+    const zoom = d3.zoom().scaleExtent([0.2, 4]).on('zoom', (e) => g.attr('transform', e.transform));
+    svg.call(zoom);
+
+    svg.append('defs').append('marker')
+      .attr('id', 'arrow').attr('viewBox', '0 -5 10 10').attr('refX', 18).attr('refY', 0)
+      .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--link)');
+
+    let simulation, nodesSel, linksSel;
+    const summary = document.getElementById('summary');
+    const sourcePill = document.getElementById('source');
+
+    function degreeMap(edges) {
+      const m = new Map();
+      edges.forEach(e => { m.set(e.source, (m.get(e.source) || 0) + 1); m.set(e.target, (m.get(e.target) || 0) + 1); });
+      return m;
+    }
+
+    function renderGraph(nodes, edges) {
+      g.selectAll('*').remove();
+      const deg = degreeMap(edges);
+
+      linksSel = g.append('g').attr('stroke-width', 1.5).selectAll('line')
+        .data(edges, d => `${d.source}->${d.target}`)
+        .join('line')
+        .attr('class', 'link');
+
+      const nodeG = g.append('g').selectAll('g')
+        .data(nodes, d => d.id)
+        .join(enter => {
+          const g = enter.append('g').attr('class', 'node');
+          g.append('circle')
+            .attr('r', d => 10 + (deg.get(d.id) || 1) * 1.5)
+            .attr('fill', 'var(--ok)');
+          g.append('text').attr('dy', 3).attr('x', 14).text(d => d.label || d.id);
+          return g;
+        });
+
+      nodesSel = nodeG;
+
+      simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(edges).id(d => d.id).distance(90).strength(0.4))
+        .force('charge', d3.forceManyBody().strength(-280))
+        .force('center', d3.forceCenter(W() / 2, H() / 2))
+        .force('collision', d3.forceCollide().radius(d => 14 + (deg.get(d.id) || 1) * 1.5))
+        .on('tick', () => {
+          linksSel
+            .attr('x1', d => d.source.x)
+            .attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x)
+            .attr('y2', d => d.target.y);
+          nodesSel.attr('transform', d => `translate(${d.x},${d.y})`);
+        });
+
+      summary.textContent = `${nodes.length} nodi • ${edges.length} collegamenti`;
+    }
+
+    function normalizeBase(input) {
+      let x = input.trim();
+      if (!x) return null;
+      if (!/^https?:\/\//i.test(x)) {
+        x = 'http://' + x;
+      }
+      return x.replace(/\/$/, '');
+    }
+    function buildUrl(base) { return base + '/get-topology'; }
+
+    function parseTopology(json) {
+      const topo = json && json.topology ? json.topology : null;
+      if (!topo || typeof topo !== 'object') throw new Error('Formato inatteso: manca la chiave "topology"');
+
+      const nodes = [];
+      const edges = [];
+      const seen = new Set();
+
+      for (const [nodeId, info] of Object.entries(topo)) {
+        const label = `${nodeId} (${(info.dns || info.ip || '-')}:${info.port ?? '-'})`;
+        nodes.push({ id: nodeId, label });
+
+        if (info.peers && typeof info.peers === 'object') {
+          for (const [peerId, peerInfo] of Object.entries(info.peers)) {
+            const a = nodeId;
+            const b = peerId;
+            const key = [a, b].sort().join('||');
+            if (!seen.has(key)) {
+              seen.add(key);
+              edges.push({ source: a, target: b });
+            }
+          }
+        }
+      }
+      return { nodes, edges };
+    }
+
+    async function fetchTopology(base) {
+      const url = buildUrl(base);
+      // Use POST only as requested — the server accepts POST to /get-topology
+      const r = await fetch(url, { method: 'POST', mode: 'cors' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      return parseTopology(data);
+    }
+
+    const backdrop = document.getElementById('modal-backdrop');
+    const hostportInput = document.getElementById('hostport');
+    const connectBtn = document.getElementById('connect');
+    const errorBox = document.getElementById('error');
+    const changeBtn = document.getElementById('change');
+    const fitBtn = document.getElementById('fit');
+    const shuffleBtn = document.getElementById('shuffle');
+
+    function showModal(prefill) {
+      backdrop.style.display = 'flex';
+      errorBox.textContent = '';
+      hostportInput.value = prefill || '';
+      hostportInput.focus();
+      hostportInput.select();
+    }
+
+    async function connectFromInput() {
+      errorBox.textContent = '';
+      const base = normalizeBase(hostportInput.value);
+      if (!base) { errorBox.textContent = 'Inserisci host o host:porta'; return; }
+      document.getElementById('source').textContent = base + '/get-topology';
+      try {
+        const { nodes, edges } = await fetchTopology(base);
+        renderGraph(nodes, edges);
+        backdrop.style.display = 'none';
+      } catch (e) {
+        errorBox.textContent = 'Connessione fallita: ' + (e.message || e);
+      }
+    }
+    connectBtn.addEventListener('click', connectFromInput);
+    changeBtn.addEventListener('click', () => showModal(hostportInput.value));
+    hostportInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectFromInput(); });
+    fitBtn.addEventListener('click', () => {
+      const bbox = g.node().getBBox();
+      const width = W(), height = H();
+      const scale = Math.min(4, 0.9 / Math.max(bbox.width / width, bbox.height / height));
+      const tx = width / 2 - (bbox.x + bbox.width / 2) * scale;
+      const ty = height / 2 - (bbox.y + bbox.height / 2) * scale;
+      svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    });
+    shuffleBtn.addEventListener('click', () => { if (simulation) simulation.alpha(1).restart(); });
+
+    showModal('localhost:8001');
+  </script>
+</body>
+
+</html>

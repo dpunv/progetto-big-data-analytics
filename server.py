@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
 import requests
@@ -9,6 +10,8 @@ import json
 import numpy as np
 import utils
 from collections import defaultdict # --- NEW IMPORT ---
+from urllib.parse import urlparse
+import socket
 
 # Pydantic models for request/response validation
 class VectorDataModel(BaseModel):
@@ -452,6 +455,16 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         description="Distributed Qdrant vector database node API",
         version="1.0.0"
     )
+    # Allow CORS from the visualizer (running on localhost:8088) so the browser can
+    # fetch /get-topology (and other endpoints) while developing. For production,
+    # tighten this list to the real allowed origins.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:8088", "http://127.0.0.1:8088"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
     
     @app.get("/")
     async def root():
@@ -834,7 +847,112 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             }
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-            
+        
+    #  Visualization server endpoints
+
+    # Generate the full network topology from this node's perspective
+    # This performs a recursive traversal of all known peers.
+    # It avoids revisiting nodes to prevent infinite loops.
+    # Expose /get_topology and /get-topology for POST only (visualizer uses POST now)
+    @app.post("/get_topology")
+    @app.post("/get-topology")
+    async def get_topology():
+        visited = set()
+        topology = {}
+
+        def _parse_url_info(url: Optional[str]):
+            """Return (dns, ip, port).
+
+            - dns: the hostname from the URL (may be None)
+            - ip: resolved IP address for the hostname (or None if resolution failed)
+            - port: integer port
+            """
+            if not url:
+                return (None, None, None)
+            try:
+                parsed = urlparse(url)
+                hostname = parsed.hostname
+                port = parsed.port
+                if port is None:
+                    # default ports
+                    port = 443 if parsed.scheme == "https" else 80
+                ip = None
+                try:
+                    # Resolve DNS name to an IP (may raise)
+                    if hostname:
+                        ip = socket.gethostbyname(hostname)
+                except Exception:
+                    ip = None
+
+                return (hostname, ip, port)
+            except Exception:
+                return (None, None, None)
+
+        def traverse(node_id: str, node_url: Optional[str]):
+            # Prevent revisiting the same node (avoid infinite loops)
+            if node_id in visited:
+                return
+            visited.add(node_id)
+
+            # Determine this node's dns/ip/port/address (prefer provided node_url, else use local self_url)
+            use_url = node_url if node_url else (node.self_url if node_id == node.node_id else None)
+            dns_name, ip_addr, port_num = _parse_url_info(use_url)
+
+            # Prepare a structure to hold peer info
+            # Allow mixed types (ip: str, port: int, address: str)
+            peers_info: Dict[str, Dict[str, Optional[Any]]] = {}
+
+            # For the local node, use the cached peer_nodes mapping
+            if node_id == node.node_id:
+                peers = node.peer_nodes
+                # peers is pid -> url
+                for pid, purl in peers.items():
+                    pdns, pip, pport = _parse_url_info(purl)
+                    peers_info[pid] = {"dns": pdns, "ip": pip, "port": pport}
+            else:
+                # For remote nodes, attempt to fetch their peer list via their /peers endpoint
+                if not node_url:
+                    topology[node_id] = {"dns": dns_name, "ip": ip_addr, "port": port_num, "peers": {}}
+                    return
+                try:
+                    resp = requests.get(f"{node_url}/peers", timeout=5)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        remote_peers = data.get("peers", {})
+                        # remote_peers: pid -> {"url": ..., ...}
+                        for pid, info in remote_peers.items():
+                            purl = info.get("url")
+                            pdns, pip, pport = _parse_url_info(purl)
+                            peers_info[pid] = {"dns": pdns, "ip": pip, "port": pport}
+                    else:
+                        peers_info = {}
+                except requests.RequestException:
+                    # If the remote call fails, record an empty peer list for that node
+                    peers_info = {}
+
+            topology[node_id] = {"dns": dns_name, "ip": ip_addr, "port": port_num, "peers": peers_info}
+
+            # Recurse into each discovered peer (using its known URL), skipping already visited nodes
+            for pid, info in peers_info.items():
+                if pid not in visited:
+                    # Prefer the original peer URL registered locally, else construct a URL from discovered ip/dns + port
+                    peer_url = node.peer_nodes.get(pid)
+                    if not peer_url:
+                        pip = info.get("ip")
+                        pport = info.get("port")
+                        pdns = info.get("dns")
+                        if pip:
+                            peer_url = f"http://{pip}:{pport}"
+                        elif pdns and pport:
+                            peer_url = f"http://{pdns}:{pport}"
+                        else:
+                            peer_url = None
+                    traverse(pid, peer_url)
+
+        # Start traversal from this node (use self_url as its URL)
+        traverse(node.node_id, node.self_url)
+        return {"topology": topology}
+
     return app
 
 
