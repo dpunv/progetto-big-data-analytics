@@ -8,45 +8,54 @@ import atexit
 import shutil
 import requests
 from pathlib import Path
+import random
 
 # --- Configuration ---
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-FASTAPI_START_PORT = 8000
-QDRANT_START_PORT = 6333
+FASTAPI_START_PORT = 8000          # node i will listen on FASTAPI_START_PORT + i  -> 8001, 8002, ...
+QDRANT_START_PORT = 6333           # qdrant i maps to 6333 + 2*(i-1)             -> 6333, 6335, ...
 QDRANT_PORT_STEP = 2
+VECTOR_SIZE = 384                  # must match server.py default vector_size :contentReference[oaicite:2]{index=2}
+REPLICAS_PER_NODE_VEC = 1          # how many representative vectors per node (>=1)
 
 server_processes = []
 
+def info(msg): print(f"[run-stable] {msg}")
+
 def cleanup():
-    print("\nShutting down servers and containers...")
-
+    info("Shutting down...")
     # Stop Python servers
-    for proc in server_processes:
+    for p in server_processes:
         try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except:
-            proc.kill()
+            p.terminate()
+            p.wait(timeout=5)
+        except Exception:
+            try: p.kill()
+            except Exception: pass
 
-    # Stop and remove Docker containers
-    subprocess.run(["docker", "compose", "-f", "compose.yml", "down"],
-                   check=False, capture_output=True)
+    # Stop and remove Docker containers and compose file
+    try:
+        subprocess.run(["docker", "compose", "-f", "compose.yml", "down"],
+                       check=False, capture_output=True)
+    except Exception:
+        pass
 
-    # Remove Qdrant storage directories
+    # Remove generated files
+    if os.path.exists("compose.yml"):
+        os.remove("compose.yml")
+
+    # Remove qdrant storage dirs
     for i in range(1, N + 1):
-        storage_dir = f"qdrant_storage_{i}"
-        if os.path.exists(storage_dir):
-            shutil.rmtree(storage_dir, ignore_errors=True)
+        shutil.rmtree(f"qdrant_storage_{i}", ignore_errors=True)
 
-    print("Cleanup complete.")
+    info("Cleanup complete.")
 
 atexit.register(cleanup)
 signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
 signal.signal(signal.SIGTERM, lambda sig, frame: sys.exit(0))
 
-# --- 1. Generate docker-compose.yml ---
-print(f"Generating compose.yml for {N} nodes...")
-
+# --- 1) docker-compose.yml for Qdrant ---
+info(f"Generating compose.yml for {N} nodes...")
 with open("compose.yml", "w") as f:
     f.write("services:\n")
     for i in range(1, N + 1):
@@ -61,73 +70,113 @@ with open("compose.yml", "w") as f:
         f.write(f"    volumes:\n")
         f.write(f"      - ./qdrant_storage_{i}:/qdrant/storage:z\n")
         f.write(f"    restart: unless-stopped\n")
+info("compose.yml generated.")
 
-print("compose.yml generated successfully.")
-
-# --- 2. Start Docker Containers ---
-print(f"Starting {N} Qdrant containers with Docker Compose...")
+# --- 2) Start Qdrant containers ---
+info(f"Starting {N} Qdrant containers...")
 subprocess.run(["docker", "compose", "-f", "compose.yml", "up", "-d"], check=True)
-
-print("Waiting for Qdrant containers to initialize (10s)...")
+info("Waiting 10s for Qdrant to initialize...")
 time.sleep(10)
 
-# --- 3. Start Python Servers ---
-print(f"Starting {N} Python servers...")
-
+# --- 3) Start FastAPI servers (server.py) ---
 os.makedirs("logs", exist_ok=True)
 DEBUG_MODE = False
+info(f"Starting {N} FastAPI servers...")
 
 for i in range(1, N + 1):
     node_id = f"node{i}"
     fastapi_port = FASTAPI_START_PORT + i
     qdrant_http_port = QDRANT_START_PORT + (i - 1) * QDRANT_PORT_STEP
-
     env = os.environ.copy()
-    env['DEBUG'] = 'true' if DEBUG_MODE else 'false'
+    env["DEBUG"] = "true" if DEBUG_MODE else "false"
 
-    with open(f"logs/{node_id}_stdout.log", "w") as out, open(f"logs/{node_id}_stderr.log", "w") as err:
-        proc = subprocess.Popen(
-            [sys.executable, "server.py", node_id, str(fastapi_port), str(qdrant_http_port)],
-            env=env,
-            stdout=out,
-            stderr=err
-        )
-        server_processes.append(proc)
-        print(f"  - Started {node_id} on port {fastapi_port} (PID: {proc.pid})")
+    out = open(f"logs/{node_id}_stdout.log", "w")
+    err = open(f"logs/{node_id}_stderr.log", "w")
+    proc = subprocess.Popen(
+        [sys.executable, "server.py", node_id, str(fastapi_port), str(qdrant_http_port)],
+        env=env,
+        stdout=out,
+        stderr=err,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    )
+    server_processes.append(proc)
+    info(f"Started {node_id} on http://localhost:{fastapi_port} (Qdrant {qdrant_http_port}), PID {proc.pid}")
 
-def wait_for_servers(n_nodes, start_port, timeout=60):
-    print(f"Checking {n_nodes} servers for readiness...")
-    start_time = time.time()
-    ready_nodes = set()
-
-    while len(ready_nodes) < n_nodes and (time.time() - start_time) < timeout:
+def wait_healthy(n_nodes, start_port, timeout=60):
+    info(f"Waiting for {n_nodes} servers to be healthy...")
+    t0 = time.time()
+    ready = set()
+    while len(ready) < n_nodes and (time.time() - t0) < timeout:
         for i in range(1, n_nodes + 1):
-            if i in ready_nodes:
-                continue
+            if i in ready: continue
             port = start_port + i
             try:
                 r = requests.get(f"http://localhost:{port}/", timeout=2)
                 if r.status_code == 200:
-                    ready_nodes.add(i)
-                    print(f"  ✓ Server {i} ready on port {port}")
-            except:
+                    ready.add(i)
+                    info(f"  ✓ node{i} ready on :{port}")
+            except requests.RequestException:
                 pass
         time.sleep(1)
+    return len(ready) == n_nodes
 
-    if len(ready_nodes) == n_nodes:
-        print("✅ All servers are up and running.")
-        return True
-    else:
-        print(f"⚠️ Only {len(ready_nodes)}/{n_nodes} servers responded.")
-        return False
+if not wait_healthy(N, FASTAPI_START_PORT):
+    info("WARNING: Not all servers responded healthy; continuing anyway.")
 
-wait_for_servers(N, FASTAPI_START_PORT)
+# --- 4) Bootstrap: set representative vectors & register peers (full-mesh) ---
+def make_rep_vectors(i, size=VECTOR_SIZE, k=REPLICAS_PER_NODE_VEC):
+    """
+    Deterministic unit-like vectors per node:
+    - for node i, place a '1' at indices [(i-1 + j*7) % size] to get k vectors,
+      then L2-normalize server-side (server.py does normalization). :contentReference[oaicite:3]{index=3}
+    """
+    vecs = []
+    for j in range(k):
+        v = [0.0]*size
+        idx = (i-1 + j*7) % size
+        v[idx] = 1.0
+        vecs.append(v)
+    return vecs
 
-print("\nSystem is active. Press Ctrl+C to stop.")
+def set_node_vectors(port, vectors):
+    r = requests.post(f"http://localhost:{port}/set_node_vectors", json=vectors, timeout=10)
+    r.raise_for_status()
 
+def register_peer(port_src, peer_id, peer_url, peer_vectors):
+    payload = {"peer_id": peer_id, "peer_url": peer_url, "node_vectors": peer_vectors}
+    r = requests.post(f"http://localhost:{port_src}/register_peer", json=payload, timeout=10)
+    r.raise_for_status()
+
+info("Configuring representative vectors on each node...")
+node_ports = {f"node{i}": FASTAPI_START_PORT + i for i in range(1, N + 1)}
+node_vecs = {nid: make_rep_vectors(i) for i, nid in enumerate(node_ports.keys(), start=1)}
+
+# 4.1 set vectors locally on each node (POST /set_node_vectors) :contentReference[oaicite:4]{index=4}
+for nid, port in node_ports.items():
+    set_node_vectors(port, node_vecs[nid])
+    info(f"  • {nid}: set {len(node_vecs[nid])} representative vector(s)")
+
+# 4.2 register peers in full mesh (POST /register_peer) – requires node vectors already set :contentReference[oaicite:5]{index=5}
+info("Registering peers (full-mesh)…")
+for src_id, src_port in node_ports.items():
+    for dst_id, dst_port in node_ports.items():
+        if src_id == dst_id: continue
+        try:
+            register_peer(
+                port_src=src_port,
+                peer_id=dst_id,
+                peer_url=f"http://localhost:{dst_port}",
+                peer_vectors=node_vecs[dst_id]
+            )
+            info(f"  • {src_id} ↔ registered {dst_id}")
+        except requests.HTTPError as e:
+            info(f"  ! Failed to register {dst_id} on {src_id}: {e}")
+
+# --- 5) Keep process alive until Ctrl+C (portable) ---
+print("\nSystem is active with peers connected. Press Ctrl+C to stop.")
 try:
     while True:
         time.sleep(1)
 except KeyboardInterrupt:
-    print("\nStopping system...")
+    info("Stopping system...")
     sys.exit(0)
