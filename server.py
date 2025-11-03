@@ -9,9 +9,11 @@ import uuid
 import json
 import numpy as np
 import utils
-from collections import defaultdict # --- NEW IMPORT ---
+from collections import defaultdict
 from urllib.parse import urlparse
 import socket
+import threading
+import time
 
 # Pydantic models for request/response validation
 class VectorDataModel(BaseModel):
@@ -78,8 +80,29 @@ class QdrantNodeWrapper:
         self.node_vectors: List[List[float]] = []
         self.peer_node_vectors: Dict[str, List[List[float]]] = {}
         
+        # --- NEW: per-peer health status ---
+        self.peer_status: Dict[str, Dict[str, Any]] = {}
+        self._health_thread: Optional[threading.Thread] = None
+        self._health_thread_stop = False
+        self._health_monitor_params = {
+            "interval": 5,
+            "failure_threshold": 3,
+            "recovery_interval": 30
+        }
+
     def register_peer(self, peer_id: str, peer_url: str):
         self.peer_nodes[peer_id] = peer_url
+        # Initialize peer status
+        if peer_id not in self.peer_status:
+            self.peer_status[peer_id] = {
+                "url": peer_url,
+                "status": "UNKNOWN",
+                "fail_count": 0,
+                "last_ok": None,
+                "last_check": None
+            }
+        else:
+            self.peer_status[peer_id]["url"] = peer_url
         print(f"Node {self.node_id}: Registered peer {peer_id} at {peer_url}")
 
     def set_node_vectors(self, vectors: List[List[float]]):
@@ -151,6 +174,12 @@ class QdrantNodeWrapper:
         return replica_nodes 
 
     def send_vector(self, target_node_id: str, vector_data: VectorData) -> bool:
+        # Check peer status before attempting send
+        status = self.peer_status.get(target_node_id, {}).get("status")
+        if status == "DOWN":
+            print(f"Node {self.node_id}: Skipping send to {target_node_id} because it is DOWN")
+            return False
+
         if target_node_id not in self.peer_nodes:
             print(f"Node {self.node_id}: Unknown peer {target_node_id}")
             return False
@@ -183,10 +212,12 @@ class QdrantNodeWrapper:
 
     # --- NEW METHOD FOR BULK FORWARDING ---
     def send_vectors_bulk(self, target_node_id: str, vectors_data: List[VectorData]) -> bool:
-        """
-        Send a BATCH of vectors to another node.
-        (This is used for forwarding)
-        """
+        # Check peer status before attempting send
+        status = self.peer_status.get(target_node_id, {}).get("status")
+        if status == "DOWN":
+            print(f"Node {self.node_id}: Skipping bulk send to {target_node_id} because it is DOWN")
+            return False
+
         if target_node_id not in self.peer_nodes:
             print(f"Node {self.node_id}: Unknown peer {target_node_id}")
             return False
@@ -446,6 +477,79 @@ class QdrantNodeWrapper:
             print(f"Node {self.node_id}: Error creating collection: {e}")
             return False
 
+    # --- NEW METHODS FOR HEALTH MONITORING ---
+    def start_health_monitor(self, interval: Optional[int] = None, failure_threshold: Optional[int] = None, recovery_interval: Optional[int] = None):
+        """Start a background thread that periodically pings peers and updates self.peer_status."""
+        if interval is not None:
+            self._health_monitor_params["interval"] = interval
+        if failure_threshold is not None:
+            self._health_monitor_params["failure_threshold"] = failure_threshold
+        if recovery_interval is not None:
+            self._health_monitor_params["recovery_interval"] = recovery_interval
+
+        if self._health_thread and self._health_thread.is_alive():
+            return
+
+        self._health_thread_stop = False
+        self._health_thread = threading.Thread(target=self._health_monitor_loop, daemon=True)
+        self._health_thread.start()
+        print(f"Node {self.node_id}: Health monitor started (interval={self._health_monitor_params['interval']}s)")
+
+    def stop_health_monitor(self):
+        self._health_thread_stop = True
+        if self._health_thread:
+            self._health_thread.join(timeout=2)
+        print(f"Node {self.node_id}: Health monitor stopped")
+
+    def _health_monitor_loop(self):
+        """Loop executed in a background thread that pings peer / (root) endpoints and updates statuses."""
+        interval = self._health_monitor_params["interval"]
+        failure_threshold = self._health_monitor_params["failure_threshold"]
+        recovery_interval = self._health_monitor_params["recovery_interval"]
+
+        while not self._health_thread_stop:
+            now = time.time()
+            for peer_id, peer_url in list(self.peer_nodes.items()):
+                status_info = self.peer_status.get(peer_id, {
+                    "url": peer_url, "status": "UNKNOWN", "fail_count": 0, "last_ok": None, "last_check": None
+                })
+
+                # If DOWN, ping less frequently
+                last_check = status_info.get("last_check")
+                if status_info["status"] == "DOWN":
+                    if last_check and (now - last_check) < recovery_interval:
+                        continue
+
+                try:
+                    status_info["last_check"] = now
+                    resp = requests.get(f"{peer_url}/", timeout=2)
+                    if resp.status_code == 200:
+                        status_info["fail_count"] = 0
+                        status_info["last_ok"] = now
+                        if status_info["status"] != "UP":
+                            status_info["status"] = "UP"
+                            print(f"Node {self.node_id}: Peer {peer_id} is UP")
+                    else:
+                        status_info["fail_count"] = status_info.get("fail_count", 0) + 1
+                        if status_info["fail_count"] >= failure_threshold and status_info.get("status") != "DOWN":
+                            status_info["status"] = "DOWN"
+                            print(f"Node {self.node_id}: Peer {peer_id} marked DOWN (non-200 responses)")
+                except requests.exceptions.RequestException:
+                    status_info["fail_count"] = status_info.get("fail_count", 0) + 1
+                    if status_info["fail_count"] >= failure_threshold and status_info.get("status") != "DOWN":
+                        status_info["status"] = "DOWN"
+                        print(f"Node {self.node_id}: Peer {peer_id} marked DOWN (connect failures)")
+
+                self.peer_status[peer_id] = status_info
+
+            # Sleep in small steps for responsive stop
+            sleep_total = 0
+            step = 1
+            while sleep_total < interval and not self._health_thread_stop:
+                time.sleep(step)
+                sleep_total += step
+    # --- END NEW METHODS ---
+
 # FastAPI Application
 def create_app(node: QdrantNodeWrapper) -> FastAPI:
     """Create FastAPI application for a Qdrant node"""
@@ -465,6 +569,11 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+    
+    @app.on_event("startup")
+    async def _startup_event():
+        # Start per-node health monitor in background thread
+        node.start_health_monitor()
     
     @app.get("/")
     async def root():
@@ -805,11 +914,15 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
     
     @app.get("/peers")
     async def list_peers():
-        """
-        List all registered peer nodes and their cached vector status
-        """
+        """List all registered peer nodes and their cached vector status"""
         peers_with_vectors = {
-            pid: {"url": url, "vector_count": len(node.peer_node_vectors.get(pid, []))}
+            pid: {
+                "url": url,
+                "vector_count": len(node.peer_node_vectors.get(pid, [])),
+                "status": node.peer_status.get(pid, {}).get("status", "UNKNOWN"),
+                "last_ok": node.peer_status.get(pid, {}).get("last_ok"),
+                "last_check": node.peer_status.get(pid, {}).get("last_check")
+            }
             for pid, url in node.peer_nodes.items()
         }
         return {
@@ -853,8 +966,6 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
     # Generate the full network topology from this node's perspective
     # This performs a recursive traversal of all known peers.
     # It avoids revisiting nodes to prevent infinite loops.
-    # Expose /get_topology and /get-topology for POST only (visualizer uses POST now)
-    @app.post("/get_topology")
     @app.post("/get-topology")
     async def get_topology():
         visited = set()
