@@ -92,22 +92,14 @@ print(f"Starting {N} Python servers...")
 # Create logs directory if it doesn't exist
 os.makedirs("logs", exist_ok=True)
 
-# Before starting servers, set DEBUG environment variable
-DEBUG_MODE = False  # Change to True to enable debug logging
-
 for i in range(1, N + 1):
     node_id = f"node{i}"
     fastapi_port = FASTAPI_START_PORT + i
     qdrant_http_port = QDRANT_START_PORT + (i - 1) * QDRANT_PORT_STEP
     
-    # Set DEBUG environment variable for server process
-    env = os.environ.copy()
-    env['DEBUG'] = 'true' if DEBUG_MODE else 'false'
-    
     # Start server
     proc = subprocess.Popen(
         [sys.executable, "server.py", node_id, str(fastapi_port), str(qdrant_http_port)],
-        env=env,  # Pass environment with DEBUG setting
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
     )
     server_processes.append(proc)

@@ -25,7 +25,7 @@ except ValueError:
 
 print(f"--- Running Qdrant App for {NUM_NODES} nodes ---")
 
-NUM_VECTORS = 140000
+NUM_VECTORS = 15000
 VECTOR_SIZE = 384
 
 # --- Adaptive Batch Configuration ---
@@ -147,6 +147,65 @@ for node_idx in range(NUM_NODES):
 NODE_URLS = []
 for i in range(1, NUM_NODES + 1):
     NODE_URLS.append(f"http://localhost:{8000 + i}")
+
+# --- NEW: Availability / peer-aggregated health logic ---
+MAJORITY = (NUM_NODES // 2) + 1  # need >N/2 reporters to mark a node DOWN to exclude it
+PEER_REPORT_REFRESH_INTERVAL = 30  # seconds between aggregate checks
+_last_peer_report_time = 0.0
+UNAVAILABLE_NODES = set()  # node ids like "node1", "node2"
+
+def update_unavailable_nodes():
+    """
+    Query /peers on all nodes and aggregate how many reporters mark each node DOWN.
+    Mark nodes unavailable if they are considered DOWN by >= MAJORITY reporters.
+    """
+    global _last_peer_report_time, UNAVAILABLE_NODES
+    counts_down = {f"node{i+1}": 0 for i in range(NUM_NODES)}
+    reporters = 0
+
+    for i, reporter_url in enumerate(NODE_URLS):
+        try:
+            resp = requests.get(f"{reporter_url}/peers", timeout=2)
+            if resp.status_code != 200:
+                continue
+            reporters += 1
+            info = resp.json()
+            peers = info.get("peers", {})
+            # peers keys are like "node1", ...
+            for peer_id, pdata in peers.items():
+                status = pdata.get("status", "UNKNOWN")
+                if status == "DOWN":
+                    counts_down[peer_id] = counts_down.get(peer_id, 0) + 1
+        except requests.exceptions.RequestException:
+            # reporter unreachable -> skip (do not count as a DOWN report)
+            continue
+
+    new_unavailable = set()
+    for node_id, down_count in counts_down.items():
+        if down_count >= MAJORITY:
+            new_unavailable.add(node_id)
+
+    UNAVAILABLE_NODES = new_unavailable
+    _last_peer_report_time = time.time()
+    if UNAVAILABLE_NODES:
+        print(f"Client: Nodes excluded as entry by MAJORITY: {sorted(list(UNAVAILABLE_NODES))}")
+    else:
+        print("Client: No entry nodes excluded by MAJORITY (all eligible)")
+
+def choose_entry_node(batch_num: int) -> int:
+    """
+    Choose an entry node index (0-based) using round-robin but skipping UNAVAILABLE_NODES.
+    If all nodes are excluded, fall back to plain round-robin.
+    """
+    start = (batch_num - 1) % NUM_NODES
+    for offset in range(NUM_NODES):
+        idx = (start + offset) % NUM_NODES
+        node_id = f"node{idx + 1}"
+        if node_id not in UNAVAILABLE_NODES:
+            return idx
+    # fallback: all excluded -> return round-robin index and log warning
+    print("Client WARNING: all nodes reported excluded by peers; falling back to round-robin entry selection.")
+    return start
 
 # --- Adaptive Batch Metrics Class ---
 class AdaptiveBatchMetrics:
@@ -392,10 +451,23 @@ def insert_vectors_bulk():
     
     start_time = time.time()
     
+    # initial update of peer reports
+    try:
+        update_unavailable_nodes()
+    except Exception as e:
+        print(f"Client: initial peer report failed: {e}")
+    
     with ThreadPoolExecutor(max_workers=NUM_NODES) as executor:
         futures = {}
         
         while vector_index < NUM_VECTORS or futures:
+            # refresh peer reports periodically
+            if time.time() - _last_peer_report_time > PEER_REPORT_REFRESH_INTERVAL:
+                try:
+                    update_unavailable_nodes()
+                except Exception as e:
+                    print(f"Client: peer report update failed: {e}")
+
             # Submit new batches
             while len(futures) < NUM_NODES and vector_index < NUM_VECTORS:
                 batch_num += 1
@@ -403,8 +475,8 @@ def insert_vectors_bulk():
                 current_batch_size = batch_metrics.current_batch_size
                 end_index = min(vector_index + current_batch_size, NUM_VECTORS)
                 
-                # Round-robin entry node selection
-                node_url_index = (batch_num - 1) % NUM_NODES
+                # Determine entry node (round-robin but skip unavailable)
+                node_url_index = choose_entry_node(batch_num)
                 node_url = NODE_URLS[node_url_index]
                 sent_to_node_id = f"node{node_url_index + 1}"
                 
