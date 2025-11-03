@@ -6,8 +6,15 @@ import json
 import sys
 import os
 import utils
-from concurrent.futures import ThreadPoolExecutor, as_completed  # NEW IMPORT
-from threading import Lock  # NEW IMPORT
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+
+# NEW: Import the node assignment computation
+try:
+    from node_assignment import compute_node_assignments
+except ImportError:
+    print("Error: node_assignment.py not found in the same directory.")
+    sys.exit(1)
 
 # --- Configuration ---
 try:
@@ -21,17 +28,16 @@ print(f"--- Running Qdrant App for {NUM_NODES} nodes ---")
 NUM_VECTORS = 140000
 VECTOR_SIZE = 384
 
-# --- NEW: Adaptive Batch Configuration ---
-BATCH_TIERS = [800, 256, 64]  # Predefined fallback tiers
-                              # provo prima con batch size 800, poi 256, poi 64
-BATCH_SIZE_OPTIMAL = BATCH_TIERS[0]  # Start with largest
-BATCH_SIZE_MIN = BATCH_TIERS[-1]     # Never go below smallest
-MAX_RETRIES = len(BATCH_TIERS)       # One retry per tier
-# -----------------------------------
+# --- Adaptive Batch Configuration ---
+BATCH_TIERS = [800, 256, 64]
+BATCH_SIZE_OPTIMAL = BATCH_TIERS[0]
+BATCH_SIZE_MIN = BATCH_TIERS[-1]
+MAX_RETRIES = len(BATCH_TIERS)
 
 # --- Training Configuration ---
 TRAINING_VECTORS = 10000
-CENTROIDS_FILE = 'centroids.json'
+ASSIGNMENTS_FILE = 'node_assignments.json'
+FORCE_RETRAIN = False  # Set to True to force recomputation
 
 # -----------------------------------
 
@@ -54,77 +60,97 @@ except FileNotFoundError:
     for i in range(NUM_VECTORS + 1):
         data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
 
-# --- NEW LOGIC: Train-Once Centroids (Load or Calculate) ---
-print("\n--- 0. Loading/Computing Node Centroids ---")
-NODE_VECS = []  # This will contain our centroids
+# --- NEW: Smart Node Assignment with Multiple Centroids per Node ---
+print("\n" + "="*60)
+print("0. COMPUTING SMART NODE ASSIGNMENTS")
+print("="*60)
+
+node_assignment_data = None
 
 try:
-    # 1. Check if centroids file exists
-    if os.path.exists(CENTROIDS_FILE):
-        print(f"📂 Found existing centroids file '{CENTROIDS_FILE}'...")
-        with open(CENTROIDS_FILE, 'r') as f:
-            NODE_VECS = json.load(f)
+    # 1. Check if assignment file exists and is valid
+    if os.path.exists(ASSIGNMENTS_FILE) and not FORCE_RETRAIN:
+        print(f"📂 Found existing assignments file '{ASSIGNMENTS_FILE}'...")
+        with open(ASSIGNMENTS_FILE, 'r') as f:
+            node_assignment_data = json.load(f)
         
-        # 2. Verify the number of centroids matches requested nodes
-        if len(NODE_VECS) == NUM_NODES:
-            print(f"✅ Successfully loaded {len(NODE_VECS)} centroids from '{CENTROIDS_FILE}'.")
-            print(f"   Skipping K-means training (using cached centroids).")
+        # Verify it matches current configuration
+        stats = node_assignment_data.get('stats', {})
+        if stats.get('num_nodes') == NUM_NODES:
+            print(f"✅ Successfully loaded assignments for {NUM_NODES} nodes.")
+            print(f"   - Number of clusters: {stats.get('num_clusters')}")
+            print(f"   - Replication factor: {stats.get('replication_factor')}")
+            print(f"   Skipping computation (using cached assignments).")
         else:
-            print(f"⚠️  Warning: '{CENTROIDS_FILE}' has {len(NODE_VECS)} centroids, but {NUM_NODES} are needed.")
-            print("   Forcing re-training...")
-            NODE_VECS = []  # Force re-training
+            print(f"⚠️  Warning: '{ASSIGNMENTS_FILE}' is for {stats.get('num_nodes')} nodes, but {NUM_NODES} are needed.")
+            print("   Forcing recomputation...")
+            node_assignment_data = None
     
-    # 3. If NODE_VECS is empty (file not found or mismatch), train
-    if not NODE_VECS:
-        if not os.path.exists(CENTROIDS_FILE):
-            print(f"Centroids file not found. Starting new training...")
+    # 2. If no valid data, compute assignments
+    if node_assignment_data is None:
+        if not os.path.exists(ASSIGNMENTS_FILE):
+            print(f"Assignments file not found. Starting computation...")
         
-        # 4. Check we have enough data for training
+        # Check we have enough data
         if len(data) < TRAINING_VECTORS:
             print(f"❌ ERROR: Insufficient data for training.")
             print(f"   Need {TRAINING_VECTORS} vectors, but 'embeddings.json' only has {len(data)}.")
-            print(f"   Please run 'python take_some.py' to generate more embeddings.")
             sys.exit(1)
         
-        print(f"🎓 Starting K-Means training on {TRAINING_VECTORS} vectors...")
-        start_train = time.time()
+        print(f"🎯 Starting smart clustering and load balancing...")
+        print(f"   Training on {TRAINING_VECTORS} vectors")
+        print(f"   Target: {NUM_NODES} nodes")
         
-        # 5. Extract vectors for training
-        training_data_vectors = [i['embedding'] for i in data[:TRAINING_VECTORS]]
+        start_compute = time.time()
         
-        # 6. Calculate centroids
-        calculated_centroids_np = utils.find_kmeans_centroids(training_data_vectors, NUM_NODES)
-        NODE_VECS = calculated_centroids_np.tolist()
+        # 3. Run the complete pipeline
+        node_assignment_data = compute_node_assignments(
+            embeddings_file='embeddings.json',
+            num_nodes=NUM_NODES,
+            max_k_to_test=min(30, TRAINING_VECTORS // 100),  # Sensible default
+            random_state=42,
+            max_vectors=TRAINING_VECTORS,
+            rep_factor=None,  # Auto-calculate
+            beam_width=5,
+            use_simulated_annealing=False
+        )
         
-        train_time = time.time() - start_train
-        
-        # 7. Save new centroids ("weights") to disk
-        with open(CENTROIDS_FILE, 'w') as f:
-            json.dump(NODE_VECS, f, indent=2)
-        
-        file_size_kb = os.path.getsize(CENTROIDS_FILE) / 1024
-        print(f"✅ Training completed in {train_time:.2f}s.")
-        print(f"   {len(NODE_VECS)} centroids saved to '{CENTROIDS_FILE}' ({file_size_kb:.2f} KB).")
+        compute_time = time.time() - start_compute
+        print(f"\n✅ Assignment computation completed in {compute_time:.2f}s.")
 
 except Exception as e:
-    print(f"❌ FATAL ERROR during centroids loading/training: {e}")
+    print(f"❌ FATAL ERROR during node assignment computation: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)
+
+# Extract the computed data
+CENTROIDS = node_assignment_data['centroids']
+NODE_ASSIGNMENTS = node_assignment_data['node_assignments']
+ASSIGNMENT_DETAILS = node_assignment_data['assignment_details']
+REPLICATION_FACTOR = node_assignment_data['stats']['replication_factor']
+
+print("\n" + "="*60)
+print("ASSIGNMENT SUMMARY")
+print("="*60)
+print(f"Total Clusters: {len(CENTROIDS)}")
+print(f"Replication Factor: {REPLICATION_FACTOR}")
+print(f"Nodes: {NUM_NODES}")
+print("\nClusters per node:")
+for node_idx in range(NUM_NODES):
+    cluster_indices = NODE_ASSIGNMENTS.get(str(node_idx), NODE_ASSIGNMENTS.get(node_idx, []))
+    print(f"  Node {node_idx+1}: {len(cluster_indices)} clusters -> {cluster_indices}")
 
 # --- END NEW LOGIC ---
 
 # --- Dynamic Node Configuration ---
 NODE_URLS = []
-
 for i in range(1, NUM_NODES + 1):
     NODE_URLS.append(f"http://localhost:{8000 + i}")
 
-# --- NEW: Adaptive Batch Sender Class ---
+# --- Adaptive Batch Metrics Class ---
 class AdaptiveBatchMetrics:
-    """
-    Tracks batch sending metrics and adjusts batch size dynamically.
-    """
+    """Tracks batch sending metrics and adjusts batch size dynamically."""
     def __init__(self):
         self.current_batch_size = BATCH_SIZE_OPTIMAL
         self.success_count = 0
@@ -135,9 +161,8 @@ class AdaptiveBatchMetrics:
     def on_success(self, batch_size: int):
         """Called when a batch succeeds."""
         self.success_count += 1
-        self.failure_count = 0  # Reset failure counter
+        self.failure_count = 0
         
-        # After 20 consecutive successes, try increasing batch size
         if self.success_count >= 20 and self.current_batch_size < BATCH_SIZE_OPTIMAL:
             old_size = self.current_batch_size
             self.current_batch_size = min(int(self.current_batch_size * 1.5), BATCH_SIZE_OPTIMAL)
@@ -147,9 +172,8 @@ class AdaptiveBatchMetrics:
     def on_failure(self):
         """Called when a batch fails."""
         self.failure_count += 1
-        self.success_count = 0  # Reset success counter
+        self.success_count = 0
         
-        # After 2 consecutive failures, reduce batch size preventively
         if self.failure_count >= 2:
             old_size = self.current_batch_size
             self.current_batch_size = max(self.current_batch_size // 2, BATCH_SIZE_MIN)
@@ -173,89 +197,46 @@ class AdaptiveBatchMetrics:
             "failure_count": self.failure_count
         }
 
-# Global metrics instance
 batch_metrics = AdaptiveBatchMetrics()
-
-# --- NEW: Thread-safe lock for metrics ---
 metrics_lock = Lock()
-# ---
 
-# --- NEW: Dynamic Timeout Calculator ---
+# --- Dynamic Timeout Calculator ---
 def calculate_timeout(batch_size: int, base_timeout: int = 10) -> int:
-    """
-    Calculate adaptive timeout based on batch size.
-    
-    Args:
-        batch_size: Number of vectors in batch
-        base_timeout: Minimum timeout in seconds
-    
-    Returns:
-        Timeout in seconds
-        
-    Rationale:
-        - Base: 10s for HTTP overhead + server processing
-        - Per-vector: 10ms (384-dim vector similarity calc + routing)
-        - Max: 120s to avoid indefinite hangs
-        - Formula ensures linear scaling with batch size
-    """
-    per_vector_time = 0.01  # 10ms per vector (empirically reasonable)
+    """Calculate adaptive timeout based on batch size."""
+    per_vector_time = 0.01
     timeout = base_timeout + int(batch_size * per_vector_time)
-    
-    # Clamp between 10s and 120s
     return max(10, min(timeout, 120))
 
-# --- MODIFIED: Retry with Tier-based Splitting Logic ---
+# --- Retry with Tier-based Splitting Logic ---
 def send_batch_with_retry(
     vectors_batch: list,
     node_url: str,
     sent_to_node_id: str,
     retry_count: int = 0
 ) -> tuple:
-    """
-    Send a batch with intelligent retry using predefined size tiers.
-    
-    Algorithm:
-    1. Try sending full batch
-    2. On timeout/error → Try next smaller tier (800 → 256 → 64)
-    3. Split batch if it exceeds current tier size
-    
-    Args:
-        vectors_batch: List of vector data dicts
-        node_url: Target node URL
-        sent_to_node_id: Node ID for logging
-        retry_count: Current retry attempt (0-indexed tier)
-    
-    Returns:
-        (success: bool, response_data: dict)
-    """
+    """Send a batch with intelligent retry using predefined size tiers."""
     batch_size = len(vectors_batch)
     
-    # Base case: Empty batch
     if batch_size == 0:
         return True, {"batches": {}}
     
-    # Safety: Limit retries to number of tiers
     if retry_count >= len(BATCH_TIERS):
         print(f"❌ All retry tiers exhausted for batch of {batch_size} vectors")
         batch_metrics.on_failure()
         return False, {}
     
-    # Determine current tier size
     current_tier_size = BATCH_TIERS[retry_count]
     
-    # If batch is larger than current tier, split it
     if batch_size > current_tier_size:
         print(f"📦 Batch size {batch_size} exceeds tier {retry_count+1} ({current_tier_size}), splitting...")
         batch_metrics.on_split()
         
-        # Split into chunks of current_tier_size
         chunks = []
         for i in range(0, batch_size, current_tier_size):
             chunks.append(vectors_batch[i:i+current_tier_size])
         
         print(f"🔀 Split into {len(chunks)} chunks of max {current_tier_size} vectors")
         
-        # Send all chunks with current tier
         all_results = []
         for chunk in chunks:
             success, data = send_batch_with_retry(chunk, node_url, sent_to_node_id, retry_count)
@@ -263,7 +244,6 @@ def send_batch_with_retry(
                 return False, {}
             all_results.append(data)
         
-        # Merge results
         merged_batches = {}
         for data in all_results:
             for node_id, count in data.get('batches', {}).items():
@@ -271,7 +251,6 @@ def send_batch_with_retry(
         
         return True, {"batches": merged_batches}
     
-    # Batch fits in current tier, try sending
     timeout = calculate_timeout(batch_size)
     
     try:
@@ -282,21 +261,17 @@ def send_batch_with_retry(
         )
         response.raise_for_status()
         
-        # SUCCESS!
         res_data = response.json()
         batch_metrics.on_success(batch_size)
         return True, res_data
         
     except requests.exceptions.Timeout:
-        # TIMEOUT: Try next smaller tier
         next_tier = retry_count + 1
         if next_tier < len(BATCH_TIERS):
             next_tier_size = BATCH_TIERS[next_tier]
             print(f"⏱️  Timeout with batch size {batch_size} (tier {retry_count+1}: {current_tier_size})")
             print(f"   Falling back to tier {next_tier+1} (max size: {next_tier_size})...")
             batch_metrics.on_retry()
-            
-            # Retry with next tier
             return send_batch_with_retry(vectors_batch, node_url, sent_to_node_id, next_tier)
         else:
             print(f"❌ Timeout even with smallest tier ({current_tier_size})")
@@ -304,17 +279,14 @@ def send_batch_with_retry(
             return False, {}
             
     except requests.exceptions.RequestException as e:
-        # OTHER ERROR: Network issue, server error, etc.
         print(f"❌ Network error with batch size {batch_size} (tier {retry_count+1}): {e}")
         batch_metrics.on_retry()
         
-        # Retry with exponential backoff (but only once)
         if retry_count == 0:
             wait_time = 2
             print(f"⏳ Waiting {wait_time}s before retry with next tier...")
             time.sleep(wait_time)
         
-        # Try next tier
         next_tier = retry_count + 1
         if next_tier < len(BATCH_TIERS):
             return send_batch_with_retry(vectors_batch, node_url, sent_to_node_id, next_tier)
@@ -322,58 +294,72 @@ def send_batch_with_retry(
             batch_metrics.on_failure()
             return False, {}
 
-# --- NEW: Thread-safe wrapper for send_batch_with_retry ---
 def send_batch_with_retry_threadsafe(
     vectors_batch: list,
     node_url: str,
     sent_to_node_id: str,
     batch_num: int
 ) -> tuple:
-    """
-    Thread-safe wrapper for send_batch_with_retry.
-    Returns (batch_num, success, response_data) for result tracking.
-    """
+    """Thread-safe wrapper for send_batch_with_retry."""
     success, res_data = send_batch_with_retry(vectors_batch, node_url, sent_to_node_id)
     return (batch_num, success, res_data)
-# ---
 
 def register_peers():
     """
-    Dynamically set each node's representative vector and register them with each other.
+    Register nodes with their assigned cluster centroids and peer information.
+    Each node now receives MULTIPLE vectors (one per assigned cluster).
     """
-    print("--- 1. Setting Node Vectors & Registering Peers ---")
+    print("\n" + "="*60)
+    print("1. SETTING NODE VECTORS & REGISTERING PEERS")
+    print("="*60)
+    
     try:
-        # 1. Set the representative vector for every node
-        print("Setting node vectors...")
-        for i in range(NUM_NODES):
-            node_id = f"node{i+1}"
-            node_url = NODE_URLS[i]
-            node_vec = NODE_VECS[i]  # Use loaded/calculated vectors
-
-            # set_node_vectors expects a list of vectors; send list with single centroid
-            r_set = requests.post(f"{node_url}/set_node_vectors", json=[node_vec], timeout=5)
+        # 1. Set the representative vectors for every node
+        print("Setting node vectors (multiple per node)...")
+        for node_idx in range(NUM_NODES):
+            node_id = f"node{node_idx+1}"
+            node_url = NODE_URLS[node_idx]
+            
+            # Get cluster indices assigned to this node
+            cluster_indices = NODE_ASSIGNMENTS.get(str(node_idx), NODE_ASSIGNMENTS.get(node_idx, []))
+            
+            # Get the actual centroid vectors for those clusters
+            node_vectors = [CENTROIDS[cluster_idx] for cluster_idx in cluster_indices]
+            
+            if not node_vectors:
+                print(f"  ⚠️  {node_id}: No clusters assigned! Using random vector.")
+                node_vectors = [np.random.rand(VECTOR_SIZE).tolist()]
+            
+            # Send all vectors for this node
+            r_set = requests.post(f"{node_url}/set_node_vectors", json=node_vectors, timeout=5)
             r_set.raise_for_status()
-            print(f"  {node_id}: Set representative vector (first 3 dims: {[round(v, 3) for v in node_vec[:3]]}...)")
+            print(f"  {node_id}: Set {len(node_vectors)} representative vector(s) for clusters {cluster_indices}")
 
-        # 2. Register all peers with all other peers (N * (N-1) requests)
+        # 2. Register all peers with all other peers
         print("\nRegistering peers...")
-        for i in range(NUM_NODES):
-            host_id = f"node{i+1}"
-            host_url = NODE_URLS[i]
+        for node_idx in range(NUM_NODES):
+            host_id = f"node{node_idx+1}"
+            host_url = NODE_URLS[node_idx]
             
             peers_registered = 0
-            for j in range(NUM_NODES):
-                if i == j:
+            for peer_idx in range(NUM_NODES):
+                if node_idx == peer_idx:
                     continue
                 
-                peer_id = f"node{j+1}"
-                peer_url = NODE_URLS[j]
-                peer_vec = NODE_VECS[j]  # Use loaded/calculated vectors
+                peer_id = f"node{peer_idx+1}"
+                peer_url = NODE_URLS[peer_idx]
+                
+                # Get peer's cluster indices and vectors
+                peer_cluster_indices = NODE_ASSIGNMENTS.get(str(peer_idx), NODE_ASSIGNMENTS.get(peer_idx, []))
+                peer_vectors = [CENTROIDS[cluster_idx] for cluster_idx in peer_cluster_indices]
+                
+                if not peer_vectors:
+                    peer_vectors = [np.random.rand(VECTOR_SIZE).tolist()]
                 
                 payload = {
                     "peer_id": peer_id,
                     "peer_url": peer_url,
-                    "node_vectors": [peer_vec]
+                    "node_vectors": peer_vectors
                 }
                 
                 r_reg = requests.post(f"{host_url}/register_peer", json=payload, timeout=5)
@@ -382,7 +368,7 @@ def register_peers():
             
             print(f"  Host {host_id}: Registered {peers_registered} peers.")
 
-        print("Peers registered and vectors exchanged successfully.\n")
+        print("✅ Peers registered and vectors exchanged successfully.\n")
         
     except requests.exceptions.RequestException as e:
         print(f"!!! Error setting/registering peers: {e}")
@@ -390,13 +376,11 @@ def register_peers():
         sys.exit(1)
 
 
-# --- MODIFIED: Replaced insert_vectors with insert_vectors_bulk ---
 def insert_vectors_bulk():
-    """
-    Insert vectors with PARALLEL batch sending using ThreadPoolExecutor.
-    This allows multiple batches to be sent simultaneously to different nodes.
-    """
-    print(f"--- 2. Inserting {NUM_VECTORS} Vectors (Size {VECTOR_SIZE}) ---")
+    """Insert vectors with PARALLEL batch sending using ThreadPoolExecutor."""
+    print("\n" + "="*60)
+    print(f"2. INSERTING {NUM_VECTORS} VECTORS (Size {VECTOR_SIZE})")
+    print("="*60)
     print(f"   Starting with batch size: {batch_metrics.current_batch_size}")
     print(f"   Minimum batch size: {BATCH_SIZE_MIN}")
     print(f"   Maximum retries per batch: {MAX_RETRIES}")
@@ -408,21 +392,18 @@ def insert_vectors_bulk():
     
     start_time = time.time()
     
-    # --- NEW: Use ThreadPoolExecutor for parallel sending ---
-    # max_workers = NUM_NODES ensures we can send to all nodes simultaneously
     with ThreadPoolExecutor(max_workers=NUM_NODES) as executor:
-        futures = {}  # Map future -> (batch_num, batch_data)
+        futures = {}
         
         while vector_index < NUM_VECTORS or futures:
-            # --- PHASE 1: Submit new batches (up to NUM_NODES in parallel) ---
+            # Submit new batches
             while len(futures) < NUM_NODES and vector_index < NUM_VECTORS:
                 batch_num += 1
                 
-                # Use current adaptive batch size
                 current_batch_size = batch_metrics.current_batch_size
                 end_index = min(vector_index + current_batch_size, NUM_VECTORS)
                 
-                # Determine entry node (round-robin)
+                # Round-robin entry node selection
                 node_url_index = (batch_num - 1) % NUM_NODES
                 node_url = NODE_URLS[node_url_index]
                 sent_to_node_id = f"node{node_url_index + 1}"
@@ -442,7 +423,6 @@ def insert_vectors_bulk():
                     }
                     batch_payload.append(vector_data)
                 
-                # Submit batch to thread pool
                 future = executor.submit(
                     send_batch_with_retry_threadsafe,
                     batch_payload,
@@ -460,24 +440,20 @@ def insert_vectors_bulk():
                 
                 vector_index = end_index
             
-            # --- PHASE 2: Process completed batches ---
-            # Wait for at least one batch to complete
+            # Process completed batches
             if futures:
                 done, pending = as_completed(futures.keys()), set(futures.keys())
                 
-                # Process the first completed future
                 for future in done:
                     batch_info = futures[future]
                     batch_num_completed, success, res_data = future.result()
                     
                     if success:
-                        # Track insertions (thread-safe)
                         batches = res_data.get('batches', {})
                         with metrics_lock:
                             for node_id, count in batches.items():
                                 insertions.extend([node_id] * count)
                         
-                        # Periodic logging
                         if batch_num_completed % 30 == 0:
                             elapsed = time.time() - start_time
                             total_inserted = batch_info['end_index']
@@ -494,9 +470,8 @@ def insert_vectors_bulk():
                         actual_batch_size = batch_info['end_index'] - batch_info['start_index']
                         print(f"⚠️  Batch {batch_num_completed} failed completely, skipping {actual_batch_size} vectors")
                     
-                    # Remove completed future
                     del futures[future]
-                    break  # Process one at a time to maintain order
+                    break
     
     total_time = time.time() - start_time
     avg_speed = NUM_VECTORS / total_time if total_time > 0 else 0
@@ -514,7 +489,10 @@ def insert_vectors_bulk():
 
 def check_counts(insertions: list):
     """Check the final vector counts on each node."""
-    print("--- 3. Checking Vector Counts ---")
+    print("\n" + "="*60)
+    print("3. CHECKING VECTOR COUNTS")
+    print("="*60)
+    
     try:
         all_counts = []
         total_count = 0
@@ -532,9 +510,14 @@ def check_counts(insertions: list):
 
         print("Vector counts per node:")
         for node_id, count in all_counts:
-            print(f"  - {node_id} Count: {count}")
+            # Show expected count based on cluster assignment
+            cluster_indices = NODE_ASSIGNMENTS.get(str(int(node_id[4:])-1), [])
+            expected_note = f"({len(cluster_indices)} clusters assigned)" if cluster_indices else ""
+            print(f"  - {node_id} Count: {count} {expected_note}")
         
-        print(f"Total Vectors Stored: {total_count} (Expected: {NUM_VECTORS})")
+        print(f"\nTotal Vectors Stored: {total_count}")
+        print(f"Expected (with replication): {NUM_VECTORS * REPLICATION_FACTOR}")
+        print(f"Expected (unique): {NUM_VECTORS}")
         
         # Check from test script perspective
         print("\n(Client-side insertion log check):")
@@ -543,24 +526,28 @@ def check_counts(insertions: list):
             script_count = insertions.count(node_id)
             print(f"  - {node_id} received: {script_count}")
         
-        if total_count == NUM_VECTORS:
-            print("✅  Total counts match total inserted vectors.")
+        # Validate total count accounting for replication
+        expected_total = NUM_VECTORS * REPLICATION_FACTOR
+        if abs(total_count - expected_total) < NUM_VECTORS * 0.05:  # 5% tolerance
+            print(f"✅  Total counts match expected (within 5% tolerance).")
         else:
-            print("⚠️  Counts do NOT match total inserted vectors!")
+            print(f"⚠️  Counts deviate from expected!")
 
-        # Check if routing was *roughly* balanced
-        expected_avg = NUM_VECTORS / NUM_NODES
-        tolerance = NUM_VECTORS * 0.1 # 10% tolerance
-        is_balanced = True
+        # Check load balancing quality
+        expected_avg = expected_total / NUM_NODES
+        max_count = max(c for _, c in all_counts)
+        min_count = min(c for _, c in all_counts)
+        imbalance = (max_count - min_count) / expected_avg * 100 if expected_avg > 0 else 0
         
-        for node_id, count in all_counts:
-            if abs(count - expected_avg) > tolerance:
-                is_balanced = False
-
-        if is_balanced:
-            print(f"✅  Distribution is roughly balanced (within 10%).")
+        print(f"\nLoad Balance Statistics:")
+        print(f"  - Expected avg per node: {expected_avg:,.1f}")
+        print(f"  - Actual range: {min_count:,} to {max_count:,}")
+        print(f"  - Imbalance: {imbalance:.1f}%")
+        
+        if imbalance < 20:
+            print(f"✅  Distribution is well balanced (<20% imbalance).")
         else:
-            print(f"⚠️  Distribution seems unbalanced!")
+            print(f"⚠️  Distribution could be more balanced!")
         print("")
         
     except requests.exceptions.RequestException as e:
@@ -569,18 +556,17 @@ def check_counts(insertions: list):
 
 def run_queries():
     """Run a single federated search query."""
-    print("--- 4. Running Federated Search Query ---")
+    print("\n" + "="*60)
+    print("4. RUNNING FEDERATED SEARCH QUERY")
+    print("="*60)
     
-    # Use the last embedding as the query vector
     query_vector = data[NUM_VECTORS]['embedding']
-    # print(f"Query Vector (first 5 dims): {[round(x, 2) for x in query_vector[:5]]}...\n")
 
     try:
-        # Run Federated Search (always from Node 1, doesn't matter which)
         r_fed = requests.post(
             f"{NODE_URLS[0]}/search/federated",
             json=query_vector,
-            params={"top_k": 5} # Request top 5 from EACH node
+            params={"top_k": 5}
         )
         r_fed.raise_for_status()
         fed_results = r_fed.json()
@@ -590,19 +576,28 @@ def run_queries():
         
         all_results = []
         best_overall_node = "N/A"
-        best_overall_score = -2.0 # Cosine similarity can be -1
+        best_overall_score = -2.0
         
         for i in range(NUM_NODES):
             node_id = f"node{i+1}"
-            node_vector = NODE_VECS[i]
-            node_similarity = utils.cosine_similarity(query_vector, node_vector)
+            cluster_indices = NODE_ASSIGNMENTS.get(str(i), NODE_ASSIGNMENTS.get(i, []))
+            node_vectors = [CENTROIDS[idx] for idx in cluster_indices] if cluster_indices else []
+            
+            # Calculate best similarity to any of this node's centroids
+            node_similarity = -1.0
+            if node_vectors:
+                similarities = [utils.cosine_similarity(query_vector, nv) for nv in node_vectors]
+                node_similarity = max(similarities)
+            
             node_results_list = results_data.get(node_id, [])
             node_results_count = len(node_results_list)
             
             max_score = node_results_list[0].get('score', -1) if node_results_count > 0 else -1
             min_score = node_results_list[-1].get('score', -1) if node_results_count > 0 else -1
             
-            print(f"  - Results from {node_id}: {node_results_count} (Best: {max_score:.4f}, Worst: {min_score:.4f}, Node: {node_similarity})")
+            print(f"  - Results from {node_id}: {node_results_count} "
+                  f"(Best: {max_score:.4f}, Worst: {min_score:.4f}, "
+                  f"Node Best: {node_similarity:.4f}, Clusters: {len(cluster_indices)})")
             
             if max_score > best_overall_score:
                 best_overall_score = max_score
@@ -616,33 +611,29 @@ def run_queries():
 
 
 def main_app():
-    print(f"Starting Qdrant Smart Sharding Test ({NUM_NODES} Nodes)...")
-    print(f"Please ensure all servers and DBs are running.")
-    print(f"Test will insert {NUM_VECTORS} vectors.\n")
+    print("\n" + "="*60)
+    print(f"QDRANT SMART SHARDING TEST ({NUM_NODES} NODES)")
+    print("="*60)
+    print(f"Test will insert {NUM_VECTORS} vectors with {REPLICATION_FACTOR}x replication.")
+    print(f"Using {len(CENTROIDS)} clusters balanced across {NUM_NODES} nodes.\n")
     
-    # Give servers a moment to start
     time.sleep(2)
     
     start_time = time.time()
     
     register_peers()
-    
-    # --- MODIFIED: Call the bulk function ---
     insertions = insert_vectors_bulk()
-    # --- END MODIFICATION ---
     
-    # --- NEW: Add a delay to allow background tasks to finish ---
     print("--- Waiting 5s for background insertions to settle... ---")
-    time.sleep(5) 
-    # In a real system, you might need a more robust check
-    # --- END NEW ---
+    time.sleep(15)
     
     check_counts(insertions)
     run_queries()
     
     end_time = time.time()
-    print(f"\n--- Test Complete in {end_time - start_time:.2f} seconds ---")
+    print("\n" + "="*60)
+    print(f"TEST COMPLETE IN {end_time - start_time:.2f} SECONDS")
+    print("="*60)
 
-# --- Main Execution ---
 if __name__ == "__main__":
     main_app()

@@ -2,8 +2,8 @@ import json
 import os
 import sys
 import numpy as np
-import faiss  # CHANGED: from sklearn.cluster import KMeans to faiss
-from sklearn.metrics import silhouette_score  # Keep this for quality metrics
+import faiss
+from sklearn.metrics import silhouette_score
 import matplotlib.pyplot as plt
 from collections import Counter
 import itertools
@@ -51,8 +51,6 @@ def plot_elbow_method(X, max_k, random_state):
     """
     Calculates inertia for k=1 to max_k and plots the elbow curve.
     Saves the plot as 'elbow_plot.png'.
-    
-    CHANGED: Uses FAISS instead of sklearn
     """
     print(f"\n--- Calculating Elbow Method (k=1 to {max_k}) ---")
     inertia_values = []
@@ -66,7 +64,6 @@ def plot_elbow_method(X, max_k, random_state):
         if k % (max_k // 10 if max_k > 10 else 1) == 0:
             print(f"  Calculating for k={k}...")
         
-        # CHANGED: Use FAISS K-means
         kmeans = faiss.Kmeans(
             d=d,
             k=k,
@@ -106,8 +103,6 @@ def plot_silhouette_scores(X, max_k, random_state):
     Calculates silhouette scores for k=2 to max_k and plots them.
     Saves the plot as 'silhouette_plot.png'.
     Returns the k with the highest score.
-    
-    CHANGED: Uses FAISS for clustering
     """
     print(f"\n--- Calculating Silhouette Scores (k=2 to {max_k}) ---")
     silhouette_scores = []
@@ -126,7 +121,6 @@ def plot_silhouette_scores(X, max_k, random_state):
         if k % (max_k // 10 if max_k > 10 else 1) == 0:
             print(f"  Calculating for k={k}...")
         
-        # CHANGED: Use FAISS K-means
         kmeans = faiss.Kmeans(
             d=d,
             k=k,
@@ -142,7 +136,7 @@ def plot_silhouette_scores(X, max_k, random_state):
         _, labels = kmeans.index.search(X_faiss, 1)
         labels = labels.flatten()
         
-        # Calculate silhouette score (sklearn is fine here)
+        # Calculate silhouette score
         score = silhouette_score(X, labels)
         silhouette_scores.append(score)
         
@@ -168,8 +162,6 @@ def run_final_clustering(X, k, random_state):
     """
     Runs K-Means with the optimal k, saves centroids, and returns
     the count of vectors associated with each cluster.
-    
-    CHANGED: Uses FAISS instead of sklearn
     """
     print(f"\n--- Running Final Clustering with k={k} (FAISS) ---")
     
@@ -177,7 +169,6 @@ def run_final_clustering(X, k, random_state):
     X_faiss = X.astype(np.float32)
     n, d = X_faiss.shape
     
-    # CHANGED: Use FAISS K-means
     print(f"Training FAISS K-means with {n} vectors, {d} dimensions, {k} clusters...")
     start_time = time.time()
     
@@ -186,7 +177,7 @@ def run_final_clustering(X, k, random_state):
         k=k,
         niter=300,
         nredo=1,
-        verbose=True,  # Show progress for final clustering
+        verbose=True,
         seed=random_state,
         gpu=False
     )
@@ -214,8 +205,7 @@ def run_final_clustering(X, k, random_state):
     for cluster_label, count in sorted(label_counts.items()):
         print(f"  Cluster {cluster_label:2}: {count} vectors")
         
-    # Return the counts, which are the "loads" for the balancing script
-    return label_counts
+    return label_counts, centroids_list
 
 # --- Load Balancing Functions ---
 
@@ -260,8 +250,6 @@ def run_beam_search(clusters_sorted, all_combos, num_nodes, beam_width):
                 
                 new_assignment = current_assignment + [combo]
                 
-                # Score is the sum of squares of partial loads.
-                # A balanced partial state has a lower sum of squares.
                 partial_score = sum(load**2 for load in new_node_loads)
                 
                 potential_states.append(
@@ -284,7 +272,6 @@ def get_neighbor_assignment(current_assignment, all_combos):
     neighbor = list(current_assignment)
     cluster_to_change = random.randrange(len(neighbor))
     
-    # Pick a new, different combo for the chosen cluster
     new_combo = random.choice(all_combos)
     while new_combo == neighbor[cluster_to_change]:
         new_combo = random.choice(all_combos)
@@ -349,136 +336,181 @@ def print_final_loads(node_loads, wanted_load):
     print(f"  Range (Delta): {max_load - min_load:,.2f}")
 
 
-# --- Main Execution ---
+# --- NEW: API Function for External Use ---
 
-def main():
+def compute_node_assignments(embeddings_file, num_nodes, max_k_to_test=30, 
+                             random_state=42, max_vectors=10000,
+                             rep_factor=None, beam_width=5,
+                             use_simulated_annealing=True):
     """
-    Main function to run the complete analysis and balancing pipeline.
+    Complete pipeline: clustering + load balancing.
+    
+    Args:
+        embeddings_file: Path to JSON file with embeddings
+        num_nodes: Number of nodes in the system
+        max_k_to_test: Maximum k for cluster analysis
+        random_state: Random seed for reproducibility
+        max_vectors: Maximum vectors to use for training (0 = all)
+        rep_factor: Replication factor (None = auto-calculate)
+        beam_width: Beam width for search algorithm
+        use_simulated_annealing: Whether to refine with SA
+    
+    Returns:
+        dict with:
+            - 'centroids': List of cluster centroids
+            - 'cluster_counts': Dict of cluster sizes
+            - 'node_assignments': Dict mapping node_id -> list of cluster indices
+            - 'assignment_details': List of (cluster_idx, node_indices) tuples
+            - 'stats': Performance statistics
     """
+    print("="*60)
+    print("COMPUTING OPTIMAL NODE ASSIGNMENTS")
+    print("="*60)
     
-    # --- 1. K-Means Configuration ---
-    print("="*50)
-    print("STEP 1: K-MEANS CLUSTER ANALYSIS (FAISS)")
-    print("="*50)
-    EMBEDDINGS_FILE = 'embeddings.json' # Input file
-    MAX_K_TO_TEST = 30      # Max clusters to check
-    RANDOM_STATE = 42       # For reproducible results
-    MAX_VECTORS = 10000     # Max vectors to load (0 for all)
+    # Step 1: Load and cluster
+    X = load_vectors(embeddings_file, max_vectors)
     
-    # 1a. Load Data
-    X = load_vectors(EMBEDDINGS_FILE, MAX_VECTORS)
-    
-    # 1b. Adjust MAX_K if data is small
-    if X.shape[0] <= MAX_K_TO_TEST:
-        print(f"Warning: Only {X.shape[0]} vectors loaded.")
-        MAX_K_TO_TEST = X.shape[0] - 1
-        if MAX_K_TO_TEST < 2:
-            print("Error: Not enough data points to cluster (need at least 2).")
-            sys.exit(1)
-        print(f"MAX_K_TO_TEST adjusted to {MAX_K_TO_TEST}")
+    if X.shape[0] <= max_k_to_test:
+        max_k_to_test = X.shape[0] - 1
+        if max_k_to_test < 2:
+            raise ValueError("Not enough data points to cluster")
+        print(f"MAX_K_TO_TEST adjusted to {max_k_to_test}")
 
-    # 1c. Run Analyses
-    print(f"\n🚀 Using FAISS for K-means (faster than sklearn)")
-    plot_elbow_method(X, MAX_K_TO_TEST, RANDOM_STATE)
-    recommended_k = plot_silhouette_scores(X, MAX_K_TO_TEST, RANDOM_STATE)
+    plot_elbow_method(X, max_k_to_test, random_state)
+    recommended_k = plot_silhouette_scores(X, max_k_to_test, random_state)
     
     if recommended_k is None:
-        print("\nCould not determine a recommended k. Exiting.")
-        sys.exit(1)
+        raise ValueError("Could not determine optimal k")
         
-    print(f"\n[Recommendation]")
-    print(f"Silhouette Score recommends k = {recommended_k}")
+    print(f"\n[Recommendation] Using k = {recommended_k}")
     
-    # You can override the recommendation here if you wish:
-    # recommended_k = 12 
-    
-    # 1d. Run Final Clustering
-    cluster_counts = run_final_clustering(X, recommended_k, RANDOM_STATE)
-    
-    # This is the "glue": get the list of loads from the cluster counts
+    cluster_counts, centroids_list = run_final_clustering(X, recommended_k, random_state)
     clusters = list(cluster_counts.values())
     
+    # Step 2: Load balance
+    print("\n" + "="*60)
+    print("LOAD BALANCING CLUSTERS ACROSS NODES")
+    print("="*60)
     
-    # --- 2. Load Balancing Configuration ---
-    print("\n" + "="*50)
-    print("STEP 2: CLUSTER LOAD BALANCING")
-    print("="*50)
+    if rep_factor is None:
+        rep_factor = max(3, int(num_nodes / len(clusters)))
     
-    NUM_NODES = 20
-    # Set replication factor: e.g., 3, or scale based on node/cluster ratio
-    REP_FACTOR = max(3, int(NUM_NODES / len(clusters)))
-    
-    # Sort clusters largest to smallest (crucial for Beam Search)
     clusters_sorted = sorted(clusters, reverse=True)
-
-    # 2a. Calculate Global Values
     total_load = sum(clusters)
-    wanted_load = REP_FACTOR * total_load / NUM_NODES
+    wanted_load = rep_factor * total_load / num_nodes
     
-    node_indices = list(range(NUM_NODES))
-    all_combos = list(itertools.combinations(node_indices, REP_FACTOR))
+    node_indices = list(range(num_nodes))
+    all_combos = list(itertools.combinations(node_indices, rep_factor))
 
     print(f"Balancing {len(clusters)} clusters (Total Load: {total_load})")
-    print(f"Across {NUM_NODES} nodes with Replication Factor {REP_FACTOR}")
+    print(f"Across {num_nodes} nodes with Replication Factor {rep_factor}")
     print(f"Target load per node: {wanted_load:,.2f}")
-    print(f"Total combinations per cluster: {len(all_combos)}")
 
-    # 2b. Run Beam Search
-    BEAM_WIDTH = 5  # Higher is slower but more accurate
-    
-    bs_assignment = run_beam_search(
-        clusters_sorted, 
-        all_combos, 
-        NUM_NODES, 
-        BEAM_WIDTH
-    )
-    
+    # Beam search
+    bs_assignment = run_beam_search(clusters_sorted, all_combos, num_nodes, beam_width)
     bs_sse, bs_std_dev, bs_loads = calculate_assignment_score(
-        bs_assignment, clusters_sorted, NUM_NODES, wanted_load
+        bs_assignment, clusters_sorted, num_nodes, wanted_load
     )
+    
     print("\n--- Beam Search Result ---")
     print(f"  Score (SSE): {bs_sse:,.2f}")
     print(f"  Std Deviation: {bs_std_dev:,.2f}")
     print_final_loads(bs_loads, wanted_load)
 
-    # 2c. (Optional) Run Simulated Annealing to refine
-    RUN_SIMULATED_ANNEALING = True
+    # Optional: Simulated annealing
+    final_assignment = bs_assignment
+    final_sse = bs_sse
     
-    if RUN_SIMULATED_ANNEALING:
-        SA_INITIAL_TEMP = 10000.0
-        SA_COOLING_RATE = 0.999
-        SA_ITERATIONS = 20000
-        
+    if use_simulated_annealing:
         sa_assignment = run_simulated_annealing(
-            bs_assignment,        # Start with the beam search solution
-            clusters_sorted,
-            all_combos,
-            NUM_NODES,
-            wanted_load,
-            SA_INITIAL_TEMP,
-            SA_COOLING_RATE,
-            SA_ITERATIONS
+            bs_assignment, clusters_sorted, all_combos, num_nodes,
+            wanted_load, 10000.0, 0.999, 20000
         )
         
         sa_sse, sa_std_dev, sa_loads = calculate_assignment_score(
-            sa_assignment, clusters_sorted, NUM_NODES, wanted_load
+            sa_assignment, clusters_sorted, num_nodes, wanted_load
         )
+        
         print("\n--- Simulated Annealing Result ---")
         print(f"  Score (SSE): {sa_sse:,.2f}")
         print(f"  Std Deviation: {sa_std_dev:,.2f}")
         print_final_loads(sa_loads, wanted_load)
-
-        # 2d. Final Comparison
-        print("\n" + "="*50)
-        print("FINAL COMPARISON")
-        print("="*50)
-        print(f"Beam Search SSE:      {bs_sse:,.2f}")
-        print(f"Sim. Annealing SSE: {sa_sse:,.2f}")
-        improvement = bs_sse - sa_sse
-        if improvement > 0.01:
-            print(f"\nSA found a {improvement:,.2f} (SSE) better solution.")
+        
+        if sa_sse < bs_sse:
+            final_assignment = sa_assignment
+            final_sse = sa_sse
+            print(f"\nUsing SA solution (improvement: {bs_sse - sa_sse:,.2f})")
         else:
-            print("\nBeam Search solution was already optimal or near-optimal.")
+            print("\nUsing Beam Search solution (SA did not improve)")
+
+    # Step 3: Format results
+    # Map sorted cluster indices back to original cluster indices
+    cluster_sort_map = sorted(range(len(clusters)), 
+                              key=lambda i: clusters[i], 
+                              reverse=True)
+    
+    # Create node assignments
+    node_assignments = {i: [] for i in range(num_nodes)}
+    assignment_details = []
+    
+    for sorted_idx, node_combo in enumerate(final_assignment):
+        original_cluster_idx = cluster_sort_map[sorted_idx]
+        assignment_details.append((int(original_cluster_idx), [int(n) for n in node_combo]))
+        
+        for node_idx in node_combo:
+            node_assignments[node_idx].append(int(original_cluster_idx))
+    
+    # Convert all numpy types to native Python types for JSON serialization
+    cluster_counts_json = {int(k): int(v) for k, v in cluster_counts.items()}
+    node_assignments_json = {int(k): [int(x) for x in v] for k, v in node_assignments.items()}
+    
+    result = {
+        'centroids': centroids_list,
+        'cluster_counts': cluster_counts_json,
+        'node_assignments': node_assignments_json,
+        'assignment_details': assignment_details,
+        'stats': {
+            'num_clusters': int(len(clusters)),
+            'num_nodes': int(num_nodes),
+            'replication_factor': int(rep_factor),
+            'final_sse': float(final_sse),
+            'target_load_per_node': float(wanted_load)
+        }
+    }
+    
+    # Save to file
+    with open('node_assignments.json', 'w') as f:
+        json.dump(result, f, indent=2)
+    print(f"\nSaved complete assignment to 'node_assignments.json'")
+    
+    return result
+
+
+# --- Main Execution (Standalone Mode) ---
+
+def main():
+    """
+    Main function for standalone execution.
+    """
+    EMBEDDINGS_FILE = 'embeddings.json'
+    NUM_NODES = 20
+    MAX_K_TO_TEST = 30
+    RANDOM_STATE = 42
+    MAX_VECTORS = 10000
+    
+    result = compute_node_assignments(
+        embeddings_file=EMBEDDINGS_FILE,
+        num_nodes=NUM_NODES,
+        max_k_to_test=MAX_K_TO_TEST,
+        random_state=RANDOM_STATE,
+        max_vectors=MAX_VECTORS
+    )
+    
+    print("\n" + "="*60)
+    print("ASSIGNMENT SUMMARY")
+    print("="*60)
+    for node_idx, cluster_indices in result['node_assignments'].items():
+        print(f"Node {node_idx}: {len(cluster_indices)} clusters -> {cluster_indices}")
 
 if __name__ == "__main__":
     main()

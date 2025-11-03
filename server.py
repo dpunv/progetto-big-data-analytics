@@ -98,35 +98,55 @@ class QdrantNodeWrapper:
         self.node_vectors = normalized
         if self.node_vectors:
             print(f"Node {self.node_id}: Set {len(self.node_vectors)} representative vectors (first 3 dims of first): {self.node_vectors[0][:3]}...")
-    
-    def find_best_node(self, vector: List[float]) -> str:
-        # Compute best similarity against this node's representative vectors
+
+    def find_best_nodes(self, vector: List[float]) -> List[str]:
+        """
+        Finds all replica nodes for the cluster closest to the given vector.
+        """
         if not self.node_vectors:
             print(f"Node {self.node_id}: Warning: This node has no representative vectors. Defaulting to self.")
-            return self.node_id
+            return [self.node_id]
 
-        best_node_id = self.node_id
-        best_similarity = -1.0
-        # For self, take the max similarity among our representative vectors
-        for rep in self.node_vectors:
-            sim = utils.cosine_similarity(vector, rep)
-            if sim > best_similarity:
-                best_similarity = sim
+        # 1. Combine all known centroids from self and peers
+        all_centroids = {self.node_id: self.node_vectors}
+        all_centroids.update(self.peer_node_vectors)
 
-        # Now check peers: each peer may have multiple representative vectors
-        for peer_id, peer_vectors in self.peer_node_vectors.items():
-            peer_best = -1.0
-            for rep in peer_vectors:
-                sim = utils.cosine_similarity(vector, rep)
-                if sim > peer_best:
-                    peer_best = sim
-            if peer_best > best_similarity:
-                best_similarity = peer_best
-                best_node_id = peer_id
+        best_similarity = -2.0  # Use -2.0 for cosine similarity
+        best_centroid = None
 
-        # print(f"Node {self.node_id}: Best node for vector is {best_node_id} (sim: {best_similarity:.4f})") # Too noisy for bulk
-        return best_node_id
-    
+        # 2. Find the single closest centroid vector
+        for node_id, centroids in all_centroids.items():
+            for centroid in centroids:
+                sim = utils.cosine_similarity(vector, centroid)
+                if sim > best_similarity:
+                    best_similarity = sim
+                    best_centroid = centroid
+        
+        if best_centroid is None:
+            # Fallback: no centroids found at all?
+            print(f"Node {self.node_id}: Warning: No centroids found. Defaulting to self.")
+            return [self.node_id]
+
+        # 3. Find all nodes that host this best_centroid (replicas)
+        replica_nodes = []
+        # Convert to numpy array once for efficient comparison
+        best_centroid_np = np.array(best_centroid, dtype=np.float32) 
+
+        for node_id, centroids in all_centroids.items():
+            for centroid in centroids:
+                # Use np.allclose for robust float vector comparison
+                if np.allclose(np.array(centroid, dtype=np.float32), best_centroid_np):
+                    replica_nodes.append(node_id)
+                    break # This node is a replica, move to the next node
+        
+        if not replica_nodes:
+             # Should not happen if best_centroid was found, but as a safe fallback
+            print(f"Node {self.node_id}: Warning: Could not find node for best centroid. Defaulting to self.")
+            return [self.node_id]
+        
+        # print(f"Node {self.node_id}: Vector maps to {len(replica_nodes)} nodes: {replica_nodes} (sim: {best_similarity:.4f})") # Too noisy for bulk
+        return replica_nodes 
+
     def send_vector(self, target_node_id: str, vector_data: VectorData) -> bool:
         if target_node_id not in self.peer_nodes:
             print(f"Node {self.node_id}: Unknown peer {target_node_id}")
@@ -543,8 +563,8 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
     async def add_vector_endpoint(vector_data: VectorDataModel):
         """
         Add a new SINGLE vector from an external client.
-        This node will determine the best storage node (self or peer)
-        based on vector similarity and route it accordingly.
+        This node will find the best cluster and route the vector
+        to ALL replica nodes for that cluster.
         """
         vec_data = VectorData(
             id=vector_data.id,
@@ -552,51 +572,64 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             payload=vector_data.payload
         )
         
-        best_node_id = node.find_best_node(vec_data.vector)
+        # 1. Find all replica nodes for this vector
+        replica_node_ids = node.find_best_nodes(vec_data.vector)
         
-        if best_node_id == node.node_id:
-            print(f"Node {node.node_id}: Storing vector {vec_data.id} locally (best match).")
-            success = node.receive_vector(
-                from_node_id="external_client_routed", 
-                vector_data=vec_data
-            )
-            if success:
-                return {
-                    "status": "success",
-                    "message": f"Vector {vector_data.id} stored locally",
-                    "node_id": node.node_id,
-                    "action": "stored_locally"
-                }
-            else:
-                raise HTTPException(status_code=500, detail="Failed to store vector locally")
-        
-        else:
-            print(f"Node {node.node_id}: Forwarding vector {vec_data.id} to {best_node_id}.")
-            success = node.send_vector(best_node_id, vec_data)
-            if success:
-                return {
-                    "status": "success",
-                    "message": f"Vector {vector_data.id} forwarded to {best_node_id}",
-                    "node_id": best_node_id,
-                    "action": "forwarded"
-                }
-            else:
-                raise HTTPException(
-                    status_code=500, 
-                    detail=f"Failed to forward vector to {best_node_id}"
-                )
+        print(f"Node {node.node_id}: Routing vector {vec_data.id} to {len(replica_node_ids)} replicas: {replica_node_ids}")
 
-    # --- NEW ENDPOINT for client bulk insert ---
+        success_nodes = []
+        failed_nodes = []
+
+        # 2. Send to all replicas
+        for node_id in replica_node_ids:
+            success = False
+            if node_id == node.node_id:
+                # Store locally
+                print(f"Node {node.node_id}: Storing vector {vec_data.id} locally (replica).")
+                success = node.receive_vector(
+                    from_node_id="external_client_routed", 
+                    vector_data=vec_data
+                )
+            else:
+                # Forward to peer
+                print(f"Node {node.node_id}: Forwarding vector {vec_data.id} to replica {node_id}.")
+                success = node.send_vector(node_id, vec_data)
+            
+            if success:
+                success_nodes.append(node_id)
+            else:
+                failed_nodes.append(node_id)
+
+        # 3. Report result
+        if not success_nodes:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to store vector {vector_data.id} on any replica."
+            )
+
+        return {
+            "status": "success",
+            "message": f"Vector {vector_data.id} routed to {len(replica_node_ids)} replicas.",
+            "action": "routed_to_replicas",
+            "replicas_targeted": replica_node_ids,
+            "replicas_succeeded": success_nodes,
+            "replicas_failed": failed_nodes
+        }
+
     @app.post("/add_vectors_bulk")
     async def add_vectors_bulk_endpoint(vectors: List[VectorDataModel], background_tasks: BackgroundTasks):
         """
         Add a new BATCH of vectors from an external client.
-        This node will determine the best storage node for EACH vector
-        and route them in batches using background tasks.
+        This node will find the best cluster for EACH vector
+        and route them to ALL replica nodes for that cluster in batches.
         """
         
         # 1. Classify all vectors and group them by best node
+        #    A single vector will be added to the list for ALL its replica nodes.
         nodes_to_vectors: Dict[str, List[VectorData]] = defaultdict(list)
+        
+        total_vectors = len(vectors)
+        total_routings = 0
         
         for vd_model in vectors:
             vec_data = VectorData(
@@ -604,10 +637,15 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
                 vector=vd_model.vector,
                 payload=vd_model.payload
             )
-            best_node_id = node.find_best_node(vec_data.vector)
-            nodes_to_vectors[best_node_id].append(vec_data)
             
-        print(f"Node {node.node_id}: Received bulk of {len(vectors)}. Routing to {len(nodes_to_vectors)} nodes.")
+            # Find ALL nodes responsible for this vector
+            replica_node_ids = node.find_best_nodes(vec_data.vector)
+            
+            for node_id in replica_node_ids:
+                nodes_to_vectors[node_id].append(vec_data)
+                total_routings += 1 # Count each replication routing
+        
+        print(f"Node {node.node_id}: Received bulk of {total_vectors}. Routing to {len(nodes_to_vectors)} nodes (total routings: {total_routings}).")
 
         # 2. Process/forward the batches in the background
         routing_summary = {}
@@ -617,7 +655,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             routing_summary[target_node_id] = batch_size
             
             if target_node_id == node.node_id:
-                # This is the best node. Store locally (in background).
+                # This is one of the replica nodes. Store locally (in background).
                 print(f"Node {node.node_id}: Queuing local storage of {batch_size} vectors.")
                 background_tasks.add_task(
                     node.receive_vectors_bulk,
@@ -626,7 +664,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
                 )
             
             else:
-                # A peer is a better match. Forward it (in background).
+                # A peer is a replica. Forward it (in background).
                 print(f"Node {node.node_id}: Queuing forward of {batch_size} vectors to {target_node_id}.")
                 background_tasks.add_task(
                     node.send_vectors_bulk,
@@ -637,11 +675,10 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         # 3. Return an immediate response to the client with the routing summary
         return {
             "status": "processing_bulk",
-            "message": f"Processing {len(vectors)} vectors. Forwarding to {len(nodes_to_vectors)} nodes.",
-            "batches": routing_summary # This is what the client needs
+            "message": f"Processing {total_vectors} vectors. Total routings: {total_routings} across {len(nodes_to_vectors)} nodes.",
+            "batches": routing_summary # This shows how many vectors are sent to each node
         }
-    # --- END NEW ENDPOINT ---
-    
+
     @app.post("/search")
     async def search_endpoint(request: SearchRequest):
         """
