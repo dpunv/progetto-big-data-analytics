@@ -40,7 +40,7 @@ class SyncRequest(BaseModel):
 class RegisterPeerRequest(BaseModel):
     peer_id: str
     peer_url: str
-    node_vector: List[float] # Peer's representative vector
+    node_vectors: List[List[float]] # Peer's representative vectors (multiple)
 
 # --- NEW PYDANTIC MODELS FOR BULK ---
 class SendVectorsBulkRequest(BaseModel):
@@ -72,39 +72,56 @@ class QdrantNodeWrapper:
         self.peer_nodes = {}  # Dictionary of peer_node_id -> peer_url
         self.self_url = self_url
         self.vector_size = vector_size
-        self.node_vector: Optional[List[float]] = None # This node's representative vector
-        self.peer_node_vectors: Dict[str, List[float]] = {} # Cache of peer rep. vectors
+        self.node_vectors: List[List[float]] = []
+        self.peer_node_vectors: Dict[str, List[List[float]]] = {}
         
     def register_peer(self, peer_id: str, peer_url: str):
         self.peer_nodes[peer_id] = peer_url
         print(f"Node {self.node_id}: Registered peer {peer_id} at {peer_url}")
 
-    def set_node_vector(self, vector: List[float]):
-        if len(vector) != self.vector_size:
-            raise ValueError(
-                f"Node {self.node_id}: Vector size mismatch. "
-                f"Expected {self.vector_size}, got {len(vector)}"
-            )
-        norm_vec = np.array(vector, dtype=np.float32)
-        norm = np.linalg.norm(norm_vec)
-        if norm > 0:
-            norm_vec = norm_vec / norm
-        self.node_vector = norm_vec.tolist()
-        print(f"Node {self.node_id}: Set representative vector (first 3 dims): {self.node_vector[:3]}...")
+    def set_node_vectors(self, vectors: List[List[float]]):
+        """
+        Set multiple representative vectors for this node. Each vector is validated and normalized.
+        """
+        normalized = []
+        for v in vectors:
+            if len(v) != self.vector_size:
+                raise ValueError(
+                    f"Node {self.node_id}: Vector size mismatch. "
+                    f"Expected {self.vector_size}, got {len(v)}"
+                )
+            arr = np.array(v, dtype=np.float32)
+            norm = np.linalg.norm(arr)
+            if norm > 0:
+                arr = arr / norm
+            normalized.append(arr.tolist())
+        self.node_vectors = normalized
+        if self.node_vectors:
+            print(f"Node {self.node_id}: Set {len(self.node_vectors)} representative vectors (first 3 dims of first): {self.node_vectors[0][:3]}...")
     
     def find_best_node(self, vector: List[float]) -> str:
-        if not self.node_vector:
-            print(f"Node {self.node_id}: Warning: This node has no representative vector. Defaulting to self.")
+        # Compute best similarity against this node's representative vectors
+        if not self.node_vectors:
+            print(f"Node {self.node_id}: Warning: This node has no representative vectors. Defaulting to self.")
             return self.node_id
-            
+
         best_node_id = self.node_id
-        best_similarity = utils.cosine_similarity(vector, self.node_vector)
-        
-        for peer_id, peer_vector in self.peer_node_vectors.items():
-            sim = utils.cosine_similarity(vector, peer_vector)
-            # print(f"node {peer_id} has similarity {sim}") # Too noisy for bulk
+        best_similarity = -1.0
+        # For self, take the max similarity among our representative vectors
+        for rep in self.node_vectors:
+            sim = utils.cosine_similarity(vector, rep)
             if sim > best_similarity:
                 best_similarity = sim
+
+        # Now check peers: each peer may have multiple representative vectors
+        for peer_id, peer_vectors in self.peer_node_vectors.items():
+            peer_best = -1.0
+            for rep in peer_vectors:
+                sim = utils.cosine_similarity(vector, rep)
+                if sim > peer_best:
+                    peer_best = sim
+            if peer_best > best_similarity:
+                best_similarity = peer_best
                 best_node_id = peer_id
 
         # print(f"Node {self.node_id}: Best node for vector is {best_node_id} (sim: {best_similarity:.4f})") # Too noisy for bulk
@@ -423,7 +440,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             "status": "healthy",
             "node_id": node.node_id,
             "peers": list(node.peer_nodes.keys()),
-            "node_vector_set": node.node_vector is not None
+            "node_vectors_set": len(node.node_vectors) > 0
         }
     
     @app.post("/receive_vector")
@@ -707,19 +724,33 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         Register a new peer node and exchange representative vectors.
         """
         node.register_peer(request.peer_id, request.peer_url)
-        node.peer_node_vectors[request.peer_id] = request.node_vector
-        print(f"Node {node.node_id}: Cached representative vector for {request.peer_id}")
-        
-        if not node.node_vector:
-            print(f"Node {node.node_id}: ERROR: Peer registered but this node's vector is not set.")
-            raise HTTPException(status_code=500, detail="This node's vector is not set.")
-        
+        # Normalize and cache peer representative vectors
+        normalized = []
+        try:
+            for v in request.node_vectors:
+                if len(v) != node.vector_size:
+                    raise ValueError(f"Peer {request.peer_id}: Vector size mismatch. Expected {node.vector_size}, got {len(v)}")
+                arr = np.array(v, dtype=np.float32)
+                norm = np.linalg.norm(arr)
+                if norm > 0:
+                    arr = arr / norm
+                normalized.append(arr.tolist())
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        node.peer_node_vectors[request.peer_id] = normalized
+        print(f"Node {node.node_id}: Cached {len(normalized)} representative vectors for {request.peer_id}")
+
+        if not node.node_vectors:
+            print(f"Node {node.node_id}: ERROR: Peer registered but this node's representative vectors are not set.")
+            raise HTTPException(status_code=500, detail="This node's representative vectors are not set.")
+
         return {
             "status": "success",
             "message": f"Peer {request.peer_id} registered",
             "total_peers": len(node.peer_nodes),
             "node_id": node.node_id,
-            "node_vector": node.node_vector
+            "node_vectors": node.node_vectors
         }
     
     @app.get("/peers")
@@ -728,7 +759,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         List all registered peer nodes and their cached vector status
         """
         peers_with_vectors = {
-            pid: {"url": url, "has_vector": pid in node.peer_node_vectors}
+            pid: {"url": url, "vector_count": len(node.peer_node_vectors.get(pid, []))}
             for pid, url in node.peer_nodes.items()
         }
         return {
@@ -751,18 +782,18 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         else:
             raise HTTPException(status_code=500, detail="Failed to get count")
             
-    @app.post("/set_node_vector")
-    async def set_node_vector_endpoint(vector: List[float]):
+    @app.post("/set_node_vectors")
+    async def set_node_vectors_endpoint(vectors: List[List[float]]):
         """
-        Manually set or update this node's representative vector.
+        Set multiple representative vectors for this node.
         """
         try:
-            node.set_node_vector(vector)
+            node.set_node_vectors(vectors)
             return {
                 "status": "success",
                 "node_id": node.node_id,
-                "message": "Node vector updated successfully",
-                "node_vector": node.node_vector
+                "message": f"Set {len(node.node_vectors)} representative vectors",
+                "node_vectors": node.node_vectors
             }
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -790,10 +821,9 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
     
     if node.create_collection(vector_size):
         
-        # NOTE: This initial random vector is now
-        # immediately overwritten by the client's `register_peers`
-        # step, which calls `/set_node_vector`.
-        # This is fine, but we'll keep it as a fallback.
+    # NOTE: This initial random vector is overwritten by the client's `register_peers`
+    # step, which calls `/set_node_vectors`.
+    # Keep it as a fallback.
         print(f"Node {node_id}: Generating initial fallback node vector...")
         rand_vec = np.random.rand(vector_size).astype(np.float32)
         norm = np.linalg.norm(rand_vec)
@@ -801,9 +831,10 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
             rand_vec = rand_vec / norm
         
         try:
-            node.set_node_vector(rand_vec.tolist())
+            # set initial fallback as a single-item list of representative vectors
+            node.set_node_vectors([rand_vec.tolist()])
         except ValueError as e:
-            print(f"Node {node_id}: FATAL - Error setting initial node vector: {e}")
+            print(f"Node {node_id}: FATAL - Error setting initial node vectors: {e}")
             return
         
         initial_count = node.count_local_vectors()

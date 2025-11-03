@@ -349,8 +349,9 @@ def register_peers():
             node_id = f"node{i+1}"
             node_url = NODE_URLS[i]
             node_vec = NODE_VECS[i]  # Use loaded/calculated vectors
-            
-            r_set = requests.post(f"{node_url}/set_node_vector", json=node_vec, timeout=5)
+
+            # set_node_vectors expects a list of vectors; send list with single centroid
+            r_set = requests.post(f"{node_url}/set_node_vectors", json=[node_vec], timeout=5)
             r_set.raise_for_status()
             print(f"  {node_id}: Set representative vector (first 3 dims: {[round(v, 3) for v in node_vec[:3]]}...)")
 
@@ -372,7 +373,7 @@ def register_peers():
                 payload = {
                     "peer_id": peer_id,
                     "peer_url": peer_url,
-                    "node_vector": peer_vec
+                    "node_vectors": [peer_vec]
                 }
                 
                 r_reg = requests.post(f"{host_url}/register_peer", json=payload, timeout=5)
