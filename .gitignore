@@ -10,3 +10,5 @@ embeddings_checkpoint.json
 logs/*
 compose.yml
 centroids.json
+*.png
+qdrant_data/*
