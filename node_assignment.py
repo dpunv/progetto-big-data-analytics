@@ -2,8 +2,8 @@ import json
 import os
 import sys
 import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+import faiss  # CHANGED: from sklearn.cluster import KMeans to faiss
+from sklearn.metrics import silhouette_score  # Keep this for quality metrics
 import matplotlib.pyplot as plt
 from collections import Counter
 import itertools
@@ -51,23 +51,49 @@ def plot_elbow_method(X, max_k, random_state):
     """
     Calculates inertia for k=1 to max_k and plots the elbow curve.
     Saves the plot as 'elbow_plot.png'.
+    
+    CHANGED: Uses FAISS instead of sklearn
     """
     print(f"\n--- Calculating Elbow Method (k=1 to {max_k}) ---")
     inertia_values = []
     k_range = range(1, max_k + 1)
     
+    # Convert to float32 for FAISS
+    X_faiss = X.astype(np.float32)
+    n, d = X_faiss.shape
+    
     for k in k_range:
         if k % (max_k // 10 if max_k > 10 else 1) == 0:
-             print(f"  Calculating for k={k}...")
-        kmeans = KMeans(n_clusters=k, n_init='auto', random_state=random_state)
-        kmeans.fit(X)
-        inertia_values.append(kmeans.inertia_)
+            print(f"  Calculating for k={k}...")
+        
+        # CHANGED: Use FAISS K-means
+        kmeans = faiss.Kmeans(
+            d=d,
+            k=k,
+            niter=300,
+            nredo=1,
+            verbose=False,
+            seed=random_state,
+            gpu=False
+        )
+        kmeans.train(X_faiss)
+        
+        # Calculate inertia manually
+        _, labels = kmeans.index.search(X_faiss, 1)
+        labels = labels.flatten()
+        
+        inertia = 0.0
+        for i in range(n):
+            diff = X_faiss[i] - kmeans.centroids[labels[i]]
+            inertia += np.dot(diff, diff)
+        
+        inertia_values.append(inertia)
         
     plt.figure(figsize=(12, 7))
     plt.plot(k_range, inertia_values, marker='o', linestyle='--')
     plt.xlabel('Number of Clusters (k)')
     plt.ylabel('Inertia (Within-Cluster Sum of Squares)')
-    plt.title('Elbow Method for Optimal k')
+    plt.title('Elbow Method for Optimal k (FAISS)')
     plt.xticks(np.arange(1, max_k + 1, max(1, max_k // 20)))
     plt.grid(True, linestyle=':', alpha=0.7)
     plt.savefig('elbow_plot.png')
@@ -80,6 +106,8 @@ def plot_silhouette_scores(X, max_k, random_state):
     Calculates silhouette scores for k=2 to max_k and plots them.
     Saves the plot as 'silhouette_plot.png'.
     Returns the k with the highest score.
+    
+    CHANGED: Uses FAISS for clustering
     """
     print(f"\n--- Calculating Silhouette Scores (k=2 to {max_k}) ---")
     silhouette_scores = []
@@ -90,12 +118,31 @@ def plot_silhouette_scores(X, max_k, random_state):
         print(f"Adjusting max_k to {X.shape[0] - 1}.")
         k_range = range(2, X.shape[0])
 
+    # Convert to float32 for FAISS
+    X_faiss = X.astype(np.float32)
+    n, d = X_faiss.shape
+
     for k in k_range:
         if k % (max_k // 10 if max_k > 10 else 1) == 0:
-             print(f"  Calculating for k={k}...")
-        kmeans = KMeans(n_clusters=k, n_init='auto', random_state=random_state)
-        kmeans.fit(X)
-        labels = kmeans.labels_
+            print(f"  Calculating for k={k}...")
+        
+        # CHANGED: Use FAISS K-means
+        kmeans = faiss.Kmeans(
+            d=d,
+            k=k,
+            niter=300,
+            nredo=1,
+            verbose=False,
+            seed=random_state,
+            gpu=False
+        )
+        kmeans.train(X_faiss)
+        
+        # Get labels
+        _, labels = kmeans.index.search(X_faiss, 1)
+        labels = labels.flatten()
+        
+        # Calculate silhouette score (sklearn is fine here)
         score = silhouette_score(X, labels)
         silhouette_scores.append(score)
         
@@ -103,7 +150,7 @@ def plot_silhouette_scores(X, max_k, random_state):
     plt.plot(k_range, silhouette_scores, marker='o', linestyle='--')
     plt.xlabel('Number of Clusters (k)')
     plt.ylabel('Average Silhouette Score')
-    plt.title('Silhouette Score for Optimal k')
+    plt.title('Silhouette Score for Optimal k (FAISS)')
     plt.xticks(np.arange(2, max_k + 1, max(1, max_k // 20)))
     plt.grid(True, linestyle=':', alpha=0.7)
     plt.savefig('silhouette_plot.png')
@@ -121,14 +168,37 @@ def run_final_clustering(X, k, random_state):
     """
     Runs K-Means with the optimal k, saves centroids, and returns
     the count of vectors associated with each cluster.
+    
+    CHANGED: Uses FAISS instead of sklearn
     """
-    print(f"\n--- Running Final Clustering with k={k} ---")
+    print(f"\n--- Running Final Clustering with k={k} (FAISS) ---")
     
-    kmeans = KMeans(n_clusters=k, n_init='auto', random_state=random_state)
-    kmeans.fit(X)
+    # Convert to float32 for FAISS
+    X_faiss = X.astype(np.float32)
+    n, d = X_faiss.shape
     
-    centroids = kmeans.cluster_centers_
-    labels = kmeans.labels_
+    # CHANGED: Use FAISS K-means
+    print(f"Training FAISS K-means with {n} vectors, {d} dimensions, {k} clusters...")
+    start_time = time.time()
+    
+    kmeans = faiss.Kmeans(
+        d=d,
+        k=k,
+        niter=300,
+        nredo=1,
+        verbose=True,  # Show progress for final clustering
+        seed=random_state,
+        gpu=False
+    )
+    kmeans.train(X_faiss)
+    
+    training_time = time.time() - start_time
+    print(f"FAISS K-means training completed in {training_time:.2f}s")
+    
+    # Get centroids and labels
+    centroids = kmeans.centroids
+    _, labels = kmeans.index.search(X_faiss, 1)
+    labels = labels.flatten()
     
     # Count vectors per cluster
     label_counts = Counter(labels)
@@ -288,12 +358,12 @@ def main():
     
     # --- 1. K-Means Configuration ---
     print("="*50)
-    print("STEP 1: K-MEANS CLUSTER ANALYSIS")
+    print("STEP 1: K-MEANS CLUSTER ANALYSIS (FAISS)")
     print("="*50)
     EMBEDDINGS_FILE = 'embeddings.json' # Input file
-    MAX_K_TO_TEST = 30      # Max clusters to check (e.g., 100)
+    MAX_K_TO_TEST = 30      # Max clusters to check
     RANDOM_STATE = 42       # For reproducible results
-    MAX_VECTORS = 10000      # Max vectors to load (0 for all)
+    MAX_VECTORS = 10000     # Max vectors to load (0 for all)
     
     # 1a. Load Data
     X = load_vectors(EMBEDDINGS_FILE, MAX_VECTORS)
@@ -308,6 +378,7 @@ def main():
         print(f"MAX_K_TO_TEST adjusted to {MAX_K_TO_TEST}")
 
     # 1c. Run Analyses
+    print(f"\n🚀 Using FAISS for K-means (faster than sklearn)")
     plot_elbow_method(X, MAX_K_TO_TEST, RANDOM_STATE)
     recommended_k = plot_silhouette_scores(X, MAX_K_TO_TEST, RANDOM_STATE)
     
