@@ -9,4 +9,6 @@ embeddings.json
 embeddings_checkpoint.json
 logs/*
 compose.yml
+meta_hnsw_index.pkl
+meta_hnsw_index.pkl.hnsw
 centroids.json
