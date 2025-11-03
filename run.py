@@ -18,6 +18,41 @@ QDRANT_PORT_STEP = 2
 # --- PIDs List ---
 server_processes = []
 
+# --- NEW: Pre-cleanup Function ---
+def pre_cleanup():
+    """Clean up before starting (remove old storage and containers)."""
+    print("\n🧹 Pre-run cleanup...")
+    
+    # 1. Stop existing containers
+    print("  Stopping any existing Docker containers...")
+    try:
+        subprocess.run(["docker", "compose", "-f", "compose.yml", "down"], 
+                      check=False, capture_output=True)
+    except:
+        pass
+    
+    # 2. Remove old storage directories
+    print(f"  Removing old Qdrant storage directories (qdrant_storage_1..{N})...")
+    for i in range(1, N + 1):
+        storage_dir = f"qdrant_storage_{i}"
+        if os.path.exists(storage_dir):
+            try:
+                shutil.rmtree(storage_dir)
+                print(f"    ✓ Removed {storage_dir}")
+            except Exception as e:
+                print(f"    ⚠️  Failed to remove {storage_dir}: {e}")
+    
+    # 3. Remove old compose file
+    if os.path.exists("compose.yml"):
+        try:
+            os.remove("compose.yml")
+            print("  ✓ Removed old compose.yml")
+        except:
+            pass
+    
+    print("✅ Pre-cleanup complete\n")
+# --- END NEW ---
+
 # --- Cleanup Function ---
 def cleanup():
     print("\nShutting down...")
@@ -56,6 +91,10 @@ def cleanup():
 atexit.register(cleanup)
 signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
 signal.signal(signal.SIGTERM, lambda sig, frame: sys.exit(0))
+
+# --- NEW: Run pre-cleanup before starting ---
+pre_cleanup()
+# --- END NEW ---
 
 # --- 1. Generate docker-compose.yml ---
 print(f"Generating compose.yml for {N} nodes...")

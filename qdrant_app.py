@@ -6,8 +6,11 @@ import json
 import sys
 import os
 import utils
-from concurrent.futures import ThreadPoolExecutor, as_completed  # NEW IMPORT
-from threading import Lock  # NEW IMPORT
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+# --- NEW IMPORT ---
+from meta_hnsw import MetaHNSW
+# --- END NEW IMPORT ---
 
 # --- Configuration ---
 try:
@@ -22,17 +25,15 @@ NUM_VECTORS = 140000
 VECTOR_SIZE = 384
 
 # --- NEW: Adaptive Batch Configuration ---
-BATCH_TIERS = [800, 256, 64]  # Predefined fallback tiers
-                              # provo prima con batch size 800, poi 256, poi 64
-BATCH_SIZE_OPTIMAL = BATCH_TIERS[0]  # Start with largest
-BATCH_SIZE_MIN = BATCH_TIERS[-1]     # Never go below smallest
-MAX_RETRIES = len(BATCH_TIERS)       # One retry per tier
+BATCH_TIERS = [800, 256, 64]
+BATCH_SIZE_OPTIMAL = BATCH_TIERS[0]
+BATCH_SIZE_MIN = BATCH_TIERS[-1]
+MAX_RETRIES = len(BATCH_TIERS)
 # -----------------------------------
 
 # --- Training Configuration ---
 TRAINING_VECTORS = 10000
 CENTROIDS_FILE = 'centroids.json'
-
 # -----------------------------------
 
 if VECTOR_SIZE < NUM_NODES:
@@ -56,7 +57,7 @@ except FileNotFoundError:
 
 # --- NEW LOGIC: Train-Once Centroids (Load or Calculate) ---
 print("\n--- 0. Loading/Computing Node Centroids ---")
-NODE_VECS = []  # This will contain our centroids
+NODE_VECS = []
 
 try:
     # 1. Check if centroids file exists
@@ -94,6 +95,16 @@ try:
         
         # 6. Calculate centroids
         calculated_centroids_np = utils.find_kmeans_centroids(training_data_vectors, NUM_NODES)
+        
+        # --- NEW: Normalizza centroidi K-means (CONSISTENZA CON META-HNSW!) ---
+        print(f"   Normalizing K-means centroids...")
+        for i in range(len(calculated_centroids_np)):
+            norm = np.linalg.norm(calculated_centroids_np[i])
+            if norm > 0:
+                calculated_centroids_np[i] = calculated_centroids_np[i] / norm
+        print(f"   ✓ Centroids normalized (unit vectors)")
+        # --- END NEW ---
+        
         NODE_VECS = calculated_centroids_np.tolist()
         
         train_time = time.time() - start_train
@@ -111,98 +122,257 @@ except Exception as e:
     import traceback
     traceback.print_exc()
     sys.exit(1)
-
 # --- END NEW LOGIC ---
 
 # --- Dynamic Node Configuration ---
 NODE_URLS = []
-
 for i in range(1, NUM_NODES + 1):
     NODE_URLS.append(f"http://localhost:{8000 + i}")
 
-# --- NEW: Adaptive Batch Sender Class ---
-class AdaptiveBatchMetrics:
-    """
-    Tracks batch sending metrics and adjusts batch size dynamically.
-    """
-    def __init__(self):
-        self.current_batch_size = BATCH_SIZE_OPTIMAL
-        self.success_count = 0
-        self.failure_count = 0
-        self.total_retries = 0
-        self.total_splits = 0
-        
-    def on_success(self, batch_size: int):
-        """Called when a batch succeeds."""
-        self.success_count += 1
-        self.failure_count = 0  # Reset failure counter
-        
-        # After 20 consecutive successes, try increasing batch size
-        if self.success_count >= 20 and self.current_batch_size < BATCH_SIZE_OPTIMAL:
-            old_size = self.current_batch_size
-            self.current_batch_size = min(int(self.current_batch_size * 1.5), BATCH_SIZE_OPTIMAL)
-            print(f"📈 Increasing batch size: {old_size} → {self.current_batch_size} (after {self.success_count} successes)")
-            self.success_count = 0
-    
-    def on_failure(self):
-        """Called when a batch fails."""
-        self.failure_count += 1
-        self.success_count = 0  # Reset success counter
-        
-        # After 2 consecutive failures, reduce batch size preventively
-        if self.failure_count >= 2:
-            old_size = self.current_batch_size
-            self.current_batch_size = max(self.current_batch_size // 2, BATCH_SIZE_MIN)
-            print(f"📉 Reducing batch size preventively: {old_size} → {self.current_batch_size} (after {self.failure_count} failures)")
-    
-    def on_retry(self):
-        """Called when a retry happens."""
-        self.total_retries += 1
-    
-    def on_split(self):
-        """Called when a batch is split."""
-        self.total_splits += 1
-    
-    def get_stats(self):
-        """Returns statistics summary."""
-        return {
-            "current_batch_size": self.current_batch_size,
-            "total_retries": self.total_retries,
-            "total_splits": self.total_splits,
-            "success_count": self.success_count,
-            "failure_count": self.failure_count
-        }
+# --- NEW: Global Meta-HNSW instance ---
+meta_hnsw: MetaHNSW = None
+META_HNSW_PATH = 'meta_hnsw_index.pkl'
 
-# Global metrics instance
-batch_metrics = AdaptiveBatchMetrics()
+# --- NEW: Coordinator State ---
+pending_centroid_updates = {}
+centroid_updates_lock = Lock()
+# --- END NEW ---
 
-# --- NEW: Thread-safe lock for metrics ---
-metrics_lock = Lock()
-# ---
-
-# --- NEW: Dynamic Timeout Calculator ---
-def calculate_timeout(batch_size: int, base_timeout: int = 10) -> int:
-    """
-    Calculate adaptive timeout based on batch size.
+# --- NEW FUNCTION: Setup centroid tracking on nodes ---
+def setup_centroid_tracking():
+    print("\n--- Setting up Centroid Tracking on Nodes ---")
+    coordinator_url = "http://localhost:9000"
     
-    Args:
-        batch_size: Number of vectors in batch
-        base_timeout: Minimum timeout in seconds
-    
-    Returns:
-        Timeout in seconds
+    for i in range(NUM_NODES):
+        node_id = f"node{i+1}"
+        node_url = NODE_URLS[i]
+        initial_centroid = NODE_VECS[i]
         
-    Rationale:
-        - Base: 10s for HTTP overhead + server processing
-        - Per-vector: 10ms (384-dim vector similarity calc + routing)
-        - Max: 120s to avoid indefinite hangs
-        - Formula ensures linear scaling with batch size
-    """
-    per_vector_time = 0.01  # 10ms per vector (empirically reasonable)
-    timeout = base_timeout + int(batch_size * per_vector_time)
+        try:
+            response = requests.post(
+                f"{node_url}/initialize_centroid",
+                json=initial_centroid,
+                timeout=5
+            )
+            response.raise_for_status()
+            
+            response = requests.post(
+                f"{node_url}/set_coordinator",
+                params={"coordinator_url": coordinator_url},
+                timeout=5
+            )
+            response.raise_for_status()
+            
+            print(f"  ✓ {node_id}: Centroid tracking initialized")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"  ⚠️  {node_id}: Failed to setup centroid tracking: {e}")
     
-    # Clamp between 10s and 120s
-    return max(10, min(timeout, 120))
+    print("✓ Centroid tracking setup complete\n")
+
+# --- NEW: Coordinator Flask Server ---
+def start_coordinator_server():
+    from flask import Flask, request, jsonify
+    import threading
+    
+    app = Flask(__name__)
+    
+    @app.route('/update_centroid', methods=['POST'])
+    def update_centroid():
+        data = request.json
+        node_id = data.get('node_id')
+        new_centroid = data.get('new_centroid')
+        drift = data.get('drift')
+        vector_count = data.get('vector_count')
+        
+        print(f"\n🔔 Coordinator: Received centroid update from {node_id}")
+        print(f"   Drift: {drift:.6f}, Vectors: {vector_count}")
+        
+        with centroid_updates_lock:
+            pending_centroid_updates[node_id] = {
+                'centroid': new_centroid,
+                'drift': drift,
+                'vector_count': vector_count
+            }
+        
+        if len(pending_centroid_updates) >= 1:
+            print(f"   📌 Triggering Meta-HNSW rebuild ({len(pending_centroid_updates)} nodes changed)")
+            rebuild_meta_hnsw_from_updates()
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Centroid update received from {node_id}'
+        })
+    
+    @app.route('/health', methods=['GET'])
+    def health():
+        return jsonify({'status': 'healthy', 'pending_updates': len(pending_centroid_updates)})
+    
+    def run_flask():
+        app.run(host='0.0.0.0', port=9000, debug=False, use_reloader=False)
+    
+    thread = threading.Thread(target=run_flask, daemon=True)
+    thread.start()
+    
+    print("✓ Coordinator server started on http://localhost:9000")
+    time.sleep(1)
+
+# --- NEW: Rebuild Meta-HNSW from pending updates ---
+def rebuild_meta_hnsw_from_updates():
+    global meta_hnsw
+    
+    if meta_hnsw is None:
+        print("⚠️  Meta-HNSW not initialized, skipping rebuild")
+        return
+    
+    with centroid_updates_lock:
+        if not pending_centroid_updates:
+            return
+        
+        updates = pending_centroid_updates.copy()
+        pending_centroid_updates.clear()
+    
+    print(f"\n🔧 Rebuilding Meta-HNSW with {len(updates)} updated centroids...")
+    start_time = time.time()
+    
+    for node_id, update_data in updates.items():
+        new_centroid = np.array([update_data['centroid']])
+        
+        print(f"  Updating {node_id} centroid (drift: {update_data['drift']:.6f})")
+        
+        meta_hnsw.recalculate_centroid_from_scratch(
+            node_name=node_id,
+            vectors=new_centroid,
+            method='mean'
+        )
+    
+    elapsed = time.time() - start_time
+    
+    stats = meta_hnsw.get_statistics()
+    print(f"✅ Meta-HNSW rebuild complete in {elapsed:.2f}s")
+    print(f"   Updated nodes: {len(updates)}")
+    print(f"   Mean centroid distance: {stats['mean_distance']:.4f}")
+    
+    meta_hnsw.save(META_HNSW_PATH)
+    print(f"💾 Updated Meta-HNSW saved\n")
+
+# --- NEW FUNCTION: Initialize Meta-HNSW ---
+def initialize_meta_hnsw():
+    global meta_hnsw
+    
+    print("\n--- 3. Initializing Meta-HNSW with K-means Centroids ---")
+    
+    if os.path.exists(META_HNSW_PATH):
+        print(f"📂 Found existing Meta-HNSW index: {META_HNSW_PATH}")
+        try:
+            meta_hnsw = MetaHNSW.load(META_HNSW_PATH)
+            print(f"✅ Loaded MetaHNSW with {len(meta_hnsw.node_names)} nodes")
+            
+            if len(meta_hnsw.node_names) == NUM_NODES:
+                print("   Using cached index (matching node count)")
+                
+                stats = meta_hnsw.get_statistics()
+                print(f"   Cached centroids stats:")
+                print(f"     - Mean distance: {stats['mean_distance']:.4f}")
+                print(f"     - Total vectors tracked: {stats['total_vectors_tracked']}")
+                return
+            else:
+                print(f"⚠️  Cached index has {len(meta_hnsw.node_names)} nodes, but {NUM_NODES} are needed")
+                print("   Rebuilding index...")
+        except Exception as e:
+            print(f"⚠️  Failed to load cached index: {e}")
+            print("   Building new index...")
+    
+    print(f"🏗️  Building new Meta-HNSW index for {NUM_NODES} nodes...")
+    print(f"   Using K-means centroids from '{CENTROIDS_FILE}' (NOT recalculating from nodes)")
+    
+    meta_hnsw = MetaHNSW(
+        dimension=VECTOR_SIZE,
+        max_nodes=NUM_NODES * 2,
+        ef_construction=200,
+        M=16
+    )
+    
+    start_time = time.time()
+    
+    for i in range(NUM_NODES):
+        node_id = f"node{i+1}"
+        centroid_vector = np.array([NODE_VECS[i]])
+        
+        print(f"  Adding {node_id} centroid (from K-means)...", end=" ")
+        meta_hnsw.add_node_centroid(node_id, centroid_vector, method='mean')
+        print("✓")
+    
+    meta_hnsw.force_rebuild()
+    
+    elapsed = time.time() - start_time
+    
+    stats = meta_hnsw.get_statistics()
+    print(f"\n✅ Meta-HNSW initialized in {elapsed:.2f}s")
+    print(f"   Nodes indexed: {stats['num_nodes']}")
+    print(f"   Using K-means centroids (same as insertion routing)")
+    print(f"   Mean centroid distance: {stats['mean_distance']:.4f}")
+    
+    print(f"\n🔍 Verifying centroid consistency:")
+    for i in range(NUM_NODES):
+        node_id = f"node{i+1}"
+        kmeans_centroid = np.array(NODE_VECS[i])
+        hnsw_centroid = meta_hnsw.node_centroids[node_id]
+        
+        diff = np.linalg.norm(kmeans_centroid - hnsw_centroid)
+        print(f"   {node_id}: diff = {diff:.6f} (should be ~0)")
+    
+    meta_hnsw.save(META_HNSW_PATH)
+    print(f"\n💾 Meta-HNSW saved to {META_HNSW_PATH}\n")
+
+# --- NEW FUNCTION: Wait for Qdrant indexing ---
+def wait_for_qdrant_indexing():
+    print("\n--- Waiting for Qdrant to finish indexing ---")
+    
+    max_wait_time = 60
+    start_time = time.time()
+    
+    all_indexed = False
+    while not all_indexed and (time.time() - start_time) < max_wait_time:
+        all_indexed = True
+        
+        for i in range(NUM_NODES):
+            node_id = f"node{i+1}"
+            qdrant_port = 6333 + (i) * 2
+            qdrant_url = f"http://localhost:{qdrant_port}"
+            
+            try:
+                response = requests.get(
+                    f"{qdrant_url}/collections/vectors",
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    collection_info = response.json()
+                    status = collection_info.get('result', {}).get('status', 'unknown')
+                    
+                    if status != 'green':
+                        print(f"  {node_id}: Indexing status '{status}' (waiting...)")
+                        all_indexed = False
+                    else:
+                        print(f"  ✓ {node_id}: Indexing complete (status 'green')")
+                else:
+                    print(f"  ⚠️  {node_id}: Could not check status (HTTP {response.status_code})")
+                    all_indexed = False
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"  ⚠️  {node_id}: Error checking indexing status: {e}")
+                all_indexed = False
+        
+        if not all_indexed:
+            time.sleep(2)
+    
+    if all_indexed:
+        print("✅ All nodes finished indexing!\n")
+    else:
+        elapsed = time.time() - start_time
+        print(f"⚠️  Indexing check timeout after {elapsed:.1f}s")
+        print("   Proceeding anyway, but queries might fail...\n")
 
 # --- MODIFIED: Retry with Tier-based Splitting Logic ---
 def send_batch_with_retry(
@@ -566,30 +736,182 @@ def check_counts(insertions: list):
         print(f"!!! Error checking counts: {e}")
 
 
-def run_queries():
-    """Run a single federated search query."""
-    print("--- 4. Running Federated Search Query ---")
+# --- NEW: Adaptive Batch Sender Class ---
+class AdaptiveBatchMetrics:
+    """
+    Tracks batch sending metrics and adjusts batch size dynamically.
+    """
+    def __init__(self):
+        self.current_batch_size = BATCH_SIZE_OPTIMAL
+        self.success_count = 0
+        self.failure_count = 0
+        self.total_retries = 0
+        self.total_splits = 0
+        
+    def on_success(self, batch_size: int):
+        """Called when a batch succeeds."""
+        self.success_count += 1
+        self.failure_count = 0
+        
+        if self.success_count >= 20 and self.current_batch_size < BATCH_SIZE_OPTIMAL:
+            old_size = self.current_batch_size
+            self.current_batch_size = min(int(self.current_batch_size * 1.5), BATCH_SIZE_OPTIMAL)
+            print(f"📈 Increasing batch size: {old_size} → {self.current_batch_size} (after {self.success_count} successes)")
+            self.success_count = 0
     
-    # Use the last embedding as the query vector
-    query_vector = data[NUM_VECTORS]['embedding']
-    # print(f"Query Vector (first 5 dims): {[round(x, 2) for x in query_vector[:5]]}...\n")
+    def on_failure(self):
+        """Called when a batch fails."""
+        self.failure_count += 1
+        self.success_count = 0
+        
+        if self.failure_count >= 2:
+            old_size = self.current_batch_size
+            self.current_batch_size = max(self.current_batch_size // 2, BATCH_SIZE_MIN)
+            print(f"📉 Reducing batch size preventively: {old_size} → {self.current_batch_size} (after {self.failure_count} failures)")
+    
+    def on_retry(self):
+        """Called when a retry happens."""
+        self.total_retries += 1
+    
+    def on_split(self):
+        """Called when a batch is split."""
+        self.total_splits += 1
+    
+    def get_stats(self):
+        """Returns statistics summary."""
+        return {
+            "current_batch_size": self.current_batch_size,
+            "total_retries": self.total_retries,
+            "total_splits": self.total_splits,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count
+        }
 
+# Global metrics instance
+batch_metrics = AdaptiveBatchMetrics()
+
+# --- NEW: Thread-safe lock for metrics ---
+metrics_lock = Lock()
+
+# --- NEW FUNCTION: Adaptive Timeout Calculation ---
+def calculate_timeout(batch_size: int, base_timeout: int = 10) -> int:
+    """
+    Calculate adaptive timeout based on batch size.
+    
+    Args:
+        batch_size: Number of vectors in batch
+        base_timeout: Minimum timeout in seconds
+    
+    Returns:
+        Timeout in seconds
+        
+    Rationale:
+        - Base: 10s for HTTP overhead + server processing
+        - Per-vector: 10ms (384-dim vector similarity calc + routing)
+        - Max: 120s to avoid indefinite hangs
+        - Formula ensures linear scaling with batch size
+    """
+    per_vector_time = 0.01  # 10ms per vector (empirically reasonable)
+    timeout = base_timeout + int(batch_size * per_vector_time)
+    
+    # Clamp between 10s and 120s
+    return max(10, min(timeout, 120))
+
+# --- MODIFIED: Smart query routing using Meta-HNSW ---
+def run_queries():
+    """Run federated search query with Meta-HNSW intelligent routing."""
+    print("--- 4. Running Smart Federated Search (Meta-HNSW Routing) ---")
+    
+    if meta_hnsw is None:
+        print("⚠️  Meta-HNSW not initialized, falling back to broadcast query")
+        run_queries_fallback()
+        return
+    
+    query_vector = np.array(data[NUM_VECTORS]['embedding'])
+    
+    k_nodes = min(3, NUM_NODES)
+    
+    print(f"🔍 Finding {k_nodes} nearest nodes using Meta-HNSW...")
+    nearest_nodes = meta_hnsw.find_nearest_nodes(query_vector, k=k_nodes)
+    
+    print(f"📍 Meta-HNSW routing:")
+    for node_name, distance in nearest_nodes:
+        print(f"   - {node_name}: distance={distance:.4f}")
+    
     try:
-        # Run Federated Search (always from Node 1, doesn't matter which)
+        all_results = {}
+        best_overall_score = -2.0
+        best_overall_node = "N/A"
+        
+        for node_name, distance in nearest_nodes:
+            node_idx = int(node_name.replace("node", "")) - 1
+            node_url = NODE_URLS[node_idx]
+            
+            payload = {
+                "from_node": "client",
+                "query_vector": query_vector.tolist(),
+                "top_k": 5
+            }
+            
+            response = requests.post(
+                f"{node_url}/search",
+                json=payload,
+                timeout=10
+            )
+            response.raise_for_status()
+            
+            results = response.json()
+            all_results[node_name] = results
+            
+            if results:
+                max_score = results[0].get('score', -1)
+                if max_score > best_overall_score:
+                    best_overall_score = max_score
+                    best_overall_node = node_name
+        
+        print(f"\n✅ Smart query complete (queried {len(nearest_nodes)}/{NUM_NODES} nodes):")
+        total_results = 0
+        
+        for node_name, results in all_results.items():
+            count = len(results)
+            total_results += count
+            max_score = results[0].get('score', -1) if count > 0 else -1
+            min_score = results[-1].get('score', -1) if count > 0 else -1
+            
+            print(f"  - {node_name}: {count} results (Best: {max_score:.4f}, Worst: {min_score:.4f})")
+        
+        print(f"\n  - Total Results: {total_results}")
+        print(f"  - Best Match: {best_overall_node} (Score: {best_overall_score:.4f})")
+        
+        print(f"\n💡 Efficiency gain: Queried only {len(nearest_nodes)}/{NUM_NODES} nodes "
+              f"({100 * len(nearest_nodes) / NUM_NODES:.0f}% of cluster)")
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error during smart query: {e}")
+        import traceback
+        print("\nDebug traceback:")
+        traceback.print_exc()
+
+def run_queries_fallback():
+    """Fallback to broadcast query (original implementation)."""
+    print("--- Running Broadcast Federated Search (Fallback) ---")
+    
+    query_vector = data[NUM_VECTORS]['embedding']
+    
+    try:
         r_fed = requests.post(
             f"{NODE_URLS[0]}/search/federated",
             json=query_vector,
-            params={"top_k": 5} # Request top 5 from EACH node
+            params={"top_k": 5}
         )
         r_fed.raise_for_status()
         fed_results = r_fed.json()
         
-        print(f"Federated search complete:")
+        print(f"Federated search complete (queried ALL {NUM_NODES} nodes):")
         results_data = fed_results.get('results', {})
         
-        all_results = []
         best_overall_node = "N/A"
-        best_overall_score = -2.0 # Cosine similarity can be -1
+        best_overall_score = -2.0
         
         for i in range(NUM_NODES):
             node_id = f"node{i+1}"
@@ -601,46 +923,95 @@ def run_queries():
             max_score = node_results_list[0].get('score', -1) if node_results_count > 0 else -1
             min_score = node_results_list[-1].get('score', -1) if node_results_count > 0 else -1
             
-            print(f"  - Results from {node_id}: {node_results_count} (Best: {max_score:.4f}, Worst: {min_score:.4f}, Node: {node_similarity})")
+            # --- RESTORED: Print all three values ---
+            print(f"  - {node_id}: {node_results_count} results (Best: {max_score:.4f}, Worst: {min_score:.4f}, Centroid Similarity: {node_similarity:.4f})")
+            # --- END RESTORED ---
             
             if max_score > best_overall_score:
                 best_overall_score = max_score
                 best_overall_node = node_id
         
-        print(f"\n  - Total Results Found: {fed_results.get('total_results')}")
-        print(f"ℹ️  {best_overall_node} had the best matching vector (Score: {best_overall_score:.4f}).")
+        print(f"\n  - Total Results: {fed_results.get('total_results')}")
+        print(f"  - Best Match: {best_overall_node} (Score: {best_overall_score:.4f})")
 
     except requests.exceptions.RequestException as e:
-        print(f"!!! Error running federated query: {e}")
-
+        print(f"❌ Error running broadcast query: {e}")
+# --- END MODIFIED ---
 
 def main_app():
-    print(f"Starting Qdrant Smart Sharding Test ({NUM_NODES} Nodes)...")
+    print(f"Starting Qdrant Smart Sharding with Meta-HNSW Routing ({NUM_NODES} Nodes)...")
     print(f"Please ensure all servers and DBs are running.")
     print(f"Test will insert {NUM_VECTORS} vectors.\n")
     
-    # Give servers a moment to start
     time.sleep(2)
+    
+    start_coordinator_server()
     
     start_time = time.time()
     
     register_peers()
+    setup_centroid_tracking()
     
-    # --- MODIFIED: Call the bulk function ---
     insertions = insert_vectors_bulk()
-    # --- END MODIFICATION ---
     
-    # --- NEW: Add a delay to allow background tasks to finish ---
-    print("--- Waiting 5s for background insertions to settle... ---")
-    time.sleep(5) 
-    # In a real system, you might need a more robust check
-    # --- END NEW ---
+    print("--- Waiting 10s for background insertions to settle... ---")
+    time.sleep(10)
     
     check_counts(insertions)
+    
+    wait_for_qdrant_indexing()
+    
+    initialize_meta_hnsw()
+    
+    print("\n--- Checking for Centroid Updates ---")
+    for i in range(NUM_NODES):
+        node_id = f"node{i+1}"
+        node_url = NODE_URLS[i]
+        
+        try:
+            response = requests.get(f"{node_url}/centroid_stats", timeout=5)
+            stats = response.json()
+            print(f"  {node_id}: {stats['insertions_since_update']}/{stats['update_interval']} insertions")
+        except:
+            pass
+    
+    if pending_centroid_updates:
+        print(f"\n⚠️  {len(pending_centroid_updates)} pending centroid updates, triggering rebuild...")
+        rebuild_meta_hnsw_from_updates()
+    
+    print("\n--- Verifying nodes are ready for querying ---")
+    all_ready = True
+    for i in range(NUM_NODES):
+        node_id = f"node{i+1}"
+        node_url = NODE_URLS[i]
+        
+        try:
+            response = requests.get(f"{node_url}/count", timeout=5)
+            count = response.json().get('count', 0)
+            
+            if count == 0:
+                print(f"  ⚠️  {node_id}: has 0 vectors (not ready for querying)")
+                all_ready = False
+            else:
+                print(f"  ✓ {node_id}: {count} vectors ready")
+        except Exception as e:
+            print(f"  ❌ {node_id}: Error checking readiness: {e}")
+            all_ready = False
+    
+    if not all_ready:
+        print("\n⚠️  Some nodes not ready, waiting additional 5s...")
+        time.sleep(5)
+    
     run_queries()
     
     end_time = time.time()
     print(f"\n--- Test Complete in {end_time - start_time:.2f} seconds ---")
+    
+    print("\n💡 Coordinator server still running. Press Ctrl+C to exit.")
+    try:
+        time.sleep(30)
+    except KeyboardInterrupt:
+        print("\n👋 Shutting down...")
 
 # --- Main Execution ---
 if __name__ == "__main__":

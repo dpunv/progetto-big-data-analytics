@@ -4,3 +4,4 @@ requests
 fastapi
 pydantic
 scikit-learn
+flask

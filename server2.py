@@ -64,30 +64,16 @@ class QdrantNodeWrapper:
                  qdrant_host: str = "localhost", 
                  qdrant_port: int = 6335, 
                  collection_name: str = "vectors",
-                 self_url: str = "http://localhost:8000",
-                 vector_size: int = 384):
+                 self_url: str = "http://localhost:8000", # New: Node's own URL for registration
+                 vector_size: int = 384):                  # New: Vector dimension
         self.node_id = node_id
         self.qdrant_url = f"http://{qdrant_host}:{qdrant_port}"
         self.collection_name = collection_name
-        self.peer_nodes = {}
+        self.peer_nodes = {}  # Dictionary of peer_node_id -> peer_url
         self.self_url = self_url
         self.vector_size = vector_size
-        self.node_vector: Optional[List[float]] = None
-        self.peer_node_vectors: Dict[str, List[float]] = {}
-        
-        # --- NEW: Local Centroid Management (MANCAVA!) ---
-        self.local_centroid: Optional[np.ndarray] = None
-        self.previous_centroid: Optional[np.ndarray] = None
-        self.centroid_vector_sum: Optional[np.ndarray] = None
-        self.centroid_vector_count: int = 0
-        
-        # Configuration
-        self.centroid_update_interval: int = 1000
-        self.centroid_drift_threshold: float = 0.05
-        self.coordinator_url: Optional[str] = None
-        
-        self.insertions_since_update: int = 0
-        # --- END NEW ---
+        self.node_vector: Optional[List[float]] = None # This node's representative vector
+        self.peer_node_vectors: Dict[str, List[float]] = {} # Cache of peer rep. vectors
         
     def register_peer(self, peer_id: str, peer_url: str):
         self.peer_nodes[peer_id] = peer_url
@@ -254,19 +240,15 @@ class QdrantNodeWrapper:
 
             response = requests.put(
                 f"{self.qdrant_url}/collections/{self.collection_name}/points",
-                params={"wait": "true"},
+                params={"wait": "true"}, # Ensure operation completes
                 json={"points": points},
-                timeout=30
+                timeout=30 # Increase timeout for bulk ops
             )
             
             if response.status_code in [200, 201]:
                 print(f"Node {self.node_id}: Stored {len(points)} vectors from {from_node_id}")
                 
-                # --- NEW: Update centroid incrementally (MANCAVA!) ---
-                for vector_data in vectors_data:
-                    self.update_centroid_incremental(vector_data.vector)
-                # --- END NEW ---
-                
+                # Print count after successful save
                 current_count = self.count_local_vectors()
                 if current_count != -1:
                     print(f"Node {self.node_id}: ✨ Local vector count: {current_count}")
@@ -329,15 +311,6 @@ class QdrantNodeWrapper:
                 json=payload,
                 timeout=10
             )
-            
-            # --- NEW: Log Qdrant response details ---
-            if response.status_code != 200:
-                print(f"Node {self.node_id}: ❌ Qdrant returned {response.status_code}")
-                print(f"  URL: {self.qdrant_url}/collections/{self.collection_name}/points/search")
-                print(f"  Response body: {response.text[:500]}")  # First 500 chars
-                return None
-            # --- END NEW ---
-            
             if response.status_code == 200:
                 results = response.json().get("result", [])
                 print(f"Node {self.node_id}: Found {len(results)} local results")
@@ -432,109 +405,6 @@ class QdrantNodeWrapper:
         except requests.exceptions.RequestException as e:
             print(f"Node {self.node_id}: Error creating collection: {e}")
             return False
-
-    # --- NEW: Centroid Management Methods (MANCAVANO!) ---
-    def initialize_centroid(self, initial_centroid: List[float]):
-        """Initialize local centroid (called by coordinator during setup)."""
-        centroid_array = np.array(initial_centroid, dtype=np.float32)
-        
-        norm = np.linalg.norm(centroid_array)
-        if norm > 0:
-            centroid_array = centroid_array / norm
-        
-        self.local_centroid = centroid_array
-        self.previous_centroid = centroid_array.copy()
-        self.centroid_vector_sum = np.zeros(self.vector_size, dtype=np.float32)
-        self.centroid_vector_count = 0
-        
-        print(f"Node {self.node_id}: Initialized local centroid (first 3 dims: {centroid_array[:3]})")
-    
-    def update_centroid_incremental(self, vector: List[float]):
-        """Update running centroid statistics with new vector."""
-        if self.local_centroid is None:
-            return
-        
-        vector_array = np.array(vector, dtype=np.float32)
-        
-        self.centroid_vector_sum += vector_array
-        self.centroid_vector_count += 1
-        self.insertions_since_update += 1
-        
-        if self.insertions_since_update >= self.centroid_update_interval:
-            self._recalculate_and_check_drift()
-    
-    def _recalculate_and_check_drift(self):
-        """Recalculate centroid and check for drift."""
-        if self.centroid_vector_count == 0:
-            return
-        
-        new_centroid = self.centroid_vector_sum / self.centroid_vector_count
-        
-        norm = np.linalg.norm(new_centroid)
-        if norm > 0:
-            new_centroid = new_centroid / norm
-        
-        cosine_sim = np.dot(self.previous_centroid, new_centroid) / (
-            np.linalg.norm(self.previous_centroid) * np.linalg.norm(new_centroid)
-        )
-        cosine_dist = 1 - cosine_sim
-        
-        print(f"Node {self.node_id}: Centroid drift check - distance: {cosine_dist:.6f} "
-              f"(threshold: {self.centroid_drift_threshold}, insertions: {self.insertions_since_update})")
-        
-        self.local_centroid = new_centroid
-        
-        if cosine_dist > self.centroid_drift_threshold:
-            print(f"Node {self.node_id}: ⚠️  Centroid drift {cosine_dist:.6f} exceeds threshold!")
-            self._notify_coordinator_centroid_change(new_centroid.tolist(), cosine_dist)
-            self.previous_centroid = new_centroid.copy()
-        
-        self.insertions_since_update = 0
-    
-    def _notify_coordinator_centroid_change(self, new_centroid: List[float], drift: float):
-        """Notify coordinator of centroid change."""
-        if not self.coordinator_url:
-            return
-        
-        try:
-            payload = {
-                "node_id": self.node_id,
-                "new_centroid": new_centroid,
-                "drift": drift,
-                "vector_count": self.centroid_vector_count
-            }
-            
-            response = requests.post(
-                f"{self.coordinator_url}/update_centroid",
-                json=payload,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                print(f"Node {self.node_id}: ✅ Coordinator notified of centroid change")
-            else:
-                print(f"Node {self.node_id}: ⚠️  Coordinator notification failed: {response.status_code}")
-                
-        except requests.exceptions.RequestException as e:
-            print(f"Node {self.node_id}: ⚠️  Error notifying coordinator: {e}")
-    
-    def set_coordinator_url(self, url: str):
-        """Set the coordinator URL for centroid update notifications."""
-        self.coordinator_url = url
-        print(f"Node {self.node_id}: Coordinator URL set to {url}")
-    
-    def get_centroid_stats(self) -> dict:
-        """Get current centroid statistics."""
-        return {
-            "node_id": self.node_id,
-            "centroid_initialized": self.local_centroid is not None,
-            "vector_count": self.centroid_vector_count,
-            "insertions_since_update": self.insertions_since_update,
-            "update_interval": self.centroid_update_interval,
-            "drift_threshold": self.centroid_drift_threshold,
-            "current_centroid": self.local_centroid.tolist() if self.local_centroid is not None else None
-        }
-    # --- END NEW ---
 
 # FastAPI Application
 def create_app(node: QdrantNodeWrapper) -> FastAPI:
@@ -880,49 +750,6 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to get count")
-    
-    # --- NEW ENDPOINT: Get all vectors for centroid calculation ---
-    @app.get("/vectors/all")
-    async def get_all_vectors_endpoint(limit: int = 10000):
-        """
-        Get all vectors stored in this node (for Meta-HNSW centroid calculation).
-        
-        Args:
-            limit: Maximum number of vectors to return (default 10000)
-        
-        Returns:
-            List of vectors [N, dimension]
-        """
-        try:
-            payload = {
-                "limit": limit,
-                "with_payload": False,
-                "with_vector": True
-            }
-            response = requests.post(
-                f"{node.qdrant_url}/collections/{node.collection_name}/points/scroll",
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                points = response.json().get("result", {}).get("points", [])
-                vectors = [point["vector"] for point in points]
-                
-                return {
-                    "node_id": node.node_id,
-                    "count": len(vectors),
-                    "vectors": vectors
-                }
-            else:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Failed to fetch vectors: {response.text}"
-                )
-                
-        except requests.exceptions.RequestException as e:
-            raise HTTPException(status_code=500, detail=f"Error fetching vectors: {e}")
-    # --- END NEW ENDPOINT ---
             
     @app.post("/set_node_vector")
     async def set_node_vector_endpoint(vector: List[float]):
@@ -939,67 +766,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             }
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-    
-    # --- NEW ENDPOINTS: Centroid Management ---
-    @app.post("/initialize_centroid")
-    async def initialize_centroid_endpoint(centroid: List[float]):
-        """Initialize this node's local centroid (called by coordinator)."""
-        try:
-            node.initialize_centroid(centroid)
-            return {
-                "status": "success",
-                "node_id": node.node_id,
-                "message": "Centroid initialized"
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to initialize centroid: {e}")
-    
-    @app.post("/set_coordinator")
-    async def set_coordinator_endpoint(coordinator_url: str):
-        """Set the coordinator URL for this node."""
-        node.set_coordinator_url(coordinator_url)
-        return {
-            "status": "success",
-            "node_id": node.node_id,
-            "coordinator_url": coordinator_url
-        }
-    
-    @app.get("/centroid_stats")
-    async def centroid_stats_endpoint():
-        """Get current centroid statistics for this node."""
-        return node.get_centroid_stats()
-    
-    @app.post("/force_centroid_update")
-    async def force_centroid_update_endpoint():
-        """Force immediate centroid recalculation and drift check."""
-        try:
-            node._recalculate_and_check_drift()
-            return {
-                "status": "success",
-                "node_id": node.node_id,
-                "stats": node.get_centroid_stats()
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update centroid: {e}")
-    # --- END NEW ENDPOINTS ---
-
-    @app.get("/debug/info")
-    async def debug_info_endpoint():
-        """
-        Get debug information about this node's configuration.
-        """
-        count = node.count_local_vectors()
-        return {
-            "node_id": node.node_id,
-            "fastapi_port": node.self_url,
-            "qdrant_url": node.qdrant_url,
-            "collection_name": node.collection_name,
-            "vector_count": count,
-            "peers": list(node.peer_nodes.keys()),
-            "has_node_vector": node.node_vector is not None,
-            "centroid_initialized": node.local_centroid is not None
-        }
-    
+            
     return app
 
 
