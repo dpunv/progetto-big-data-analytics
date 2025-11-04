@@ -4,12 +4,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NoSQL Topology Viewer</title>
+  <title>Pir2Vec</title>
   <script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
   <style>
     :root {
       --ok: #16a34a;
-      --link: #64748b;
+      --link: #64748b
     }
 
     html,
@@ -17,7 +17,7 @@
       height: 100%;
       margin: 0;
       font-family: system-ui, Arial, sans-serif;
-      background: #fff;
+      background: #fff
     }
 
     header {
@@ -25,39 +25,14 @@
       border-bottom: 1px solid #eee;
       display: flex;
       gap: 12px;
-      align-items: center;
-    }
-
-    #summary {
-      color: #555;
-      font-size: 14px;
-    }
-
-    #graph {
-      height: calc(100% - 54px);
-    }
-
-    .node circle {
-      stroke: #fff;
-      stroke-width: 1.5px;
-    }
-
-    .node text {
-      font-size: 12px;
-      pointer-events: none;
-      user-select: none;
-    }
-
-    .link {
-      stroke: var(--link);
-      stroke-opacity: 0.7;
+      align-items: center
     }
 
     .panel {
       margin-left: auto;
       display: flex;
       gap: 8px;
-      align-items: center;
+      align-items: center
     }
 
     button {
@@ -65,17 +40,16 @@
       background: #fff;
       border-radius: 8px;
       padding: 6px 10px;
-      cursor: pointer;
+      cursor: pointer
     }
 
     button:hover {
-      background: #f8fafc;
+      background: #f8fafc
     }
 
-    .legend {
-      font-size: 12px;
-      color: #444;
-      margin-left: 12px;
+    .muted {
+      color: #6b7280;
+      font-size: 12px
     }
 
     .pill {
@@ -84,81 +58,289 @@
       padding: 2px 8px;
       border-radius: 999px;
       color: #374151;
-      background: #f9fafb;
+      background: #f9fafb
     }
 
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.4);
+    .last-api {
+      font-size: 12px;
+      color: #374151;
+      margin-left: 8px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: #f3f4f6;
+      border: 1px solid #e6e7eb
+    }
+
+    .main {
       display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 20;
+      height: calc(100% - 54px)
     }
 
-    .modal {
-      width: min(520px, 92vw);
-      background: white;
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    #left-panel {
+      width: 320px;
+      border-right: 1px solid #eee;
+      padding: 12px 16px;
+      box-sizing: border-box;
+      background: #fff;
+      overflow: auto
     }
 
-    .modal h2 {
-      margin: 0 0 12px 0;
-      font-size: 18px;
+    #graph {
+      flex: 1;
+      height: 100%
     }
 
-    .row {
-      display: grid;
-      grid-template-columns: 1fr 120px;
+    .node {
+      cursor: pointer
+    }
+
+    .node circle {
+      stroke: #fff;
+      stroke-width: 1.5px;
+      transform-box: fill-box;
+      transform-origin: center;
+      transition: transform 160ms ease
+    }
+
+    .node.selected circle {
+      stroke: #0f172a;
+      stroke-width: 2.5px;
+      animation: pulse 1200ms ease-in-out infinite
+    }
+
+    .node.focused circle {
+      animation: pop 420ms cubic-bezier(.2, .8, .2, 1) 1
+    }
+
+    @keyframes pulse {
+      0% {
+        stroke-opacity: .95;
+        transform: scale(1)
+      }
+
+      50% {
+        stroke-opacity: .25;
+        transform: scale(1.12)
+      }
+
+      100% {
+        stroke-opacity: .95;
+        transform: scale(1)
+      }
+    }
+
+    @keyframes pop {
+      0% {
+        transform: scale(1)
+      }
+
+      40% {
+        transform: scale(1.28)
+      }
+
+      100% {
+        transform: scale(1)
+      }
+    }
+
+    /* Global bottom loader */
+    #global-loader {
+      display: none;
+      /* toggled by JS */
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 18px;
+      z-index: 80;
+      background: rgba(15, 23, 42, 0.95);
+      color: #fff;
+      padding: 8px 14px;
+      border-radius: 999px;
+      box-shadow: 0 6px 18px rgba(2, 6, 23, 0.25);
+      display: flex;
       gap: 8px;
+      align-items: center;
+      font-size: 13px;
+      min-width: 120px;
+      justify-content: center;
+      pointer-events: none;
+      /* non-interactive */
+    }
+
+    #global-loader .g-spinner {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.18);
+      border-top-color: rgba(255, 255, 255, 0.92);
+      animation: spin 720ms linear infinite;
+    }
+
+    .link {
+      stroke: var(--link);
+      stroke-opacity: .7
+    }
+
+    #stats h4 {
+      margin-top: 12px
+    }
+
+    /* Node details container is always visible; show a "no selection" message by default
+       and toggle the detailed info block when a node is selected. */
+    #node-details {
+      display: block;
+    }
+
+    #node-details #details {
+      display: none;
+    }
+
+    #node-details #no-selection {
+      display: block;
+      color: #6b7280;
+      font-size: 13px;
       margin-top: 8px;
     }
 
-    input[type="text"] {
-      width: 100%;
-      padding: 8px;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      font-family: inherit;
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(0, 0, 0, .12);
+      border-top-color: rgba(0, 0, 0, .6);
+      border-radius: 50%;
+      animation: spin 720ms linear infinite;
+      vertical-align: middle;
+      margin-left: 8px
     }
 
-    .actions {
+    @keyframes spin {
+      to {
+        transform: rotate(360deg)
+      }
+    }
+
+    .peer-btn {
+      background: transparent;
+      border: none;
+      color: var(--link);
+      cursor: pointer;
+      padding: 0;
+      font-size: 12px
+    }
+
+    .peer-btn:hover {
+      text-decoration: underline
+    }
+
+    /* Modal / backdrop styles (popup) */
+    .modal-backdrop {
+      display: none;
+      /* shown by JS by setting display='flex' */
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 6, 23, 0.45);
+      align-items: center;
+      justify-content: center;
+      z-index: 60;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+
+    .modal {
+      background: #fff;
+      padding: 18px;
+      border-radius: 12px;
+      width: min(560px, 96%);
+      box-shadow: 0 10px 30px rgba(2, 6, 23, 0.18);
+      border: 1px solid #e6e7eb;
+      box-sizing: border-box;
+    }
+
+    .modal h2 {
+      margin: 0 0 8px 0;
+    }
+
+    .row {
       display: flex;
       gap: 8px;
+      margin-top: 10px;
+    }
+
+    .modal input[type="text"] {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-sizing: border-box;
+    }
+
+    .modal .actions {
       margin-top: 12px;
+      display: flex;
+      gap: 8px;
       justify-content: flex-end;
     }
 
     .error {
       color: #b91c1c;
-      font-size: 12px;
-      min-height: 16px;
+      margin-top: 8px;
+      font-size: 13px;
+      min-height: 18px;
     }
 
-    .muted {
-      color: #6b7280;
-      font-size: 12px;
+    @media (max-width: 420px) {
+      .modal {
+        width: calc(100% - 32px);
+        padding: 14px;
+      }
     }
   </style>
 </head>
 
 <body>
   <header>
-    <strong>NoSQL Topology Viewer</strong>
-    <div id="summary" class="muted">Enter a node to begin…</div>
+    <strong>Pir2Vec</strong>
     <div class="panel">
       <span id="source" class="pill">—</span>
-      <button id="fit">Fit</button>
-      <button id="shuffle">Shuffle</button>
       <button id="change">Change node…</button>
     </div>
   </header>
-  <div id="graph"></div>
+  <div class="main">
+    <aside id="left-panel">
+      <div id="stats">
+        <h3>Global Stats</h3>
+        <div id="agg-stats">
+          <div>Total nodes: <span id="stat-nodes">—</span></div>
+          <div>Total links: <span id="stat-links">—</span></div>
+          <div>Avg degree: <span id="stat-avgdeg">—</span></div>
+        </div>
 
-  <div id="modal-backdrop" class="modal-backdrop" style="display:none">
+        <div id="node-details">
+          <div id="no-selection" class="muted">No node selected</div>
+          <div id="details">
+            <h4>Selected node</h4>
+            <div><b>ID:</b> <span id="detail-id"></span></div>
+            <div><b>IP / DNS:</b> <span id="detail-ip"></span></div>
+            <div><b>Port:</b> <span id="detail-port"></span></div>
+            <div id="detail-extra">
+              <div><b>Vector size:</b> <span id="detail-vector-size">-</span></div>
+              <div><b>Peer count:</b> <span id="detail-peer-count">-</span></div>
+              <div><b>Node rep vectors:</b> <span id="detail-node-vectors-count">-</span></div>
+              <div><b>Local vector count:</b> <span id="detail-vector-count">-</span></div>
+            </div>
+            <div id="detail-loading" aria-hidden="true" style="display:none"><span class="spinner"></span></div>
+            <div><b>Peers:</b>
+              <ul id="detail-peers"></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+    <div id="graph" role="region" aria-label="Topology graph"></div>
+  </div>
+
+  <div id="modal-backdrop" class="modal-backdrop">
     <div class="modal">
       <h2>Connect to a node</h2>
       <div class="muted">Enter <b>IP:port</b> or a <b>DNS name</b> (optional port). Examples:
@@ -171,12 +353,23 @@
       <div class="actions">
       </div>
       <div id="error" class="error"></div>
-      <div class="muted">The viewer will request <code>http(s)://host:port/get-topology</code>. You may need to enable
-        CORS on your server.</div>
     </div>
   </div>
 
   <script>
+    // Inlined app.js — main frontend logic
+    // Global API loader counter and helpers
+    let __apiCallsInFlight = 0;
+    function showGlobalLoader() {
+      __apiCallsInFlight += 1;
+      const el = document.getElementById('global-loader');
+      if (el && __apiCallsInFlight === 1) el.style.display = 'flex';
+    }
+    function hideGlobalLoader() {
+      __apiCallsInFlight = Math.max(0, __apiCallsInFlight - 1);
+      const el = document.getElementById('global-loader');
+      if (el && __apiCallsInFlight === 0) el.style.display = 'none';
+    }
     const W = () => document.getElementById('graph').clientWidth;
     const H = () => document.getElementById('graph').clientHeight;
 
@@ -185,14 +378,39 @@
     const zoom = d3.zoom().scaleExtent([0.2, 4]).on('zoom', (e) => g.attr('transform', e.transform));
     svg.call(zoom);
 
+    // Helper: fit/center the viewport on a node. If node positions are not yet available
+    // it will retry up to `attempts` times with `interval` ms between tries.
+    function fitOnNode(node, attempts = 10, interval = 100) {
+      if (!node) return;
+      let tries = 0;
+      const tryFit = () => {
+        try {
+          if (typeof node.x === 'number' && typeof node.y === 'number') {
+            const width = W(), height = H();
+            const scale = Math.min(4, 1.5);
+            const tx = width / 2 - node.x * scale;
+            const ty = height / 2 - node.y * scale;
+            svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+            return;
+          }
+        } catch (e) {
+          // ignore
+        }
+        tries += 1;
+        if (tries < attempts) setTimeout(tryFit, interval);
+      };
+      tryFit();
+    }
+
     svg.append('defs').append('marker')
       .attr('id', 'arrow').attr('viewBox', '0 -5 10 10').attr('refX', 18).attr('refY', 0)
       .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--link)');
 
     let simulation, nodesSel, linksSel;
-    const summary = document.getElementById('summary');
     const sourcePill = document.getElementById('source');
+    let currentBase = null;
+    let currentNodes = [];
 
     function degreeMap(edges) {
       const m = new Map();
@@ -212,15 +430,55 @@
       const nodeG = g.append('g').selectAll('g')
         .data(nodes, d => d.id)
         .join(enter => {
-          const g = enter.append('g').attr('class', 'node');
-          g.append('circle')
+          const g_ = enter.append('g').attr('class', 'node');
+          g_.append('circle')
             .attr('r', d => 10 + (deg.get(d.id) || 1) * 1.5)
             .attr('fill', 'var(--ok)');
-          g.append('text').attr('dy', 3).attr('x', 14).text(d => d.label || d.id);
-          return g;
+          g_.append('text').attr('dy', 3).attr('x', 14).text(d => d.label || d.id);
+          return g_;
         });
 
       nodesSel = nodeG;
+
+      // Helper to highlight/select a node by id and optionally give a short "focused" animation.
+      // Passing null clears selection/focus.
+      function highlightNode(nodeId, temp = true) {
+        if (!nodesSel) return;
+        nodesSel.classed('selected', n => nodeId ? n.id === nodeId : false);
+        if (!nodeId) {
+          nodesSel.classed('focused', false);
+          return;
+        }
+        if (temp) {
+          nodesSel.classed('focused', n => n.id === nodeId);
+          setTimeout(() => { if (nodesSel) nodesSel.classed('focused', false); }, 600);
+        } else {
+          nodesSel.classed('focused', n => n.id === nodeId);
+        }
+      }
+
+      // Node selection behavior: click a node to show details
+      nodesSel.on('click', (event, d) => {
+        event.stopPropagation();
+        // highlight/focus then show details
+        highlightNode(d.id, true);
+        selectNode(d);
+        // Fit/center the viewport on the clicked node (consistent behavior via helper)
+        fitOnNode(d);
+      });
+
+      // clicking background clears selection — hide the details block and show 'no selection'
+      svg.on('click', () => {
+        // clear selection/focus
+        if (nodesSel) highlightNode(null, false);
+        const nd = document.getElementById('node-details');
+        if (nd) {
+          const details = nd.querySelector('#details');
+          const noSel = nd.querySelector('#no-selection');
+          if (details) details.style.display = 'none';
+          if (noSel) noSel.style.display = 'block';
+        }
+      });
 
       simulation = d3.forceSimulation(nodes)
         .force('link', d3.forceLink(edges).id(d => d.id).distance(90).strength(0.4))
@@ -236,40 +494,59 @@
           nodesSel.attr('transform', d => `translate(${d.x},${d.y})`);
         });
 
-      summary.textContent = `${nodes.length} nodi • ${edges.length} collegamenti`;
+      // Shuffle the layout (restart simulation) and fit the graph to the view.
+      // We restart the simulation to get a fresh layout/shuffle, then run a fit after
+      // a short delay to allow the simulation to produce initial positions.
+      if (simulation) {
+        simulation.alpha(1).restart();
+        setTimeout(() => {
+          try {
+            const bbox = g.node().getBBox();
+            const width = W(), height = H();
+            // avoid division by zero
+            if (bbox.width <= 0 || bbox.height <= 0) return;
+            const scale = Math.min(4, 0.9 / Math.max(bbox.width / width, bbox.height / height));
+            const tx = width / 2 - (bbox.x + bbox.width / 2) * scale;
+            const ty = height / 2 - (bbox.y + bbox.height / 2) * scale;
+            svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+          } catch (e) {
+            // ignore fit errors (e.g. if DOM not ready)
+          }
+        }, 250);
+      }
+
+      document.getElementById('stat-nodes').textContent = nodes.length;
+      document.getElementById('stat-links').textContent = edges.length;
+      const avg = Math.round((edges.length * 2 / Math.max(1, nodes.length)) * 100) / 100;
+      document.getElementById('stat-avgdeg').textContent = avg;
     }
 
     function normalizeBase(input) {
       let x = input.trim();
       if (!x) return null;
-      if (!/^https?:\/\//i.test(x)) {
-        x = 'http://' + x;
-      }
+      if (!/^https?:\/\//i.test(x)) { x = 'http://' + x; }
       return x.replace(/\/$/, '');
     }
-    function buildUrl(base) { return base + '/get-topology'; }
+    function buildTopologyUrl(base) { return base + '/get-topology'; }
+    function buildNodeInfoUrl(base) { return base + '/get-node-info'; }
 
     function parseTopology(json) {
       const topo = json && json.topology ? json.topology : null;
-      if (!topo || typeof topo !== 'object') throw new Error('Formato inatteso: manca la chiave "topology"');
+      if (!topo || typeof topo !== 'object') throw new Error('Unexpected format: missing "topology" key');
 
       const nodes = [];
       const edges = [];
       const seen = new Set();
 
       for (const [nodeId, info] of Object.entries(topo)) {
-        const label = `${nodeId} (${(info.dns || info.ip || '-')}:${info.port ?? '-'})`;
-        nodes.push({ id: nodeId, label });
+        // Graph labels should show only the node name (no IP/port)
+        const label = nodeId;
+        nodes.push({ id: nodeId, label, info });
 
         if (info.peers && typeof info.peers === 'object') {
-          for (const [peerId, peerInfo] of Object.entries(info.peers)) {
-            const a = nodeId;
-            const b = peerId;
-            const key = [a, b].sort().join('||');
-            if (!seen.has(key)) {
-              seen.add(key);
-              edges.push({ source: a, target: b });
-            }
+          for (const [peerId] of Object.entries(info.peers)) {
+            const a = nodeId; const b = peerId; const key = [a, b].sort().join('||');
+            if (!seen.has(key)) { seen.add(key); edges.push({ source: a, target: b }); }
           }
         }
       }
@@ -277,58 +554,188 @@
     }
 
     async function fetchTopology(base) {
-      const url = buildUrl(base);
-      // Use POST only as requested — the server accepts POST to /get-topology
-      const r = await fetch(url, { method: 'POST', mode: 'cors' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
-      return parseTopology(data);
+      const url = buildTopologyUrl(base);
+      showGlobalLoader();
+      try {
+        const r = await fetch(url, { method: 'POST', mode: 'cors' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        return parseTopology(data);
+      } finally {
+        hideGlobalLoader();
+      }
     }
 
+    // DOM references for modal and controls
     const backdrop = document.getElementById('modal-backdrop');
     const hostportInput = document.getElementById('hostport');
     const connectBtn = document.getElementById('connect');
     const errorBox = document.getElementById('error');
     const changeBtn = document.getElementById('change');
-    const fitBtn = document.getElementById('fit');
-    const shuffleBtn = document.getElementById('shuffle');
 
     function showModal(prefill) {
-      backdrop.style.display = 'flex';
-      errorBox.textContent = '';
-      hostportInput.value = prefill || '';
-      hostportInput.focus();
-      hostportInput.select();
+      backdrop.style.display = 'flex'; errorBox.textContent = ''; hostportInput.value = prefill || ''; hostportInput.focus(); hostportInput.select();
     }
 
     async function connectFromInput() {
       errorBox.textContent = '';
       const base = normalizeBase(hostportInput.value);
-      if (!base) { errorBox.textContent = 'Inserisci host o host:porta'; return; }
-      document.getElementById('source').textContent = base + '/get-topology';
+      if (!base) { errorBox.textContent = 'Enter host or host:port'; return; }
+      currentBase = base;
+      // Show only base URL (do not expose /get-topology path)
+      sourcePill.textContent = base;
       try {
         const { nodes, edges } = await fetchTopology(base);
+        currentNodes = nodes;
         renderGraph(nodes, edges);
         backdrop.style.display = 'none';
+        // Try to find and focus the node that corresponds to the host:port the user entered.
+        // hostOnly is the normalized host:port without protocol (e.g. "localhost:8001")
+        const hostOnly = base.replace(/^https?:\/\//i, '');
+        // match heuristics: node.id, node.info.ip:port, node.info.dns:port, or ip/dns alone
+        const match = currentNodes.find(n => {
+          try {
+            const id = (n.id || '').toString();
+            if (!id) return false;
+            if (id === hostOnly) return true;
+            if (id.endsWith(hostOnly)) return true;
+            const ip = n.info?.ip?.toString();
+            const dns = n.info?.dns?.toString();
+            const port = n.info?.port?.toString();
+            if (ip && port && `${ip}:${port}` === hostOnly) return true;
+            if (dns && port && `${dns}:${port}` === hostOnly) return true;
+            if (ip === hostOnly) return true;
+            if (dns === hostOnly) return true;
+            return false;
+          } catch (e) { return false; }
+        });
+
+        if (match) {
+          // Highlight/focus the matched node then show details
+          if (typeof nodesSel !== 'undefined' && nodesSel) {
+            // use the helper defined in renderGraph; if renderGraph has run nodesSel is a selection
+            try { nodesSel.classed('selected', n => n.id === match.id); nodesSel.classed('focused', n => n.id === match.id); setTimeout(() => { if (nodesSel) nodesSel.classed('focused', false); }, 600); } catch (e) { /* ignore if helper not available yet */ }
+          }
+          selectNode(match);
+          // Fit/center the viewport on the matched node (use helper for consistent behavior)
+          fitOnNode(match);
+        }
       } catch (e) {
-        errorBox.textContent = 'Connessione fallita: ' + (e.message || e);
+        errorBox.textContent = 'Connection failed: ' + (e.message || e);
       }
     }
+
     connectBtn.addEventListener('click', connectFromInput);
     changeBtn.addEventListener('click', () => showModal(hostportInput.value));
     hostportInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectFromInput(); });
-    fitBtn.addEventListener('click', () => {
-      const bbox = g.node().getBBox();
-      const width = W(), height = H();
-      const scale = Math.min(4, 0.9 / Math.max(bbox.width / width, bbox.height / height));
-      const tx = width / 2 - (bbox.x + bbox.width / 2) * scale;
-      const ty = height / 2 - (bbox.y + bbox.height / 2) * scale;
-      svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
-    });
-    shuffleBtn.addEventListener('click', () => { if (simulation) simulation.alpha(1).restart(); });
+    // Note: fit/shuffle controls not present in DOM; omit unused listeners.
 
+    // Open modal with helpful default
     showModal('localhost:8001');
+
+    // (no global selectedNode needed; selectNode manages the details panel)
+
+    // Populate details panel with node info (initially uses topology info, then fetches /get-node-info)
+    async function selectNode(node) {
+      const nd = document.getElementById('node-details');
+      if (nd) {
+        const details = nd.querySelector('#details');
+        const noSel = nd.querySelector('#no-selection');
+        if (details) details.style.display = 'block';
+        if (noSel) noSel.style.display = 'none';
+      }
+      document.getElementById('detail-id').textContent = node.id;
+      // Prefer dns, then ip
+      document.getElementById('detail-ip').textContent = node.info?.dns || node.info?.ip || '-';
+      document.getElementById('detail-port').textContent = node.info?.port ?? '-';
+
+      const peersObj = node.info?.peers || {};
+      const peerIds = Object.keys(peersObj);
+      document.getElementById('detail-peer-count').textContent = peerIds.length;
+
+      // Fill peers list from topology info as a fallback
+      const peersList = document.getElementById('detail-peers');
+      peersList.innerHTML = '';
+      peerIds.forEach(pid => {
+        const li = document.createElement('li');
+        const btn = document.createElement('button');
+        btn.textContent = pid;
+        btn.className = 'peer-btn';
+        btn.onclick = () => { selectPeer(pid); };
+        li.appendChild(btn);
+        peersList.appendChild(li);
+      });
+
+      try {
+        const url = buildNodeInfoUrl(currentBase);
+        showGlobalLoader();
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            mode: 'cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ node_id: node.id })
+          });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const data = await resp.json();
+
+          // data may contain fields like dns, ip, port, vector_size, node_vectors, local_count, peers
+          if (data.dns || data.ip) document.getElementById('detail-ip').textContent = data.dns || data.ip;
+          if (data.port) document.getElementById('detail-port').textContent = data.port;
+          if (data.vector_size) document.getElementById('detail-vector-size').textContent = data.vector_size;
+          if (Array.isArray(data.node_vectors)) document.getElementById('detail-node-vectors-count').textContent = data.node_vectors.length;
+          if (typeof data.local_count === 'number') document.getElementById('detail-vector-count').textContent = data.local_count;
+
+          // If server returns peers list, replace peers list
+          if (data.peers && typeof data.peers === 'object') {
+            peersList.innerHTML = '';
+            Object.keys(data.peers).forEach(pid => {
+              const li = document.createElement('li');
+              const btn = document.createElement('button');
+              btn.textContent = pid;
+              btn.className = 'peer-btn';
+              btn.onclick = () => { selectPeer(pid); };
+              li.appendChild(btn);
+              peersList.appendChild(li);
+            });
+            document.getElementById('detail-peer-count').textContent = Object.keys(data.peers).length;
+          }
+
+        } finally {
+          hideGlobalLoader();
+        }
+      } catch (err) {
+        console.warn('Failed to fetch node info:', err);
+      }
+    }
+
+    // Center control not present in DOM; centering is handled programmatically when needed.
+
+    // Select a peer by id: show its info on the left and highlight it in the graph
+    function selectPeer(peerId) {
+      // find node object
+      const node = currentNodes.find(n => n.id === peerId);
+      if (!node) {
+        console.warn('Peer not found in current topology:', peerId);
+        return;
+      }
+      // highlight in graph
+      if (nodesSel) {
+        nodesSel.classed('selected', n => n.id === peerId);
+        nodesSel.classed('focused', n => n.id === peerId);
+        setTimeout(() => { if (nodesSel) nodesSel.classed('focused', false); }, 600);
+      }
+      // populate details
+      selectNode(node);
+      // Fit/center the viewport on the selected peer (use helper for consistency)
+      fitOnNode(node);
+    }
   </script>
+  <!-- Global bottom loader shown while any API call is in-flight -->
+  <div id="global-loader" role="status" aria-live="polite" aria-hidden="true">
+    <div class="g-spinner" aria-hidden="true"></div>
+    <div class="g-text">Loading…</div>
+  </div>
 </body>
 
 </html>

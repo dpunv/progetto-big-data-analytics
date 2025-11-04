@@ -1064,6 +1064,106 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         traverse(node.node_id, node.self_url)
         return {"topology": topology}
 
+    class NodeInfoRequest(BaseModel):
+        node_id: Optional[str] = None
+        dns: Optional[str] = None
+        ip: Optional[str] = None
+        port: Optional[int] = None
+        visited: Optional[List[str]] = None
+
+    @app.post("/get-node-info")
+    async def get_node_info(request: NodeInfoRequest):
+        """
+        POST endpoint to fetch info about a node.
+        - If no target (node_id/dns/ip) provided: return this node's info.
+        - If target matches this node: return this node's info.
+        - If target resolves to a direct URL, contact that node and return its info.
+        - Otherwise forward the request to neighbors (walking the graph) and wait for first successful response.
+        The 'visited' list is propagated to avoid infinite loops.
+        """
+        # Prepare visited set to avoid infinite loops
+        visited = set(request.visited or [])
+        if node.node_id not in visited:
+            visited.add(node.node_id)
+
+        # Helper to produce local info payload
+        def local_info():
+            return {
+                "node_id": node.node_id,
+                "vector_size": node.vector_size,
+                "peer_count": len(node.peer_nodes),
+                "node_vectors_count": len(node.node_vectors),
+                "self_url": node.self_url,
+                "vector_count": node.count_local_vectors()
+            }
+
+        # If no target specified, return local info
+        if not (request.node_id or request.dns or request.ip):
+            return local_info()
+
+        # If the request explicitly targets this node id, return local info
+        if request.node_id and request.node_id == node.node_id:
+            return local_info()
+
+        # Build a direct URL if ip/dns and port are provided
+        def build_url(dns, ip, port):
+            if ip:
+                p = port if port is not None else 80
+                return f"http://{ip}:{p}"
+            if dns:
+                p = port if port is not None else 80
+                return f"http://{dns}:{p}"
+            return None
+
+        # Try direct contact if ip/dns provided
+        direct_url = None
+        if request.ip or request.dns:
+            direct_url = build_url(request.dns, request.ip, request.port)
+
+        # If node_id is known locally, prefer our registered peer URL
+        if request.node_id and request.node_id in node.peer_nodes:
+            direct_url = node.peer_nodes[request.node_id]
+
+        # Prepare payload to forward (propagate visited)
+        forward_payload = {
+            "node_id": request.node_id,
+            "dns": request.dns,
+            "ip": request.ip,
+            "port": request.port,
+            "visited": list(visited)
+        }
+
+        # Try contacting the direct URL first (if available and not ourselves)
+        if direct_url:
+            # Avoid contacting ourselves again
+            if direct_url != node.self_url:
+                try:
+                    resp = requests.post(f"{direct_url}/get-node-info", json=forward_payload, timeout=5)
+                    if resp.status_code == 200:
+                        return resp.json()
+                except requests.RequestException:
+                    # Failed to contact direct node, will try neighbors below
+                    pass
+
+        # If direct contact failed or wasn't possible, forward to neighbors
+        # Iterate peers and ask them (skip visited)
+        for peer_id, peer_url in node.peer_nodes.items():
+            if peer_id in visited:
+                continue
+            # mark as visited for this hop
+            new_payload = dict(forward_payload)
+            new_payload["visited"] = list(visited | {peer_id})
+            try:
+                resp = requests.post(f"{peer_url}/get-node-info", json=new_payload, timeout=5)
+                if resp.status_code == 200:
+                    return resp.json()
+            except requests.RequestException:
+                # ignore and try next peer
+                continue
+
+        # If nothing found
+        raise HTTPException(status_code=404, detail="Target node not found in network")
+
     return app
 
 
