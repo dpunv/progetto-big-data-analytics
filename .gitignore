@@ -13,3 +13,4 @@ centroids.json
 qdrant_data/*
 node_assignments.json
 meta_hnsw_index.*
+benchmarks/*
