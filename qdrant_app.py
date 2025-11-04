@@ -8,6 +8,7 @@ import os
 import utils
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+from meta_hnsw import MetaHNSW
 
 # NEW: Import the node assignment computation
 try:
@@ -38,7 +39,6 @@ MAX_RETRIES = len(BATCH_TIERS)
 TRAINING_VECTORS = 10000
 ASSIGNMENTS_FILE = 'node_assignments.json'
 FORCE_RETRAIN = False  # Set to True to force recomputation
-
 # -----------------------------------
 
 if VECTOR_SIZE < NUM_NODES:
@@ -65,83 +65,72 @@ print("\n" + "="*60)
 print("0. COMPUTING SMART NODE ASSIGNMENTS")
 print("="*60)
 
-node_assignment_data = None
-
 try:
-    # 1. Check if assignment file exists and is valid
-    if os.path.exists(ASSIGNMENTS_FILE) and not FORCE_RETRAIN:
+    node_assignment_data = None
+
+    # Try load existing assignments file
+    if os.path.exists(ASSIGNMENTS_FILE):
         print(f"📂 Found existing assignments file '{ASSIGNMENTS_FILE}'...")
         with open(ASSIGNMENTS_FILE, 'r') as f:
             node_assignment_data = json.load(f)
-        
-        # Verify it matches current configuration
         stats = node_assignment_data.get('stats', {})
         if stats.get('num_nodes') == NUM_NODES:
-            print(f"✅ Successfully loaded assignments for {NUM_NODES} nodes.")
-            print(f"   - Number of clusters: {stats.get('num_clusters')}")
-            print(f"   - Replication factor: {stats.get('replication_factor')}")
-            print(f"   Skipping computation (using cached assignments).")
+            print(f"✅ Assignments file matches NUM_NODES={NUM_NODES}, using cached assignments.")
         else:
-            print(f"⚠️  Warning: '{ASSIGNMENTS_FILE}' is for {stats.get('num_nodes')} nodes, but {NUM_NODES} are needed.")
-            print("   Forcing recomputation...")
+            print(f"⚠️  Assignments file for {stats.get('num_nodes')} nodes (need {NUM_NODES}) — will recompute.")
             node_assignment_data = None
-    
-    # 2. If no valid data, compute assignments
+
+    # Compute assignments if needed
     if node_assignment_data is None:
-        if not os.path.exists(ASSIGNMENTS_FILE):
-            print(f"Assignments file not found. Starting computation...")
-        
-        # Check we have enough data
         if len(data) < TRAINING_VECTORS:
-            print(f"❌ ERROR: Insufficient data for training.")
-            print(f"   Need {TRAINING_VECTORS} vectors, but 'embeddings.json' only has {len(data)}.")
+            print(f"❌ ERROR: Insufficient data for training. Need {TRAINING_VECTORS}, have {len(data)}")
+            print("   Please generate more embeddings.")
             sys.exit(1)
-        
-        print(f"🎯 Starting smart clustering and load balancing...")
-        print(f"   Training on {TRAINING_VECTORS} vectors")
-        print(f"   Target: {NUM_NODES} nodes")
-        
+
+        print(f"🎯 Computing node assignments (training on {TRAINING_VECTORS} vectors)...")
         start_compute = time.time()
-        
-        # 3. Run the complete pipeline
+
         node_assignment_data = compute_node_assignments(
             embeddings_file='embeddings.json',
             num_nodes=NUM_NODES,
-            max_k_to_test=min(30, TRAINING_VECTORS // 100),  # Sensible default
+            max_k_to_test=min(30, TRAINING_VECTORS // 100),
             random_state=42,
             max_vectors=TRAINING_VECTORS,
-            rep_factor=None,  # Auto-calculate
+            rep_factor=None,
             beam_width=5,
             use_simulated_annealing=False
         )
-        
+
         compute_time = time.time() - start_compute
-        print(f"\n✅ Assignment computation completed in {compute_time:.2f}s.")
+        print(f"✅ Assignment computation completed in {compute_time:.2f}s.")
+
+        # persist full assignment data for future runs
+        with open(ASSIGNMENTS_FILE, 'w') as f:
+            json.dump(node_assignment_data, f, indent=2)
+        print(f"💾 Saved assignment data to {ASSIGNMENTS_FILE}")
+
+    # Extract CENTROIDS (tutti i centroidi) e la mappa NODE_ASSIGNMENTS (lista indici per nodo)
+    CENTROIDS = node_assignment_data.get('centroids', [])
+    NODE_ASSIGNMENTS = node_assignment_data.get('node_assignments', {})
+    ASSIGNMENT_DETAILS = node_assignment_data.get('assignment_details', {})
+    REPLICATION_FACTOR = node_assignment_data.get('stats', {}).get('replication_factor', 1)
+
+    # Optional: save the full centroid list for compatibility with other tools
+    try:
+        with open(CENTROIDS_FILE, 'w') as f:
+            json.dump(CENTROIDS, f, indent=2)
+        print(f"💾 Full centroid list saved to {CENTROIDS_FILE} ({os.path.getsize(CENTROIDS_FILE)/1024:.2f} KB)")
+    except Exception:
+        pass
+
+    # Print brief summary
+    print(f"Loaded {len(CENTROIDS)} centroids; node assignment map contains {len(NODE_ASSIGNMENTS)} nodes' assignments.")
 
 except Exception as e:
-    print(f"❌ FATAL ERROR during node assignment computation: {e}")
+    print(f"❌ FATAL ERROR during assignment/centroid preparation: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)
-
-# Extract the computed data
-CENTROIDS = node_assignment_data['centroids']
-NODE_ASSIGNMENTS = node_assignment_data['node_assignments']
-ASSIGNMENT_DETAILS = node_assignment_data['assignment_details']
-REPLICATION_FACTOR = node_assignment_data['stats']['replication_factor']
-
-print("\n" + "="*60)
-print("ASSIGNMENT SUMMARY")
-print("="*60)
-print(f"Total Clusters: {len(CENTROIDS)}")
-print(f"Replication Factor: {REPLICATION_FACTOR}")
-print(f"Nodes: {NUM_NODES}")
-print("\nClusters per node:")
-for node_idx in range(NUM_NODES):
-    cluster_indices = NODE_ASSIGNMENTS.get(str(node_idx), NODE_ASSIGNMENTS.get(node_idx, []))
-    print(f"  Node {node_idx+1}: {len(cluster_indices)} clusters -> {cluster_indices}")
-
-# --- END NEW LOGIC ---
 
 # --- Dynamic Node Configuration ---
 NODE_URLS = []
@@ -153,7 +142,138 @@ MAJORITY = (NUM_NODES // 2) + 1  # need >N/2 reporters to mark a node DOWN to ex
 PEER_REPORT_REFRESH_INTERVAL = 30  # seconds between aggregate checks
 _last_peer_report_time = 0.0
 UNAVAILABLE_NODES = set()  # node ids like "node1", "node2"
+meta_hnsw: MetaHNSW = None
+META_HNSW_PATH = 'meta_hnsw_index.pkl'
 
+def initialize_meta_hnsw():
+    global meta_hnsw
+
+    print("\n--- 3. Initializing Meta-HNSW with K-means Centroids ---")
+
+    if os.path.exists(META_HNSW_PATH):
+        print(f"📂 Found existing Meta-HNSW index: {META_HNSW_PATH}")
+        try:
+            meta_hnsw = MetaHNSW.load(META_HNSW_PATH)
+            print(f"✅ Loaded MetaHNSW with {len(meta_hnsw.node_to_clusters)} nodes")
+            if len(meta_hnsw.node_to_clusters) == NUM_NODES:
+                print("   Using cached index (matching node count)")
+                stats = meta_hnsw.get_statistics()
+                print(f"   Cached stats:")
+                print(f"     - Total clusters: {stats['num_clusters_total']}")
+                print(f"     - Avg clusters/node: {stats['avg_clusters_per_node']:.1f}")
+                print(f"     - Mean node distance: {stats['mean_node_distance']:.4f}")
+                return
+            else:
+                print(f"⚠️  Cached index has {len(meta_hnsw.node_to_clusters)} nodes, but {NUM_NODES} are needed")
+                print("   Rebuilding index...")
+        except Exception as e:
+            print(f"⚠️  Failed to load cached index: {e}")
+            print("   Building new index...")
+
+    print(f"🏗️  Building new Meta-HNSW index for {NUM_NODES} nodes...")
+    meta_hnsw = MetaHNSW(
+        dimension=VECTOR_SIZE,
+        max_clusters=max(len(CENTROIDS), NUM_NODES * 10),
+        ef_construction=200,
+        M=16
+    )
+
+    start_time = time.time()
+
+    for i in range(NUM_NODES):
+        node_id = f"node{i+1}"
+        cluster_indices = NODE_ASSIGNMENTS.get(str(i), NODE_ASSIGNMENTS.get(i, []))
+        cluster_list = []
+        for idx in cluster_indices:
+            cluster_list.append(np.array(CENTROIDS[idx]))
+        if not cluster_list:
+            # fallback: use a random unit vector if node has no clusters
+            v = np.random.rand(VECTOR_SIZE)
+            v = v / np.linalg.norm(v)
+            cluster_list = [v]
+            print(f"  {node_id}: WARNING - no clusters assigned, adding random fallback cluster")
+
+        print(f"  Adding {node_id} with {len(cluster_list)} cluster(s)...", end=" ")
+        meta_hnsw.add_node_clusters(node_id, cluster_list)
+        print("✓")
+
+    meta_hnsw.force_rebuild()
+    elapsed = time.time() - start_time
+
+    stats = meta_hnsw.get_statistics()
+    print(f"\n✅ Meta-HNSW initialized in {elapsed:.2f}s")
+    print(f"   Nodes: {stats['num_nodes']}")
+    print(f"   Total clusters: {stats['num_clusters_total']}")
+    print(f"   Avg clusters/node: {stats['avg_clusters_per_node']:.1f}")
+    print(f"   Mean node distance: {stats['mean_node_distance']:.4f}")
+
+    print(f"\n🔍 Verifying cluster consistency (per-node first cluster sample):")
+    for i in range(NUM_NODES):
+        node_id = f"node{i+1}"
+        cluster_indices = NODE_ASSIGNMENTS.get(str(i), NODE_ASSIGNMENTS.get(i, []))
+        if cluster_indices:
+            sample_idx = cluster_indices[0]
+            kmeans_centroid = np.array(CENTROIDS[sample_idx])
+            cluster_ids = meta_hnsw.node_to_clusters[node_id]
+            hnsw_cluster = meta_hnsw.cluster_centroids[cluster_ids[0]]
+            diff = np.linalg.norm(kmeans_centroid - hnsw_cluster)
+            print(f"   {node_id}: sample_cluster_idx={sample_idx}, hnsw_cluster_id={cluster_ids[0]}, diff={diff:.6f}")
+        else:
+            print(f"   {node_id}: no assigned clusters to verify")
+
+    meta_hnsw.save(META_HNSW_PATH)
+    print(f"\n💾 Meta-HNSW saved to {META_HNSW_PATH}\n")
+
+# --- NEW FUNCTION: Wait for Qdrant indexing ---
+def wait_for_qdrant_indexing():
+    print("\n--- Waiting for Qdrant to finish indexing ---")
+
+    max_wait_time = 60
+    start_time = time.time()
+
+    all_indexed = False
+    while not all_indexed and (time.time() - start_time) < max_wait_time:
+        all_indexed = True
+
+        for i in range(NUM_NODES):
+            node_id = f"node{i+1}"
+            qdrant_port = 6333 + (i) * 2
+            qdrant_url = f"http://localhost:{qdrant_port}"
+
+            try:
+                response = requests.get(
+                    f"{qdrant_url}/collections/vectors",
+                    timeout=5
+                )
+
+                if response.status_code == 200:
+                    collection_info = response.json()
+                    status = collection_info.get('result', {}).get('status', 'unknown')
+
+                    if status != 'green':
+                        print(f"  {node_id}: Indexing status '{status}' (waiting...)")
+                        all_indexed = False
+                    else:
+                        print(f"  ✓ {node_id}: Indexing complete (status 'green')")
+                else:
+                    print(f"  ⚠️  {node_id}: Could not check status (HTTP {response.status_code})")
+                    all_indexed = False
+
+            except requests.exceptions.RequestException as e:
+                print(f"  ⚠️  {node_id}: Error checking indexing status: {e}")
+                all_indexed = False
+
+        if not all_indexed:
+            time.sleep(2)
+
+    if all_indexed:
+        print("✅ All nodes finished indexing!\n")
+    else:
+        elapsed = time.time() - start_time
+        print(f"⚠️  Indexing check timeout after {elapsed:.1f}s")
+        print("   Proceeding anyway, but queries might fail...\n")
+
+        
 def update_unavailable_nodes():
     """
     Query /peers on all nodes and aggregate how many reporters mark each node DOWN.
@@ -627,11 +747,158 @@ def check_counts(insertions: list):
 
 
 def run_queries():
-    """Run a single federated search query."""
-    print("\n" + "="*60)
-    print("4. RUNNING FEDERATED SEARCH QUERY")
-    print("="*60)
-    
+    """Run federated search query with Meta-HNSW intelligent routing."""
+    print("--- 4. Running Smart Federated Search (Meta-HNSW Routing) ---")
+
+    if meta_hnsw is None:
+        print("⚠️  Meta-HNSW not initialized, falling back to broadcast query")
+        run_queries_fallback()
+        return
+
+    query_vector = np.array(data[NUM_VECTORS]['embedding'])
+
+    k_nodes = min(3, NUM_NODES)
+
+    print(f"🔍 Finding {k_nodes} nearest nodes using Meta-HNSW...")
+    nearest_nodes = meta_hnsw.find_nearest_nodes(query_vector, k=k_nodes)
+
+    print(f"📍 Meta-HNSW routing:")
+    for node_name, distance in nearest_nodes:
+        print(f"   - {node_name}: distance={distance:.4f}")
+
+    try:
+        all_results = {}
+        best_overall_score = -2.0
+        best_overall_node = "N/A"
+
+        for node_name, distance in nearest_nodes:
+            node_idx = int(node_name.replace("node", "")) - 1
+            node_url = NODE_URLS[node_idx]
+
+            payload = {
+                "from_node": "client",
+                "query_vector": query_vector.tolist(),
+                "top_k": 5
+            }
+
+            response = requests.post(
+                f"{node_url}/search",
+                json=payload,
+                timeout=10
+            )
+            response.raise_for_status()
+
+            results = response.json()
+            all_results[node_name] = results
+
+            if results:
+                max_score = results[0].get('score', -1)
+                if max_score > best_overall_score:
+                    best_overall_score = max_score
+                    best_overall_node = node_name
+
+        print(f"\n✅ Smart query complete (queried {len(nearest_nodes)}/{NUM_NODES} nodes):")
+        total_results = 0
+
+        for node_name, results in all_results.items():
+            count = len(results)
+            total_results += count
+            max_score = results[0].get('score', -1) if count > 0 else -1
+            min_score = results[-1].get('score', -1) if count > 0 else -1
+
+            print(f"  - {node_name}: {count} results (Best: {max_score:.4f}, Worst: {min_score:.4f})")
+
+        print(f"\n  - Total Results: {total_results}")
+        print(f"  - Best Match: {best_overall_node} (Score: {best_overall_score:.4f})")
+
+        print(f"\n💡 Efficiency gain: Queried only {len(nearest_nodes)}/{NUM_NODES} nodes "
+              f"({100 * len(nearest_nodes) / NUM_NODES:.0f}% of cluster)")
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error during smart query: {e}")
+        import traceback
+        print("\nDebug traceback:")
+        traceback.print_exc()
+
+def run_queries_debug():
+    """Run federated search query with Meta-HNSW intelligent routing."""
+    print("--- 4. Running Smart Federated Search (Meta-HNSW Routing) ---")
+
+    if meta_hnsw is None:
+        print("⚠️  Meta-HNSW not initialized, falling back to broadcast query")
+        run_queries_fallback()
+        return
+
+    query_vector = np.array(data[NUM_VECTORS]['embedding'])
+
+    k_nodes = NUM_NODES
+
+    print(k_nodes)
+    print(f"🔍 Finding {k_nodes} nearest nodes using Meta-HNSW...")
+    nearest_nodes = meta_hnsw.find_nearest_nodes(query_vector, k=k_nodes)
+
+    print(f"📍 Meta-HNSW routing:")
+    for node_name, distance in nearest_nodes:
+        print(f"   - {node_name}: distance={distance:.4f}")
+
+    try:
+        all_results = {}
+        best_overall_score = -2.0
+        best_overall_node = "N/A"
+
+        for node_name, distance in nearest_nodes:
+            node_idx = int(node_name.replace("node", "")) - 1
+            node_url = NODE_URLS[node_idx]
+
+            payload = {
+                "from_node": "client",
+                "query_vector": query_vector.tolist(),
+                "top_k": 5
+            }
+
+            response = requests.post(
+                f"{node_url}/search",
+                json=payload,
+                timeout=10
+            )
+            response.raise_for_status()
+
+            results = response.json()
+            all_results[node_name] = results
+
+            if results:
+                max_score = results[0].get('score', -1)
+                if max_score > best_overall_score:
+                    best_overall_score = max_score
+                    best_overall_node = node_name
+
+        print(f"\n✅ Smart query complete (queried {len(nearest_nodes)}/{NUM_NODES} nodes):")
+        total_results = 0
+
+        for node_name, results in all_results.items():
+            count = len(results)
+            total_results += count
+            max_score = results[0].get('score', -1) if count > 0 else -1
+            min_score = results[-1].get('score', -1) if count > 0 else -1
+
+            print(f"  - {node_name}: {count} results (Best: {max_score:.4f}, Worst: {min_score:.4f})")
+
+        print(f"\n  - Total Results: {total_results}")
+        print(f"  - Best Match: {best_overall_node} (Score: {best_overall_score:.4f})")
+
+        print(f"\n💡 Efficiency gain: Queried only {len(nearest_nodes)}/{NUM_NODES} nodes "
+              f"({100 * len(nearest_nodes) / NUM_NODES:.0f}% of cluster)")
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error during smart query: {e}")
+        import traceback
+        print("\nDebug traceback:")
+        traceback.print_exc()
+
+def run_queries_fallback():
+    """Fallback to broadcast query (original implementation)."""
+    print("--- Running Broadcast Federated Search (Fallback) ---")
+
     query_vector = data[NUM_VECTORS]['embedding']
 
     try:
@@ -642,44 +909,41 @@ def run_queries():
         )
         r_fed.raise_for_status()
         fed_results = r_fed.json()
-        
-        print(f"Federated search complete:")
+
+        print(f"Federated search complete (queried ALL {NUM_NODES} nodes):")
         results_data = fed_results.get('results', {})
-        
-        all_results = []
+
         best_overall_node = "N/A"
         best_overall_score = -2.0
-        
+
         for i in range(NUM_NODES):
             node_id = f"node{i+1}"
             cluster_indices = NODE_ASSIGNMENTS.get(str(i), NODE_ASSIGNMENTS.get(i, []))
             node_vectors = [CENTROIDS[idx] for idx in cluster_indices] if cluster_indices else []
-            
-            # Calculate best similarity to any of this node's centroids
+
+            # Compute best similarity between query and any centroid assigned to the node
             node_similarity = -1.0
             if node_vectors:
-                similarities = [utils.cosine_similarity(query_vector, nv) for nv in node_vectors]
-                node_similarity = max(similarities)
-            
+                sims = [utils.cosine_similarity(query_vector, nv) for nv in node_vectors]
+                node_similarity = max(sims)
+
             node_results_list = results_data.get(node_id, [])
             node_results_count = len(node_results_list)
-            
+
             max_score = node_results_list[0].get('score', -1) if node_results_count > 0 else -1
             min_score = node_results_list[-1].get('score', -1) if node_results_count > 0 else -1
-            
-            print(f"  - Results from {node_id}: {node_results_count} "
-                  f"(Best: {max_score:.4f}, Worst: {min_score:.4f}, "
-                  f"Node Best: {node_similarity:.4f}, Clusters: {len(cluster_indices)})")
-            
+
+            print(f"  - {node_id}: {node_results_count} results (Best: {max_score:.4f}, Worst: {min_score:.4f}, Centroid Best: {node_similarity:.4f}, Clusters: {len(cluster_indices)})")
+
             if max_score > best_overall_score:
                 best_overall_score = max_score
                 best_overall_node = node_id
-        
-        print(f"\n  - Total Results Found: {fed_results.get('total_results')}")
-        print(f"ℹ️  {best_overall_node} had the best matching vector (Score: {best_overall_score:.4f}).")
+
+        print(f"\n  - Total Results: {fed_results.get('total_results')}")
+        print(f"  - Best Match: {best_overall_node} (Score: {best_overall_score:.4f})")
 
     except requests.exceptions.RequestException as e:
-        print(f"!!! Error running federated query: {e}")
+        print(f"❌ Error running broadcast query: {e}")
 
 
 def main_app():
@@ -694,13 +958,19 @@ def main_app():
     start_time = time.time()
     
     register_peers()
+    
     insertions = insert_vectors_bulk()
+
+    wait_for_qdrant_indexing()
+
+    initialize_meta_hnsw()
     
     print("--- Waiting 5s for background insertions to settle... ---")
     time.sleep(15)
     
     check_counts(insertions)
     run_queries()
+    run_queries_debug()
     
     end_time = time.time()
     print("\n" + "="*60)
