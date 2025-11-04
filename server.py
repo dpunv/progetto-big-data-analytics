@@ -1118,7 +1118,8 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
                 "replicas_succeeded": success_nodes,
                 "replicas_failed": failed_nodes
             }
-
+        except Exception as e:
+            print(e)
         
     #  Visualization server endpoints
 
