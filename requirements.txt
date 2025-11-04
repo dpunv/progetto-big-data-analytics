@@ -6,6 +6,7 @@ pydantic
 scikit-learn
 transformers
 torch
+faiss-cpu
 hnswlib
-faiss
 msgpack
+matplotlib
