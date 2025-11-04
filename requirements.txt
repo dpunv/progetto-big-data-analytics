@@ -6,3 +6,5 @@ pydantic
 scikit-learn
 transformers
 torch
+hnswlib
+faiss
