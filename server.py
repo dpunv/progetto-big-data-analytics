@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import socket
 import threading
 import time
+from embeddings import EmbeddingService
 
 # Pydantic models for request/response validation
 class VectorDataModel(BaseModel):
@@ -64,13 +65,8 @@ class QdrantNodeWrapper:
     """
     Wrapper for a Qdrant vector database node with inter-node communication capabilities.
     """
-    
-    def __init__(self, node_id: str, 
-                 qdrant_host: str = "localhost", 
-                 qdrant_port: int = 6335, 
-                 collection_name: str = "vectors",
-                 self_url: str = "http://localhost:8000", # New: Node's own URL for registration
-                 vector_size: int = 384):                  # New: Vector dimension
+
+    def __init__(self, node_id: str, qdrant_host: str = "localhost", qdrant_port: int = 6335, collection_name: str = "vectors", self_url: str = "http://localhost:8000", vector_size: int = 384):
         self.node_id = node_id
         self.qdrant_url = f"http://{qdrant_host}:{qdrant_port}"
         self.collection_name = collection_name
@@ -79,6 +75,7 @@ class QdrantNodeWrapper:
         self.vector_size = vector_size
         self.node_vectors: List[List[float]] = []
         self.peer_node_vectors: Dict[str, List[List[float]]] = {}
+        self.embedding_service: Optional[object] = None 
         
         # --- NEW: per-peer health status ---
         self.peer_status: Dict[str, Dict[str, Any]] = {}
@@ -586,7 +583,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         }
     
     @app.post("/receive_vector")
-    async def receive_vector(request: SendVectorRequest):
+    async def receive_vector_endpoint(request: SendVectorRequest):
         """
         Endpoint to receive a SINGLE vector from other nodes
         """
@@ -913,7 +910,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         }
     
     @app.get("/peers")
-    async def list_peers():
+    async def list_peers_endpoint():
         """List all registered peer nodes and their cached vector status"""
         peers_with_vectors = {
             pid: {
@@ -960,6 +957,168 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             }
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/get-embedding")
+    async def get_embedding_endpoint(payload: Dict[str, Any]):
+        """
+        Riceve un JSON { "text": "..." } e restituisce { "embedding": [...] }.
+        Tutta la logica per generare l'embedding è autocontenuta in questa funzione.
+        """
+        try:
+            # Validazione input
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Field 'text' must be a non-empty string")
+
+            # Use the per-node embedding service instance initialized at startup.
+            svc = getattr(node, "embedding_service", None)
+            if svc is None:
+                # Fail fast: we do not lazily create the model here
+                raise HTTPException(status_code=500, detail="Embedding service not initialized on this node")
+
+            embedding = svc.get_embedding(text)
+
+            return {"embedding": embedding}
+
+        except Exception as e:
+            # Error handling chiaro
+            raise HTTPException(status_code=400, detail=str(e))
+        
+    @app.post("/search/local/string")
+    async def search_local_string_endpoint(payload: Dict[str, Any], top_k: int = 5):
+        """
+        Search only the local database using a text string.
+        This endpoint generates the embedding for the string and performs a vector search.
+        """
+        try:
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Field 'text' must be a non-empty string")
+
+            # Use the per-node embedding service instance initialized at startup.
+            svc = getattr(node, "embedding_service", None)
+            if svc is None:
+                raise HTTPException(status_code=500, detail="Embedding service not initialized on this node")
+
+            embedding = svc.get_embedding(text)
+
+            results = node.search_local(embedding, top_k)
+            if results is not None:
+                return {
+                    "node_id": node.node_id,
+                    "results": results,
+                    "count": len(results)
+                }
+            else:
+                raise HTTPException(status_code=500, detail="Local search failed")
+
+        except Exception as e:
+            # Error handling chiaro
+            raise HTTPException(status_code=400, detail=str(e))
+        
+    @app.post("/search/federated/string")
+    async def federated_search_string_endpoint(payload: Dict[str, Any], top_k: int = 5):
+        """
+        Search across all nodes (local + peers) using a text string.
+        This endpoint generates the embedding for the string and performs a vector search.
+        """
+        try:
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Field 'text' must be a non-empty string")
+
+            # Use the per-node embedding service instance initialized at startup.
+            svc = getattr(node, "embedding_service", None)
+            if svc is None:
+                raise HTTPException(status_code=500, detail="Embedding service not initialized on this node")
+
+            embedding = svc.get_embedding(text)
+
+            results = node.federated_search(embedding, top_k)
+            total_results = sum(len(r) for r in results.values())
+            return {
+                "status": "success",
+                "results": results,
+                "nodes_searched": len(results),
+                "total_results": total_results
+            }
+
+        except Exception as e:
+            # Error handling chiaro
+            raise HTTPException(status_code=400, detail=str(e))
+        
+    @app.post("/add-vector/string")
+    async def add_vector_string_endpoint(payload: Dict[str, Any]):
+        """
+        Add a new SINGLE vector from an external client using a text string.
+        This node will generate the embedding, find the best cluster and route the vector
+        to ALL replica nodes for that cluster.
+        """
+        try:
+            text = payload.get("text")
+            vector_id = payload.get("id")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Field 'text' must be a non-empty string")
+            if not isinstance(vector_id, str) or not vector_id.strip():
+                raise ValueError("Field 'id' must be a non-empty string")
+
+            # Use the per-node embedding service instance initialized at startup.
+            svc = getattr(node, "embedding_service", None)
+            if svc is None:
+                raise HTTPException(status_code=500, detail="Embedding service not initialized on this node")
+
+            embedding = svc.get_embedding(text)
+
+            vec_data = VectorData(
+                id=vector_id,
+                vector=embedding,
+                payload={"text": text}
+            )
+
+            # 1. Find all replica nodes for this vector
+            replica_node_ids = node.find_best_nodes(vec_data.vector)
+
+            print(f"Node {node.node_id}: Routing vector {vec_data.id} to {len(replica_node_ids)} replicas: {replica_node_ids}")
+
+            success_nodes = []
+            failed_nodes = []
+
+            # 2. Send to all replicas
+            for node_id in replica_node_ids:
+                success = False
+                if node_id == node.node_id:
+                    # Store locally
+                    print(f"Node {node.node_id}: Storing vector {vec_data.id} locally (replica).")
+                    success = node.receive_vector(
+                        from_node_id="external_client_routed", 
+                        vector_data=vec_data
+                    )
+                else:
+                    # Forward to peer
+                    print(f"Node {node.node_id}: Forwarding vector {vec_data.id} to replica {node_id}.")
+                    success = node.send_vector(node_id, vec_data)
+
+                if success:
+                    success_nodes.append(node_id)
+                else:
+                    failed_nodes.append(node_id)
+
+            # 3. Report result
+            if not success_nodes:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to store vector {vector_id} on any replica."
+                )
+
+            return {
+                "status": "success",
+                "message": f"Vector {vector_id} routed to {len(replica_node_ids)} replicas.",
+                "vector_id": vector_id,
+                "replicas_targeted": replica_node_ids,
+                "replicas_succeeded": success_nodes,
+                "replicas_failed": failed_nodes
+            }
+
         
     #  Visualization server endpoints
 
@@ -1205,6 +1364,14 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
         
         initial_count = node.count_local_vectors()
         print(f"Node {node_id}: Initial vector count: {initial_count}")
+    # Create a per-node embedding service instance (each node owns its model)
+    try:
+        node.embedding_service = EmbeddingService()
+        print(f"Node {node_id}: Initialized embedding service (model: {node.embedding_service.model_name})")
+    except Exception as e:
+        # If model libs not available, attach None and handle at request time
+        node.embedding_service = None
+        print(f"Node {node_id}: WARNING - could not initialize embedding service: {e}")
     
     app = create_app(node)
     
