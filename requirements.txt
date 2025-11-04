@@ -4,3 +4,5 @@ requests
 fastapi
 pydantic
 scikit-learn
+transformers
+torch

@@ -87,8 +87,67 @@
 
     #graph {
       flex: 1;
-      height: 100%
+      height: 100%;
+      position: relative;
+      /* allow absolutely positioned overlay inside */
     }
+
+    /* Floating search bar placed on top of the graph */
+    .floating-search {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      z-index: 70;
+      background: #fff;
+      border: 1px solid #e6e7eb;
+      box-shadow: 0 8px 20px rgba(2, 6, 23, 0.08);
+      padding: 8px 10px;
+      border-radius: 10px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      width: calc(100% - 24px);
+      max-width: none;
+      box-sizing: border-box;
+    }
+
+    /* Dimmed state when modal/backdrop is shown */
+    .floating-search.dimmed {
+      opacity: 0.35;
+      filter: grayscale(20%) blur(1px);
+      pointer-events: none;
+      transition: opacity 180ms ease, filter 180ms ease;
+    }
+
+    .floating-search input[type="text"],
+    .floating-search input[type="number"] {
+      padding: 6px 8px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .floating-search .results {
+      margin-top: 10px;
+      max-height: 280px;
+      overflow: auto;
+      border-top: 1px dashed #eee;
+      padding-top: 8px;
+      font-size: 13px;
+    }
+
+    .fres-node {
+      margin-bottom: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.03);
+    }
+
+    .fres-node h4 {
+      margin: 0 0 6px 0;
+      font-size: 13px
+    }
+
 
     .node {
       cursor: pointer
@@ -337,7 +396,25 @@
         </div>
       </div>
     </aside>
-    <div id="graph" role="region" aria-label="Topology graph"></div>
+    <div id="graph" role="region" aria-label="Topology graph">
+      <!-- Floating federated search bar (overlays the graph) -->
+      <div id="floating-search" class="floating-search" aria-hidden="false">
+        <input id="fs-query" type="text" placeholder="Enter search text (e.g. 'open source projects')" style="flex:1" />
+        <select id="fs-mode" title="Mode" style="width:110px">
+          <option value="search">Search</option>
+          <option value="insert">Insert</option>
+        </select>
+        <input id="fs-id" type="text" placeholder="vector id (for insert)" style="width:180px; display:none" />
+        <input id="fs-topk" type="number" min="1" value="5" style="width:72px" />
+        <button id="fs-search">Search</button>
+        <div style="width:8px"></div>
+        <div id="fs-error" style="color:#b91c1c; font-size:12px; min-width:140px"></div>
+
+        <div id="fs-results" class="results" style="display:none; width:100%; margin-left:0;">
+          <!-- Results rendered here -->
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="modal-backdrop" class="modal-backdrop">
@@ -574,7 +651,11 @@
     const changeBtn = document.getElementById('change');
 
     function showModal(prefill) {
-      backdrop.style.display = 'flex'; errorBox.textContent = ''; hostportInput.value = prefill || ''; hostportInput.focus(); hostportInput.select();
+      backdrop.style.display = 'flex';
+      // Dim the floating search overlay while modal is open
+      const fs = document.getElementById('floating-search');
+      if (fs) fs.classList.add('dimmed');
+      errorBox.textContent = ''; hostportInput.value = prefill || ''; hostportInput.focus(); hostportInput.select();
     }
 
     async function connectFromInput() {
@@ -589,6 +670,9 @@
         currentNodes = nodes;
         renderGraph(nodes, edges);
         backdrop.style.display = 'none';
+        // Restore floating search interactivity
+        const fs = document.getElementById('floating-search');
+        if (fs) fs.classList.remove('dimmed');
         // Try to find and focus the node that corresponds to the host:port the user entered.
         // hostOnly is the normalized host:port without protocol (e.g. "localhost:8001")
         const hostOnly = base.replace(/^https?:\/\//i, '');
@@ -729,6 +813,160 @@
       selectNode(node);
       // Fit/center the viewport on the selected peer (use helper for consistency)
       fitOnNode(node);
+    }
+
+    // --- Federated search UI handlers (text-only) ---
+
+    function renderFederatedResults(data) {
+      const container = document.getElementById('fs-results');
+      const err = document.getElementById('fs-error');
+      err.textContent = '';
+      if (!container) return;
+      container.innerHTML = '';
+      if (!data) {
+        container.style.display = 'none';
+        return;
+      }
+
+      const header = document.createElement('div');
+      header.style.fontSize = '13px';
+      header.style.marginBottom = '6px';
+      header.textContent = `Nodes searched: ${data.nodes_searched || 0} — Total results: ${data.total_results || 0}`;
+      container.appendChild(header);
+
+      const results = data.results || {};
+      for (const [nodeId, hits] of Object.entries(results)) {
+        const box = document.createElement('div');
+        box.className = 'fres-node';
+        const h = document.createElement('h4');
+        h.textContent = `${nodeId} — ${hits.length} hit(s)`;
+        box.appendChild(h);
+        const ul = document.createElement('ul');
+        ul.style.margin = '6px 0 0 12px';
+        ul.style.padding = '0';
+        hits.forEach(hit => {
+          const li = document.createElement('li');
+          li.style.marginBottom = '4px';
+          // attempt to show id, score and payload keys
+          const score = hit.score !== undefined ? ` score=${hit.score}` : '';
+          const pid = hit.id !== undefined ? `${hit.id}` : JSON.stringify(hit);
+          let payload = '';
+          try { payload = hit.payload ? JSON.stringify(hit.payload) : ''; } catch (e) { payload = '' }
+          li.textContent = `${pid}${score} ${payload}`;
+          ul.appendChild(li);
+        });
+        box.appendChild(ul);
+        container.appendChild(box);
+      }
+      container.style.display = 'block';
+    }
+
+    async function performFederatedSearch() {
+      const qel = document.getElementById('fs-query');
+      const tel = document.getElementById('fs-topk');
+      const err = document.getElementById('fs-error');
+      const resultsEl = document.getElementById('fs-results');
+      err.textContent = '';
+      if (!currentBase) {
+        err.textContent = 'Connect to a node first (Change node…).';
+        return;
+      }
+      const qraw = qel.value.trim();
+      const mode = document.getElementById('fs-mode') ? document.getElementById('fs-mode').value : 'search';
+
+      if (mode === 'search') {
+        // Use text-based federated search endpoint. Server expects { text: '...' }
+        if (!qraw) {
+          err.textContent = 'Enter a search string.';
+          return;
+        }
+        const topk = Math.max(1, parseInt(tel.value || '5', 10));
+
+        // Call the string-based federated search endpoint
+        const url = currentBase + '/search/federated/string?top_k=' + encodeURIComponent(topk);
+        showGlobalLoader();
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            mode: 'cors',
+            body: JSON.stringify({ text: qraw })
+          });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          renderFederatedResults(data);
+        } catch (e) {
+          renderFederatedResults(null);
+          err.textContent = 'Search failed: ' + (e.message || e);
+          console.error('Federated search error', e);
+        } finally {
+          hideGlobalLoader();
+        }
+
+      } else if (mode === 'insert') {
+        // Insert mode: call /add-vector/string with { text, id }
+        const idEl = document.getElementById('fs-id');
+        const idv = idEl ? idEl.value.trim() : '';
+        if (!qraw) {
+          err.textContent = 'Enter a non-empty text to insert.';
+          return;
+        }
+        if (!idv) {
+          err.textContent = 'Enter a non-empty id for the vector.';
+          return;
+        }
+
+        const url = currentBase + '/add-vector/string';
+        showGlobalLoader();
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            mode: 'cors',
+            body: JSON.stringify({ text: qraw, id: idv })
+          });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          // Show simple success message in results container
+          const container = document.getElementById('fs-results');
+          container.innerHTML = '<div style="font-size:13px; padding:6px">' + (data.message || 'Inserted') + '</div>';
+          container.style.display = 'block';
+        } catch (e) {
+          err.textContent = 'Insert failed: ' + (e.message || e);
+          console.error('Insert error', e);
+        } finally {
+          hideGlobalLoader();
+        }
+      }
+    }
+
+    // Wire up UI
+    document.getElementById('fs-search').addEventListener('click', performFederatedSearch);
+    document.getElementById('fs-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') performFederatedSearch(); });
+    document.getElementById('fs-topk').addEventListener('keydown', (e) => { if (e.key === 'Enter') performFederatedSearch(); });
+
+    // Mode switch UI handling
+    const fsModeEl = document.getElementById('fs-mode');
+    const fsIdEl = document.getElementById('fs-id');
+    const fsTopkEl = document.getElementById('fs-topk');
+    function updateModeUI() {
+      const mode = fsModeEl ? fsModeEl.value : 'search';
+      if (mode === 'search') {
+        if (fsIdEl) fsIdEl.style.display = 'none';
+        if (fsTopkEl) fsTopkEl.style.display = 'inline-block';
+        document.getElementById('fs-search').textContent = 'Search';
+        document.getElementById('fs-query').placeholder = "Enter search text (e.g. 'open source projects')";
+      } else {
+        if (fsIdEl) fsIdEl.style.display = 'inline-block';
+        if (fsTopkEl) fsTopkEl.style.display = 'none';
+        document.getElementById('fs-search').textContent = 'Insert';
+        document.getElementById('fs-query').placeholder = "Enter text to index (for new vector)";
+      }
+    }
+    if (fsModeEl) {
+      fsModeEl.addEventListener('change', updateModeUI);
+      // initialize UI
+      updateModeUI();
     }
   </script>
   <!-- Global bottom loader shown while any API call is in-flight -->
