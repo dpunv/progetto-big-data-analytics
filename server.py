@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request  # NEW: Add Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
@@ -9,6 +9,7 @@ import uuid
 import json
 import numpy as np
 import utils
+import msgpack  # NEW: Import MessagePack
 from collections import defaultdict
 from urllib.parse import urlparse
 import socket
@@ -222,18 +223,22 @@ class QdrantNodeWrapper:
         peer_url = self.peer_nodes[target_node_id]
         
         try:
-            # Convert List[VectorData] to List[Dict] for JSON
+            # Convert List[VectorData] to List[Dict] for serialization
             vectors_data_dicts = [asdict(vd) for vd in vectors_data]
 
             payload = {
-                "from_node": self.node_id, # Let the peer know who forwarded it
+                "from_node": self.node_id,
                 "vectors_data": vectors_data_dicts
             }
             
+            # NEW: Serialize with MessagePack for peer-to-peer forwarding
+            binary_data = msgpack.packb(payload, use_bin_type=True)
+            
             response = requests.post(
                 f"{peer_url}/receive_vectors_bulk",
-                json=payload,
-                timeout=30 # Increased timeout for bulk ops
+                data=binary_data,  # Send raw bytes
+                headers={"Content-Type": "application/msgpack"},
+                timeout=30
             )
             
             if response.status_code == 200:
@@ -604,30 +609,49 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
 
     # --- NEW ENDPOINT for receiving bulk forwards ---
     @app.post("/receive_vectors_bulk")
-    async def receive_vectors_bulk_endpoint(request: SendVectorsBulkRequest):
+    async def receive_vectors_bulk_endpoint(request: Request):
         """
-        Endpoint to receive a BATCH of vectors from other nodes
+        Endpoint to receive a BATCH of vectors from other nodes.
+        Now supports both JSON (legacy) and MessagePack (preferred).
         """
-        # Convert from Pydantic models to VectorData dataclass
-        vectors_data_list = [
-            VectorData(
-                id=vd.id,
-                vector=vd.vector,
-                payload=vd.payload
-            ) for vd in request.vectors_data
-        ]
+        content_type = request.headers.get("Content-Type", "application/json")
         
-        success = node.receive_vectors_bulk(request.from_node, vectors_data_list)
-        
-        if success:
-            return {
-                "status": "success",
-                "message": f"Stored {len(vectors_data_list)} vectors",
-                "node_id": node.node_id
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to store bulk vectors")
-    # --- END NEW ENDPOINT ---
+        try:
+            if content_type == "application/msgpack":
+                # NEW: Deserialize MessagePack
+                body = await request.body()
+                payload = msgpack.unpackb(body, raw=False)
+                
+                from_node = payload.get("from_node")
+                vectors_data_raw = payload.get("vectors_data", [])
+            else:
+                # Legacy: JSON support (for backwards compatibility)
+                payload = await request.json()
+                from_node = payload.get("from_node")
+                vectors_data_raw = payload.get("vectors_data", [])
+            
+            # Convert to VectorData dataclass
+            vectors_data_list = [
+                VectorData(
+                    id=vd['id'],
+                    vector=vd['vector'],
+                    payload=vd.get('payload', {})
+                ) for vd in vectors_data_raw
+            ]
+            
+            success = node.receive_vectors_bulk(from_node, vectors_data_list)
+            
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Stored {len(vectors_data_list)} vectors",
+                    "node_id": node.node_id
+                }
+            else:
+                raise HTTPException(status_code=500, detail="Failed to store bulk vectors")
+                
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid payload: {str(e)}")
 
     @app.post("/send_vector/{target_node_id}")
     async def send_vector_endpoint(target_node_id: str, vector_data: VectorDataModel):
@@ -736,15 +760,35 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         }
 
     @app.post("/add_vectors_bulk")
-    async def add_vectors_bulk_endpoint(vectors: List[VectorDataModel], background_tasks: BackgroundTasks):
+    async def add_vectors_bulk_endpoint(request: Request, background_tasks: BackgroundTasks):
         """
         Add a new BATCH of vectors from an external client.
-        This node will find the best cluster for EACH vector
-        and route them to ALL replica nodes for that cluster in batches.
+        Now supports both JSON (legacy) and MessagePack (preferred).
         """
+        content_type = request.headers.get("Content-Type", "application/json")
+        
+        try:
+            if content_type == "application/msgpack":
+                # NEW: Deserialize MessagePack
+                body = await request.body()
+                vectors_raw = msgpack.unpackb(body, raw=False)
+            else:
+                # Legacy: JSON support
+                vectors_raw = await request.json()
+            
+            # Convert to VectorDataModel (Pydantic validation)
+            vectors = [
+                VectorDataModel(
+                    id=v['id'],
+                    vector=v['vector'],
+                    payload=v.get('payload', {})
+                ) for v in vectors_raw
+            ]
+            
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid payload: {str(e)}")
         
         # 1. Classify all vectors and group them by best node
-        #    A single vector will be added to the list for ALL its replica nodes.
         nodes_to_vectors: Dict[str, List[VectorData]] = defaultdict(list)
         
         total_vectors = len(vectors)
@@ -762,7 +806,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             
             for node_id in replica_node_ids:
                 nodes_to_vectors[node_id].append(vec_data)
-                total_routings += 1 # Count each replication routing
+                total_routings += 1
         
         print(f"Node {node.node_id}: Received bulk of {total_vectors}. Routing to {len(nodes_to_vectors)} nodes (total routings: {total_routings}).")
 
@@ -774,28 +818,27 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
             routing_summary[target_node_id] = batch_size
             
             if target_node_id == node.node_id:
-                # This is one of the replica nodes. Store locally (in background).
+                # Store locally (in background)
                 print(f"Node {node.node_id}: Queuing local storage of {batch_size} vectors.")
                 background_tasks.add_task(
                     node.receive_vectors_bulk,
                     from_node_id="external_client_routed",
                     vectors_data=vectors_list
                 )
-            
             else:
-                # A peer is a replica. Forward it (in background).
+                # Forward to peer (in background, using MessagePack)
                 print(f"Node {node.node_id}: Queuing forward of {batch_size} vectors to {target_node_id}.")
                 background_tasks.add_task(
                     node.send_vectors_bulk,
                     target_node_id=target_node_id,
                     vectors_data=vectors_list
                 )
-                
-        # 3. Return an immediate response to the client with the routing summary
+        
+        # 3. Return immediate response (JSON is fine for small response)
         return {
             "status": "processing_bulk",
             "message": f"Processing {total_vectors} vectors. Total routings: {total_routings} across {len(nodes_to_vectors)} nodes.",
-            "batches": routing_summary # This shows how many vectors are sent to each node
+            "batches": routing_summary
         }
 
     @app.post("/search")

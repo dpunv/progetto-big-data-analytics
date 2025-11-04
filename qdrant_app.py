@@ -6,6 +6,7 @@ import json
 import sys
 import os
 import utils
+import msgpack  # NEW: Import MessagePack
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from meta_hnsw import MetaHNSW
@@ -433,13 +434,18 @@ def send_batch_with_retry(
     timeout = calculate_timeout(batch_size)
     
     try:
+        # NEW: Serialize with MessagePack instead of JSON
+        binary_data = msgpack.packb(vectors_batch, use_bin_type=True)
+        
         response = requests.post(
             f"{node_url}/add_vectors_bulk",
-            json=vectors_batch,
+            data=binary_data,  # Send raw bytes
+            headers={"Content-Type": "application/msgpack"},  # Set proper content type
             timeout=timeout
         )
         response.raise_for_status()
         
+        # Response is still JSON (small payload, no need to change)
         res_data = response.json()
         batch_metrics.on_success(batch_size)
         return True, res_data
