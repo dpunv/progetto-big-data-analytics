@@ -11,12 +11,13 @@ import random
 import math
 import heapq
 import time
+import ijson  # NEW: Import for streaming JSON parsing
 
 # --- K-Means Analysis Functions ---
 
 def load_vectors(filename, max_vectors):
     """
-    Loads vectors from a JSON file.
+    Loads vectors from a JSON file using a streaming parser to handle large files.
     Expects a JSON file containing a list of objects,
     each with an 'embedding' key.
     e.g., [{'embedding': [1, 2]}, {'embedding': [3, 4]}, ...]
@@ -27,14 +28,18 @@ def load_vectors(filename, max_vectors):
         sys.exit(1)
         
     try:
+        print(f"Streaming vectors from '{filename}' (up to {max_vectors})...")
+        vectors = []
         with open(filename, 'r') as f:
-            # Assumes the structure is a list of objects with 'embedding' keys
-            vectors = [item['embedding'] for item in json.load(f)]
-            
-        if max_vectors > 0:
-             vectors = vectors[:max_vectors]
+            # Use ijson to stream-load the large JSON file, preventing MemoryError.
+            # FIX: Use parse_float=float to avoid creating Decimal objects.
+            parser = ijson.items(f, 'item', parse_float=float)
+            for i, item in enumerate(parser):
+                if max_vectors > 0 and i >= max_vectors:
+                    break
+                vectors.append(item['embedding'])
         
-        X = np.array(vectors)
+        X = np.array(vectors, dtype=np.float32) # FIX: Ensure dtype is float32 for FAISS
         
         if len(X.shape) != 2 or X.shape[1] == 0:
             print(f"Error: Data in '{filename}' is not a valid 2D array.")
@@ -45,6 +50,8 @@ def load_vectors(filename, max_vectors):
         
     except Exception as e:
         print(f"Error loading or processing '{filename}': {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 def plot_elbow_method(X, max_k, random_state):

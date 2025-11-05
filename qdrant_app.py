@@ -7,8 +7,10 @@ import sys
 import os
 import utils
 import msgpack
+import ijson  # NEW: Import for streaming JSON parsing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+from node_assignment import compute_node_assignments # FIX: Import the missing function
 
 # --- Configuration ---
 try:
@@ -31,6 +33,7 @@ MAX_RETRIES = len(BATCH_TIERS)
 # --- Training Configuration ---
 TRAINING_VECTORS = 10000
 ASSIGNMENTS_FILE = 'node_assignments.json'
+CENTROIDS_FILE = 'centroids.json' # FIX: Define the missing constant
 FORCE_RETRAIN = False  # Set to True to force recomputation
 # -----------------------------------
 
@@ -40,16 +43,36 @@ if VECTOR_SIZE < NUM_NODES:
     sys.exit(1)
 
 # --- Helper Functions ---
-data = {}
+data = []
 try:
+    print("Loading embeddings from 'embeddings.json' using a streaming parser...")
     with open('embeddings.json', 'r') as f:
-        data = json.load(f)
+        # Use ijson to stream-load the large JSON file, preventing MemoryError.
+        # We only load the number of vectors we actually need.
+        # FIX: Use parse_float=float to avoid creating Decimal objects.
+        parser = ijson.items(f, 'item', parse_float=float)
+        for i, item in enumerate(parser):
+            if i >= NUM_VECTORS + 1:
+                break
+            data.append(item)
+    print(f"✅ Loaded {len(data)} embeddings from file.")
+
+    # If the file has fewer vectors than needed, generate the rest.
     if len(data) < NUM_VECTORS + 1:
-        print(f"Warning: embeddings.json has only {len(data)} items, but {NUM_VECTORS}+1 are needed.")
+        print(f"Warning: embeddings.json has only {len(data)} items, but {NUM_VECTORS + 1} are needed.")
+        print("Generating additional random data...")
         for i in range(len(data), NUM_VECTORS + 1):
             data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
+
 except FileNotFoundError:
     print("embeddings.json not found. Generating random data...")
+    data = []  # Ensure data is a list
+    for i in range(NUM_VECTORS + 1):
+        data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
+except Exception as e:
+    print(f"❌ Error loading embeddings.json: {e}")
+    print("   Generating random data as a fallback...")
+    data = []
     for i in range(NUM_VECTORS + 1):
         data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
 

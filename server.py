@@ -16,6 +16,7 @@ import socket
 import threading
 import time
 import random  # NEW: Add missing import for gossip protocol
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from embeddings import EmbeddingService
 from meta_hnsw import MetaHNSW
 import pickle
@@ -1503,7 +1504,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         """
         P2P search entry point (SERVER-SIDE ROUTING):
         1. Usa Meta-HNSW locale per trovare top-K nodi
-        2. Interroga quei nodi (peer-to-peer)
+        2. Interroga quei nodi (peer-to-peer) IN PARALLELO
         3. Aggrega risultati
         
         Payload:
@@ -1558,34 +1559,42 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
                 for node_name, distance in nearest_nodes:
                     print(f"     - {node_name}: distance={distance:.4f}")
             
-            # STEP 2: Query nodi selezionati (peer-to-peer)
+            # STEP 2: Query nodi selezionati (peer-to-peer) IN PARALLELO
             all_results = {}
             best_score = -2.0
             best_node = "N/A"
             
-            # Questo ciclo itera sulla lista dei nodi migliori (es. ["node1", "node5", "node3"])
-            for target_node_id in target_nodes:
+            with ThreadPoolExecutor(max_workers=len(target_nodes)) as executor:
+                future_to_node = {}
                 
-                # QUI LA CONDIZIONE CHIAVE:
-                # Se l'ID del nodo target è uguale all'ID di questo server...
-                if target_node_id == node.node_id:
-                    # QUERY LOCALE...allora esegue una ricerca locale.
-                    print(f"  🔎 Querying local database...")
-                    results = node.search_local(query_vector.tolist(), k_results)
-                else:
-                    # QUERY REMOTA...altrimenti, interroga il peer remoto.
-                    print(f"  📡 Querying peer {target_node_id}...")
-                    results = node.query_peer(target_node_id, query_vector.tolist(), k_results)
-                
-                if results:
-                    all_results[target_node_id] = results
-                    
-                    # Track best match
-                    if results and results[0].get('score', -2) > best_score:
-                        best_score = results[0]['score']
-                        best_node = target_node_id
-                        print(f"     ✓ New best match: {best_node} (score: {best_score:.4f})")
-            
+                # Sottometti le query ai peer e alla ricerca locale
+                for target_node_id in target_nodes:
+                    if target_node_id == node.node_id:
+                        # Esegui la ricerca locale in un thread per uniformità
+                        print(f"  🔎 Submitting local search to executor...")
+                        future = executor.submit(node.search_local, query_vector.tolist(), k_results)
+                    else:
+                        # Sottometti la query al peer remoto
+                        print(f"  📡 Submitting remote search to peer {target_node_id}...")
+                        future = executor.submit(node.query_peer, target_node_id, query_vector.tolist(), k_results)
+                    future_to_node[future] = target_node_id
+
+                # Raccogli i risultati man mano che arrivano
+                for future in as_completed(future_to_node):
+                    target_node_id = future_to_node[future]
+                    try:
+                        results = future.result()
+                        if results:
+                            all_results[target_node_id] = results
+                            
+                            # Track best match
+                            if results and results[0].get('score', -2) > best_score:
+                                best_score = results[0]['score']
+                                best_node = target_node_id
+                                print(f"     ✓ New best match from {best_node} (score: {best_score:.4f})")
+                    except Exception as e:
+                        print(f"  ❌ Error querying {target_node_id}: {e}")
+
             # STEP 3: Aggrega e restituisci
             total_results = sum(len(r) for r in all_results.values())
             

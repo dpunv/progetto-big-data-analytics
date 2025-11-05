@@ -10,3 +10,4 @@ faiss-cpu
 hnswlib
 msgpack
 matplotlib
+ijson
