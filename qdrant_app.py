@@ -49,8 +49,8 @@ try:
     with open('embeddings.json', 'r') as f:
         # Use ijson to stream-load the large JSON file, preventing MemoryError.
         # We only load the number of vectors we actually need.
-        # FIX: Use parse_float=float to avoid creating Decimal objects.
-        parser = ijson.items(f, 'item', parse_float=float)
+        # FIX: Use use_float=True for the C backend (yajl2_c) instead of parse_float.
+        parser = ijson.items(f, 'item', use_float=True)
         for i, item in enumerate(parser):
             if i >= NUM_VECTORS + 1:
                 break

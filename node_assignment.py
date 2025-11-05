@@ -32,8 +32,8 @@ def load_vectors(filename, max_vectors):
         vectors = []
         with open(filename, 'r') as f:
             # Use ijson to stream-load the large JSON file, preventing MemoryError.
-            # FIX: Use parse_float=float to avoid creating Decimal objects.
-            parser = ijson.items(f, 'item', parse_float=float)
+            # FIX: Use use_float=True for the C backend (yajl2_c) instead of parse_float.
+            parser = ijson.items(f, 'item', use_float=True)
             for i, item in enumerate(parser):
                 if max_vectors > 0 and i >= max_vectors:
                     break
