@@ -110,7 +110,7 @@ for i in range(1, N + 1):
 print("Waiting for Python servers to start (5s)...")
 time.sleep(5)
 
-def wait_for_servers(n_nodes, start_port, timeout=60):
+def wait_for_servers(n_nodes, start_port, timeout=120):  # INCREASED: 60 → 120 seconds
     """
     Wait for all Python servers to be ready by checking their health endpoints.
     
@@ -126,38 +126,80 @@ def wait_for_servers(n_nodes, start_port, timeout=60):
     start_time = time.time()
     ready_nodes = set()
     
+    # NEW: Track consecutive failures to detect stuck servers
+    failure_counts = {i: 0 for i in range(1, n_nodes + 1)}
+    max_consecutive_failures = 10
+    
     while len(ready_nodes) < n_nodes:
-        if time.time() - start_time > timeout:
-            print(f"Timeout! Only {len(ready_nodes)}/{n_nodes} servers are ready.")
+        elapsed = time.time() - start_time
+        
+        if elapsed > timeout:
+            print(f"\n❌ Timeout after {elapsed:.1f}s! Only {len(ready_nodes)}/{n_nodes} servers ready.")
+            print(f"Missing servers: {[f'node{i}' for i in range(1, n_nodes + 1) if i not in ready_nodes]}")
             return False
         
+        # Check all nodes in parallel-like manner (don't wait 2s per node)
         for i in range(1, n_nodes + 1):
             if i in ready_nodes:
                 continue
                 
             port = start_port + i
             try:
-                response = requests.get(f"http://localhost:{port}/", timeout=2)
+                # REDUCED: 2s → 0.5s timeout (faster checks)
+                response = requests.get(f"http://localhost:{port}/", timeout=0.5)
                 if response.status_code == 200:
                     ready_nodes.add(i)
-                    print(f"  ✓ Server on port {port} is ready ({len(ready_nodes)}/{n_nodes})")
+                    failure_counts[i] = 0  # Reset failure count
+                    print(f"  ✓ node{i} (port {port}) ready [{len(ready_nodes)}/{n_nodes}] ({elapsed:.1f}s)")
+                else:
+                    failure_counts[i] += 1
             except (requests.exceptions.RequestException, requests.exceptions.ConnectionError):
-                pass  # Server not ready yet
+                failure_counts[i] += 1
+                
+            # NEW: Detect stuck servers early
+            if failure_counts[i] > max_consecutive_failures:
+                print(f"  ⚠️  node{i} (port {port}) not responding after {failure_counts[i]} attempts")
+                print(f"     Check logs/node{i}_stdout.log and logs/node{i}_stderr.log")
         
         if len(ready_nodes) < n_nodes:
-            time.sleep(1)  # Wait before checking again
+            # REDUCED: 1s → 0.3s sleep (check more frequently)
+            time.sleep(0.3)
     
-    print(f"All {n_nodes} servers are ready!")
+    print(f"\n✅ All {n_nodes} servers ready in {time.time() - start_time:.1f}s!")
     return True
 
 # Replace the simple sleep with a proper health check
-if not wait_for_servers(N, FASTAPI_START_PORT, timeout=60):
-    print("\nERROR: Not all servers started successfully!")
-    print("Check the log files in the 'logs' directory for details:")
+if not wait_for_servers(N, FASTAPI_START_PORT, timeout=120):  # INCREASED: 60 → 120s
+    print("\n" + "="*60)
+    print("ERROR: Not all servers started successfully!")
+    print("="*60)
+    print("\nDiagnostic steps:")
+    print("1. Check if ports are already in use:")
+    for i in range(1, N + 1):
+        port = FASTAPI_START_PORT + i
+        print(f"   netstat -ano | findstr :{port}")
+    
+    print("\n2. Check server logs:")
     for i in range(1, N + 1):
         node_id = f"node{i}"
-        print(f"  - logs/{node_id}_stdout.log")
-        print(f"  - logs/{node_id}_stderr.log")
+        stdout_log = f"logs/{node_id}_stdout.log"
+        stderr_log = f"logs/{node_id}_stderr.log"
+        
+        if os.path.exists(stdout_log):
+            print(f"\n   --- {stdout_log} (last 20 lines) ---")
+            with open(stdout_log, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+                print(''.join(lines[-20:]))
+        
+        if os.path.exists(stderr_log):
+            print(f"\n   --- {stderr_log} (last 20 lines) ---")
+            with open(stderr_log, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+                print(''.join(lines[-20:]))
+    
+    print("\n3. Check if Qdrant containers are running:")
+    subprocess.run(["docker", "ps", "-a"], check=False)
+    
     sys.exit(1)
 
 # --- 4. Run Main Application ---

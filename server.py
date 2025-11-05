@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request  # NEW: Add Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
@@ -9,13 +9,17 @@ import uuid
 import json
 import numpy as np
 import utils
-import msgpack  # NEW: Import MessagePack
+import msgpack
 from collections import defaultdict
 from urllib.parse import urlparse
 import socket
 import threading
 import time
+import random  # NEW: Add missing import for gossip protocol
 from embeddings import EmbeddingService
+from meta_hnsw import MetaHNSW
+import pickle
+import base64
 
 # Pydantic models for request/response validation
 class VectorDataModel(BaseModel):
@@ -71,7 +75,7 @@ class QdrantNodeWrapper:
         self.node_id = node_id
         self.qdrant_url = f"http://{qdrant_host}:{qdrant_port}"
         self.collection_name = collection_name
-        self.peer_nodes = {}  # Dictionary of peer_node_id -> peer_url
+        self.peer_nodes = {}
         self.self_url = self_url
         self.vector_size = vector_size
         self.node_vectors: List[List[float]] = []
@@ -87,6 +91,16 @@ class QdrantNodeWrapper:
             "failure_threshold": 3,
             "recovery_interval": 30
         }
+        
+        # NEW: Local Meta-HNSW instance (peer-to-peer)
+        self.meta_hnsw: Optional[MetaHNSW] = None
+        self._last_gossip_time = 0.0
+        self.gossip_interval = 30  # seconds between gossip rounds
+        self._gossip_thread: Optional[threading.Thread] = None
+        self._gossip_thread_stop = False
+        
+        # Track local cluster updates for gossip
+        self.local_cluster_updates: Dict[int, Dict] = {}  # {cluster_id: {centroid, count, timestamp}}
 
     def register_peer(self, peer_id: str, peer_url: str):
         self.peer_nodes[peer_id] = peer_url
@@ -552,6 +566,137 @@ class QdrantNodeWrapper:
                 sleep_total += step
     # --- END NEW METHODS ---
 
+    def initialize_meta_hnsw(self, dimension: int, max_clusters: int = 500):
+        """Initialize local Meta-HNSW instance."""
+        print(f"Node {self.node_id}: Initializing local Meta-HNSW (dimension={dimension}, max_clusters={max_clusters})")
+        self.meta_hnsw = MetaHNSW(
+            dimension=dimension,
+            max_clusters=max_clusters,
+            ef_construction=200,
+            M=16
+        )
+
+    def add_local_clusters(self, cluster_vectors: List[List[float]]):
+        """Add this node's clusters to local Meta-HNSW."""
+        if self.meta_hnsw is None:
+            raise ValueError(f"Node {self.node_id}: Meta-HNSW not initialized")
+        
+        self.meta_hnsw.add_node_clusters(self.node_id, cluster_vectors)
+        print(f"Node {self.node_id}: Added {len(cluster_vectors)} local clusters to Meta-HNSW")
+
+    def receive_peer_clusters(self, peer_id: str, cluster_vectors: List[List[float]]):
+        """Receive and store peer's cluster updates."""
+        if self.meta_hnsw is None:
+            print(f"Node {self.node_id}: WARNING - Meta-HNSW not initialized, cannot receive peer clusters")
+            return False
+        
+        try:
+            self.meta_hnsw.add_node_clusters(peer_id, cluster_vectors)
+            print(f"Node {self.node_id}: Updated clusters for {peer_id} ({len(cluster_vectors)} clusters)")
+            return True
+        except Exception as e:
+            print(f"Node {self.node_id}: Error receiving peer clusters from {peer_id}: {e}")
+            return False
+
+    def start_gossip_protocol(self):
+        """Start background gossip thread."""
+        if self._gossip_thread and self._gossip_thread.is_alive():
+            return
+        
+        self._gossip_thread_stop = False
+        self._gossip_thread = threading.Thread(target=self._gossip_loop, daemon=True)
+        self._gossip_thread.start()
+        print(f"Node {self.node_id}: Gossip protocol started (interval={self.gossip_interval}s)")
+
+    def stop_gossip_protocol(self):
+        """Stop gossip thread."""
+        self._gossip_thread_stop = True
+        if self._gossip_thread:
+            self._gossip_thread.join(timeout=2)
+        print(f"Node {self.node_id}: Gossip protocol stopped")
+
+    def _gossip_loop(self):
+        """Gossip loop: periodically share cluster updates with peers."""
+        while not self._gossip_thread_stop:
+            now = time.time()
+            
+            if now - self._last_gossip_time >= self.gossip_interval:
+                self._perform_gossip_round()
+                self._last_gossip_time = now
+            
+            # Sleep in small steps for responsive stop
+            sleep_total = 0
+            step = 1
+            while sleep_total < self.gossip_interval and not self._gossip_thread_stop:
+                time.sleep(step)
+                sleep_total += step
+
+    def _perform_gossip_round(self):
+        """Execute one gossip round: share local clusters with random peers."""
+        if self.meta_hnsw is None or not self.peer_nodes:
+            return
+        
+        # Get local cluster centroids
+        local_cluster_ids = self.meta_hnsw.node_to_clusters.get(self.node_id, [])
+        if not local_cluster_ids:
+            return
+        
+        local_clusters = [self.meta_hnsw.cluster_centroids[cid].tolist() for cid in local_cluster_ids]
+        
+        # Select random subset of peers (gossip to ~50% of peers)
+        num_targets = max(1, len(self.peer_nodes) // 2)
+        target_peers = random.sample(list(self.peer_nodes.items()), min(num_targets, len(self.peer_nodes)))
+        
+        for peer_id, peer_url in target_peers:
+            status = self.peer_status.get(peer_id, {}).get("status")
+            if status == "DOWN":
+                continue
+            
+            try:
+                payload = {
+                    "from_node": self.node_id,
+                    "cluster_vectors": local_clusters
+                }
+                
+                response = requests.post(
+                    f"{peer_url}/gossip/clusters",
+                    json=payload,
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    # Optionally: receive peer's clusters in response
+                    peer_data = response.json()
+                    peer_clusters = peer_data.get("cluster_vectors", [])
+                    if peer_clusters:
+                        self.receive_peer_clusters(peer_id, peer_clusters)
+                        
+            except requests.exceptions.RequestException as e:
+                # Gossip failure is not critical, just skip
+                pass
+
+    def find_best_nodes_local(self, vector: List[float], k_nodes: int = 3) -> List[str]:
+        """
+        Use local Meta-HNSW to find best nodes (P2P routing).
+        Falls back to centroid-based routing if Meta-HNSW unavailable.
+        """
+        if self.meta_hnsw is None:
+            # Fallback to original centroid-based routing
+            return self.find_best_nodes(vector)
+        
+        try:
+            # Use local Meta-HNSW for routing
+            query_vec = np.array(vector, dtype=np.float32)
+            nearest_nodes = self.meta_hnsw.find_nearest_nodes(query_vec, k_nodes=k_nodes)
+            
+            # Extract node names
+            node_names = [node_name for node_name, _ in nearest_nodes]
+            return node_names
+            
+        except Exception as e:
+            print(f"Node {self.node_id}: Meta-HNSW query failed: {e}, using fallback")
+            return self.find_best_nodes(vector)
+
 # FastAPI Application
 def create_app(node: QdrantNodeWrapper) -> FastAPI:
     """Create FastAPI application for a Qdrant node"""
@@ -561,6 +706,7 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
         description="Distributed Qdrant vector database node API",
         version="1.0.0"
     )
+    
     # Allow CORS from the visualizer (running on localhost:8088) so the browser can
     # fetch /get-topology (and other endpoints) while developing. For production,
     # tighten this list to the real allowed origins.
@@ -576,6 +722,12 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
     async def _startup_event():
         # Start per-node health monitor in background thread
         node.start_health_monitor()
+        # NEW: Start gossip protocol
+        node.start_gossip_protocol()
+    
+    @app.on_event("shutdown")
+    async def _shutdown_event():
+        node.stop_gossip_protocol()
     
     @app.get("/")
     async def root():
@@ -1257,115 +1409,207 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
                         pdns = info.get("dns")
                         if pip:
                             peer_url = f"http://{pip}:{pport}"
-                        elif pdns and pport:
+                        elif pdns:
                             peer_url = f"http://{pdns}:{pport}"
-                        else:
-                            peer_url = None
-                    traverse(pid, peer_url)
+                        
+                    traverse(pid, peer_url)  # Recursive call for the peer
 
-        # Start traversal from this node (use self_url as its URL)
+        # Start traversal from the local node
         traverse(node.node_id, node.self_url)
-        return {"topology": topology}
 
-    class NodeInfoRequest(BaseModel):
-        node_id: Optional[str] = None
-        dns: Optional[str] = None
-        ip: Optional[str] = None
-        port: Optional[int] = None
-        visited: Optional[List[str]] = None
-
-    @app.post("/get-node-info")
-    async def get_node_info(request: NodeInfoRequest):
-        """
-        POST endpoint to fetch info about a node.
-        - If no target (node_id/dns/ip) provided: return this node's info.
-        - If target matches this node: return this node's info.
-        - If target resolves to a direct URL, contact that node and return its info.
-        - Otherwise forward the request to neighbors (walking the graph) and wait for first successful response.
-        The 'visited' list is propagated to avoid infinite loops.
-        """
-        # Prepare visited set to avoid infinite loops
-        visited = set(request.visited or [])
-        if node.node_id not in visited:
-            visited.add(node.node_id)
-
-        # Helper to produce local info payload
-        def local_info():
-            return {
-                "node_id": node.node_id,
-                "vector_size": node.vector_size,
-                "peer_count": len(node.peer_nodes),
-                "node_vectors_count": len(node.node_vectors),
-                "self_url": node.self_url,
-                "vector_count": node.count_local_vectors()
+        # Convert topology dict to a list for easier JSON serialization
+        topology_list = [
+            {
+                "node_id": node_id,
+                "details": details,
+                "peers": list(details["peers"].keys())
             }
-
-        # If no target specified, return local info
-        if not (request.node_id or request.dns or request.ip):
-            return local_info()
-
-        # If the request explicitly targets this node id, return local info
-        if request.node_id and request.node_id == node.node_id:
-            return local_info()
-
-        # Build a direct URL if ip/dns and port are provided
-        def build_url(dns, ip, port):
-            if ip:
-                p = port if port is not None else 80
-                return f"http://{ip}:{p}"
-            if dns:
-                p = port if port is not None else 80
-                return f"http://{dns}:{p}"
-            return None
-
-        # Try direct contact if ip/dns provided
-        direct_url = None
-        if request.ip or request.dns:
-            direct_url = build_url(request.dns, request.ip, request.port)
-
-        # If node_id is known locally, prefer our registered peer URL
-        if request.node_id and request.node_id in node.peer_nodes:
-            direct_url = node.peer_nodes[request.node_id]
-
-        # Prepare payload to forward (propagate visited)
-        forward_payload = {
-            "node_id": request.node_id,
-            "dns": request.dns,
-            "ip": request.ip,
-            "port": request.port,
-            "visited": list(visited)
+            for node_id, details in topology.items()
+        ]
+        
+        return {
+            "node_id": node.node_id,
+            "topology": topology_list
         }
 
-        # Try contacting the direct URL first (if available and not ourselves)
-        if direct_url:
-            # Avoid contacting ourselves again
-            if direct_url != node.self_url:
-                try:
-                    resp = requests.post(f"{direct_url}/get-node-info", json=forward_payload, timeout=5)
-                    if resp.status_code == 200:
-                        return resp.json()
-                except requests.RequestException:
-                    # Failed to contact direct node, will try neighbors below
-                    pass
+    @app.post("/gossip/clusters")
+    async def gossip_clusters_endpoint(payload: Dict[str, Any]):
+        """
+        Receive cluster updates from peers via gossip protocol.
+        """
+        from_node = payload.get("from_node")
+        cluster_vectors = payload.get("cluster_vectors", [])
+        
+        if not cluster_vectors:
+            return {"status": "ok", "message": "No clusters received"}
+        
+        success = node.receive_peer_clusters(from_node, cluster_vectors)
+        
+        # Send back own clusters
+        local_cluster_ids = node.meta_hnsw.node_to_clusters.get(node.node_id, []) if node.meta_hnsw else []
+        local_clusters = [node.meta_hnsw.cluster_centroids[cid].tolist() for cid in local_cluster_ids] if local_cluster_ids else []
+        
+        return {
+            "status": "success" if success else "failed",
+            "cluster_vectors": local_clusters
+        }
 
-        # If direct contact failed or wasn't possible, forward to neighbors
-        # Iterate peers and ask them (skip visited)
-        for peer_id, peer_url in node.peer_nodes.items():
-            if peer_id in visited:
-                continue
-            # mark as visited for this hop
-            new_payload = dict(forward_payload)
-            new_payload["visited"] = list(visited | {peer_id})
-            try:
-                resp = requests.post(f"{peer_url}/get-node-info", json=new_payload, timeout=5)
-                if resp.status_code == 200:
-                    return resp.json()
-            except requests.RequestException:
-                # ignore and try next peer
-                continue
+    @app.post("/init-meta-hnsw")
+    async def init_meta_hnsw_endpoint(payload: Dict[str, Any]):
+        """
+        Initialize Meta-HNSW with full cluster data from coordinator.
+        Receives all centroids and node assignments.
+        """
+        try:
+            dimension = payload.get("dimension", node.vector_size)
+            max_clusters = payload.get("max_clusters", 500)
+            all_centroids = payload.get("centroids", [])
+            node_assignments = payload.get("node_assignments", {})
+            
+            # Initialize Meta-HNSW
+            node.initialize_meta_hnsw(dimension=dimension, max_clusters=max_clusters)
+            
+            # Add all nodes' clusters
+            for node_idx_str, cluster_indices in node_assignments.items():
+                peer_node_id = f"node{int(node_idx_str) + 1}"
+                cluster_vectors = [all_centroids[idx] for idx in cluster_indices]
+                
+                if peer_node_id == node.node_id:
+                    # Add own clusters
+                    node.add_local_clusters(cluster_vectors)
+                else:
+                    # Add peer clusters
+                    node.receive_peer_clusters(peer_node_id, cluster_vectors)
+            
+            # Force rebuild to make index queryable
+            node.meta_hnsw.force_rebuild()
+            
+            print(f"Node {node.node_id}: Meta-HNSW initialized with {len(all_centroids)} total clusters")
+            
+            return {
+                "status": "success",
+                "message": f"Meta-HNSW initialized with {len(all_centroids)} clusters",
+                "node_id": node.node_id
+            }
+            
+        except Exception as e:
+            print(f"Node {node.node_id}: Error initializing Meta-HNSW: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
 
-        # If nothing found
-        raise HTTPException(status_code=404, detail="Target node not found in network")
+    @app.post("/search/p2p")
+    async def search_p2p_endpoint(payload: Dict[str, Any]):
+        """
+        P2P search entry point (SERVER-SIDE ROUTING):
+        1. Usa Meta-HNSW locale per trovare top-K nodi
+        2. Interroga quei nodi (peer-to-peer)
+        3. Aggrega risultati
+        
+        Payload:
+            {
+                "query_vector": [0.1, 0.2, ...],
+                "top_k_nodes": 3,       # Quanti nodi interrogare
+                "top_k_results": 5      # Quanti risultati per nodo
+            }
+        
+        Returns:
+            {
+                "status": "success",
+                "entry_node": "node3",
+                "nodes_queried": 3,
+                "target_nodes": ["node1", "node3", "node5"],
+                "total_results": 15,
+                "results_per_node": {
+                    "node1": [{...}, {...}],
+                    "node3": [{...}, {...}],
+                    "node5": [{...}, {...}]
+                },
+                "best_match": {
+                    "node": "node5",
+                    "score": 0.98
+                }
+            }
+        """
+        try:
+            query_vector = np.array(payload['query_vector'], dtype=np.float32)
+            k_nodes = payload.get('top_k_nodes', 3)
+            k_results = payload.get('top_k_results', 5)
+            
+            print(f"Node {node.node_id}: P2P search entry point activated")
+            print(f"  Query params: top_k_nodes={k_nodes}, top_k_results={k_results}")
+            
+            # STEP 1: Usa Meta-HNSW LOCALE per routing intelligente
+            if node.meta_hnsw is None:
+                # Fallback: broadcast a tutti i peer
+                print(f"  ⚠️  No Meta-HNSW available, falling back to broadcast")
+                target_nodes = [node.node_id] + list(node.peer_nodes.keys())
+                target_nodes = target_nodes[:k_nodes]  # Limita a k_nodes
+            else:
+                # Routing intelligente con Meta-HNSW locale
+                print(f"  🔍 Using local Meta-HNSW for routing...")
+                nearest_nodes = node.meta_hnsw.find_nearest_nodes(
+                    query_vector, 
+                    k_nodes=k_nodes
+                )
+                target_nodes = [node_name for node_name, _ in nearest_nodes]
+                
+                print(f"  📍 Meta-HNSW routing result: {target_nodes}")
+                for node_name, distance in nearest_nodes:
+                    print(f"     - {node_name}: distance={distance:.4f}")
+            
+            # STEP 2: Query nodi selezionati (peer-to-peer)
+            all_results = {}
+            best_score = -2.0
+            best_node = "N/A"
+            
+            # Questo ciclo itera sulla lista dei nodi migliori (es. ["node1", "node5", "node3"])
+            for target_node_id in target_nodes:
+                
+                # QUI LA CONDIZIONE CHIAVE:
+                # Se l'ID del nodo target è uguale all'ID di questo server...
+                if target_node_id == node.node_id:
+                    # QUERY LOCALE...allora esegue una ricerca locale.
+                    print(f"  🔎 Querying local database...")
+                    results = node.search_local(query_vector.tolist(), k_results)
+                else:
+                    # QUERY REMOTA...altrimenti, interroga il peer remoto.
+                    print(f"  📡 Querying peer {target_node_id}...")
+                    results = node.query_peer(target_node_id, query_vector.tolist(), k_results)
+                
+                if results:
+                    all_results[target_node_id] = results
+                    
+                    # Track best match
+                    if results and results[0].get('score', -2) > best_score:
+                        best_score = results[0]['score']
+                        best_node = target_node_id
+                        print(f"     ✓ New best match: {best_node} (score: {best_score:.4f})")
+            
+            # STEP 3: Aggrega e restituisci
+            total_results = sum(len(r) for r in all_results.values())
+            
+            print(f"  ✅ P2P search complete: {total_results} results from {len(all_results)} nodes")
+            
+            return {
+                "status": "success",
+                "entry_node": node.node_id,
+                "nodes_queried": len(all_results),
+                "target_nodes": target_nodes,
+                "total_results": total_results,
+                "results_per_node": all_results,
+                "best_match": {
+                    "node": best_node,
+                    "score": best_score
+                },
+                "routing_method": "meta_hnsw" if node.meta_hnsw else "broadcast"
+            }
+            
+        except Exception as e:
+            print(f"Node {node.node_id}: P2P search error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
 
     return app
 
@@ -1389,10 +1633,6 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
     )
     
     if node.create_collection(vector_size):
-        
-    # NOTE: This initial random vector is overwritten by the client's `register_peers`
-    # step, which calls `/set_node_vectors`.
-    # Keep it as a fallback.
         print(f"Node {node_id}: Generating initial fallback node vector...")
         rand_vec = np.random.rand(vector_size).astype(np.float32)
         norm = np.linalg.norm(rand_vec)
@@ -1400,7 +1640,6 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
             rand_vec = rand_vec / norm
         
         try:
-            # set initial fallback as a single-item list of representative vectors
             node.set_node_vectors([rand_vec.tolist()])
         except ValueError as e:
             print(f"Node {node_id}: FATAL - Error setting initial node vectors: {e}")
@@ -1408,12 +1647,12 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
         
         initial_count = node.count_local_vectors()
         print(f"Node {node_id}: Initial vector count: {initial_count}")
-    # Create a per-node embedding service instance (each node owns its model)
+    
+    # Create a per-node embedding service instance
     try:
         node.embedding_service = EmbeddingService()
         print(f"Node {node_id}: Initialized embedding service (model: {node.embedding_service.model_name})")
     except Exception as e:
-        # If model libs not available, attach None and handle at request time
         node.embedding_service = None
         print(f"Node {node_id}: WARNING - could not initialize embedding service: {e}")
     
@@ -1438,8 +1677,8 @@ if __name__ == "__main__":
         db_port = int(sys.argv[3])
         run_node(node_id, port, "localhost", db_port, vector_size=384)
     else:
-        print("Usage: python script.py <node_id> <port> <db_port>")
-        print("Example: python script.py node1 8001 6333")
+        print("Usage: python server.py <node_id> <port> <db_port>")
+        print("Example: python server.py node1 8001 6333")
         
         print("\nStarting default node1 on port 8001 attached to Qdrant localhost:6333...")
         run_node("node1", 8001, qdrant_port=6333, vector_size=384)
