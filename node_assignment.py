@@ -393,7 +393,7 @@ def compute_node_assignments(embeddings_file, num_nodes, max_k_to_test=30,
     print("="*60)
     
     if rep_factor is None:
-        rep_factor = max(3, int(num_nodes / len(clusters)))
+        rep_factor = min(3, num_nodes)
     
     clusters_sorted = sorted(clusters, reverse=True)
     total_load = sum(clusters)

@@ -5,7 +5,6 @@ import time
 import json
 import sys
 import os
-import utils
 import msgpack
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -22,30 +21,27 @@ print(f"--- Running Qdrant App for {NUM_NODES} nodes ---")
 NUM_VECTORS = 20000
 VECTOR_SIZE = 384
 
+# --- NEW: Bootstrap Configuration ---
+BOOTSTRAP_VECTORS = 10000  # First N vectors sent to ALL nodes for clustering
+COORDINATOR_NODE_ID = "node1"  # Fixed coordinator (always first node)
+
 # --- Adaptive Batch Configuration ---
 BATCH_TIERS = [800, 256, 64]
 BATCH_SIZE_OPTIMAL = BATCH_TIERS[0]
 BATCH_SIZE_MIN = BATCH_TIERS[-1]
 MAX_RETRIES = len(BATCH_TIERS)
 
-# --- Training Configuration ---
-TRAINING_VECTORS = 10000
-ASSIGNMENTS_FILE = 'node_assignments.json'
-FORCE_RETRAIN = False  # Set to True to force recomputation
-# -----------------------------------
-
 if VECTOR_SIZE < NUM_NODES:
     print(f"Error: VECTOR_SIZE ({VECTOR_SIZE}) must be >= NUM_NODES ({NUM_NODES})")
-    print("Please increase VECTOR_SIZE in qdrant_app.py and server.py")
     sys.exit(1)
 
-# --- Helper Functions ---
-data = {}
+# --- Load Data ---
+data = []
 try:
     with open('embeddings.json', 'r') as f:
         data = json.load(f)
     if len(data) < NUM_VECTORS + 1:
-        print(f"Warning: embeddings.json has only {len(data)} items, but {NUM_VECTORS}+1 are needed.")
+        print(f"Warning: embeddings.json has only {len(data)} items, need {NUM_VECTORS}+1")
         for i in range(len(data), NUM_VECTORS + 1):
             data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
 except FileNotFoundError:
@@ -53,141 +49,8 @@ except FileNotFoundError:
     for i in range(NUM_VECTORS + 1):
         data.append({"embedding": np.random.rand(VECTOR_SIZE).tolist()})
 
-# --- NEW: Smart Node Assignment with Multiple Centroids per Node ---
-print("\n" + "="*60)
-print("0. COMPUTING SMART NODE ASSIGNMENTS")
-print("="*60)
-
-try:
-    node_assignment_data = None
-
-    # Try load existing assignments file
-    if os.path.exists(ASSIGNMENTS_FILE):
-        print(f"📂 Found existing assignments file '{ASSIGNMENTS_FILE}'...")
-        with open(ASSIGNMENTS_FILE, 'r') as f:
-            node_assignment_data = json.load(f)
-        stats = node_assignment_data.get('stats', {})
-        if stats.get('num_nodes') == NUM_NODES:
-            print(f"✅ Assignments file matches NUM_NODES={NUM_NODES}, using cached assignments.")
-        else:
-            print(f"⚠️  Assignments file for {stats.get('num_nodes')} nodes (need {NUM_NODES}) — will recompute.")
-            node_assignment_data = None
-
-    # Compute assignments if needed
-    if node_assignment_data is None:
-        if len(data) < TRAINING_VECTORS:
-            print(f"❌ ERROR: Insufficient data for training. Need {TRAINING_VECTORS}, have {len(data)}")
-            print("   Please generate more embeddings.")
-            sys.exit(1)
-
-        print(f"🎯 Computing node assignments (training on {TRAINING_VECTORS} vectors)...")
-        start_compute = time.time()
-
-        node_assignment_data = compute_node_assignments(
-            embeddings_file='embeddings.json',
-            num_nodes=NUM_NODES,
-            max_k_to_test=min(30, TRAINING_VECTORS // 100),
-            random_state=42,
-            max_vectors=TRAINING_VECTORS,
-            rep_factor=None,
-            beam_width=5,
-            use_simulated_annealing=False
-        )
-
-        compute_time = time.time() - start_compute
-        print(f"✅ Assignment computation completed in {compute_time:.2f}s.")
-
-        # persist full assignment data for future runs
-        with open(ASSIGNMENTS_FILE, 'w') as f:
-            json.dump(node_assignment_data, f, indent=2)
-        print(f"💾 Saved assignment data to {ASSIGNMENTS_FILE}")
-
-    # Extract CENTROIDS (tutti i centroidi) e la mappa NODE_ASSIGNMENTS (lista indici per nodo)
-    CENTROIDS = node_assignment_data.get('centroids', [])
-    NODE_ASSIGNMENTS = node_assignment_data.get('node_assignments', {})
-    ASSIGNMENT_DETAILS = node_assignment_data.get('assignment_details', {})
-    REPLICATION_FACTOR = node_assignment_data.get('stats', {}).get('replication_factor', 1)
-
-    # Optional: save the full centroid list for compatibility with other tools
-    try:
-        with open(CENTROIDS_FILE, 'w') as f:
-            json.dump(CENTROIDS, f, indent=2)
-        print(f"💾 Full centroid list saved to {CENTROIDS_FILE} ({os.path.getsize(CENTROIDS_FILE)/1024:.2f} KB)")
-    except Exception:
-        pass
-
-    # Print brief summary
-    print(f"Loaded {len(CENTROIDS)} centroids; node assignment map contains {len(NODE_ASSIGNMENTS)} nodes' assignments.")
-
-except Exception as e:
-    print(f"❌ FATAL ERROR during assignment/centroid preparation: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-
 # --- Dynamic Node Configuration ---
-NODE_URLS = []
-for i in range(1, NUM_NODES + 1):
-    NODE_URLS.append(f"http://localhost:{8000 + i}")
-
-# --- NEW: Availability / peer-aggregated health logic ---
-MAJORITY = (NUM_NODES // 2) + 1  # need >N/2 reporters to mark a node DOWN to exclude it
-PEER_REPORT_REFRESH_INTERVAL = 30  # seconds between aggregate checks
-_last_peer_report_time = 0.0
-UNAVAILABLE_NODES = set()  # node ids like "node1", "node2"
-
-def update_unavailable_nodes():
-    """
-    Query /peers on all nodes and aggregate how many reporters mark each node DOWN.
-    Mark nodes unavailable if they are considered DOWN by >= MAJORITY reporters.
-    """
-    global _last_peer_report_time, UNAVAILABLE_NODES
-    counts_down = {f"node{i+1}": 0 for i in range(NUM_NODES)}
-    reporters = 0
-
-    for i, reporter_url in enumerate(NODE_URLS):
-        try:
-            resp = requests.get(f"{reporter_url}/peers", timeout=2)
-            if resp.status_code != 200:
-                continue
-            reporters += 1
-            info = resp.json()
-            peers = info.get("peers", {})
-            # peers keys are like "node1", ...
-            for peer_id, pdata in peers.items():
-                status = pdata.get("status", "UNKNOWN")
-                if status == "DOWN":
-                    counts_down[peer_id] = counts_down.get(peer_id, 0) + 1
-        except requests.exceptions.RequestException:
-            # reporter unreachable -> skip (do not count as a DOWN report)
-            continue
-
-    new_unavailable = set()
-    for node_id, down_count in counts_down.items():
-        if down_count >= MAJORITY:
-            new_unavailable.add(node_id)
-
-    UNAVAILABLE_NODES = new_unavailable
-    _last_peer_report_time = time.time()
-    if UNAVAILABLE_NODES:
-        print(f"Client: Nodes excluded as entry by MAJORITY: {sorted(list(UNAVAILABLE_NODES))}")
-    else:
-        print("Client: No entry nodes excluded by MAJORITY (all eligible)")
-
-def choose_entry_node(batch_num: int) -> int:
-    """
-    Choose an entry node index (0-based) using round-robin but skipping UNAVAILABLE_NODES.
-    If all nodes are excluded, fall back to plain round-robin.
-    """
-    start = (batch_num - 1) % NUM_NODES
-    for offset in range(NUM_NODES):
-        idx = (start + offset) % NUM_NODES
-        node_id = f"node{idx + 1}"
-        if node_id not in UNAVAILABLE_NODES:
-            return idx
-    # fallback: all excluded -> return round-robin index and log warning
-    print("Client WARNING: all nodes reported excluded by peers; falling back to round-robin entry selection.")
-    return start
+NODE_URLS = [f"http://localhost:{8000 + i}" for i in range(1, NUM_NODES + 1)]
 
 # --- Adaptive Batch Metrics Class ---
 class AdaptiveBatchMetrics:
@@ -304,6 +167,18 @@ def send_batch_with_retry(
             headers={"Content-Type": "application/msgpack"},  # Set proper content type
             timeout=timeout
         )
+        
+        # NEW: Handle 503 (clustering not ready) - wait and retry
+        if response.status_code == 503:
+            print(f"⏳ Node {sent_to_node_id} not ready (clustering in progress)")
+            if retry_count == 0:
+                print(f"   Waiting 5s for clustering to complete...")
+                time.sleep(5)
+                return send_batch_with_retry(vectors_batch, node_url, sent_to_node_id, 0)  # Retry same tier
+            else:
+                print(f"   Clustering still not ready after retry")
+                return False, {}
+        
         response.raise_for_status()
         
         # Response is still JSON (small payload, no need to change)
@@ -351,38 +226,12 @@ def send_batch_with_retry_threadsafe(
     return (batch_num, success, res_data)
 
 def register_peers():
-    """
-    Register nodes with their assigned cluster centroids and peer information.
-    Each node now receives MULTIPLE vectors (one per assigned cluster).
-    """
+    """Register nodes with peer information only (no clustering yet)."""
     print("\n" + "="*60)
-    print("1. SETTING NODE VECTORS & REGISTERING PEERS")
+    print("1. REGISTERING PEERS (NO CLUSTERING YET)")
     print("="*60)
     
     try:
-        # 1. Set the representative vectors for every node
-        print("Setting node vectors (multiple per node)...")
-        for node_idx in range(NUM_NODES):
-            node_id = f"node{node_idx+1}"
-            node_url = NODE_URLS[node_idx]
-            
-            # Get cluster indices assigned to this node
-            cluster_indices = NODE_ASSIGNMENTS.get(str(node_idx), NODE_ASSIGNMENTS.get(node_idx, []))
-            
-            # Get the actual centroid vectors for those clusters
-            node_vectors = [CENTROIDS[cluster_idx] for cluster_idx in cluster_indices]
-            
-            if not node_vectors:
-                print(f"  ⚠️  {node_id}: No clusters assigned! Using random vector.")
-                node_vectors = [np.random.rand(VECTOR_SIZE).tolist()]
-            
-            # Send all vectors for this node
-            r_set = requests.post(f"{node_url}/set_node_vectors", json=node_vectors, timeout=5)
-            r_set.raise_for_status()
-            print(f"  {node_id}: Set {len(node_vectors)} representative vector(s) for clusters {cluster_indices}")
-
-        # 2. Register all peers with all other peers
-        print("\nRegistering peers...")
         for node_idx in range(NUM_NODES):
             host_id = f"node{node_idx+1}"
             host_url = NODE_URLS[node_idx]
@@ -395,66 +244,290 @@ def register_peers():
                 peer_id = f"node{peer_idx+1}"
                 peer_url = NODE_URLS[peer_idx]
                 
-                # Get peer's cluster indices and vectors
-                peer_cluster_indices = NODE_ASSIGNMENTS.get(str(peer_idx), NODE_ASSIGNMENTS.get(peer_idx, []))
-                peer_vectors = [CENTROIDS[cluster_idx] for cluster_idx in peer_cluster_indices]
-                
-                if not peer_vectors:
-                    peer_vectors = [np.random.rand(VECTOR_SIZE).tolist()]
-                
                 payload = {
                     "peer_id": peer_id,
                     "peer_url": peer_url,
-                    "node_vectors": peer_vectors
+                    "node_vectors": []  # Empty - clustering will set these
                 }
                 
                 r_reg = requests.post(f"{host_url}/register_peer", json=payload, timeout=5)
                 r_reg.raise_for_status()
                 peers_registered += 1
             
-            print(f"  Host {host_id}: Registered {peers_registered} peers.")
+            print(f"  {host_id}: Registered {peers_registered} peers")
 
-        print("✅ Peers registered and vectors exchanged successfully.\n")
+        print("✅ Peer registration complete\n")
         
     except requests.exceptions.RequestException as e:
-        print(f"!!! Error setting/registering peers: {e}")
-        print("!!! Please ensure all servers are running.")
+        print(f"!!! Error registering peers: {e}")
         sys.exit(1)
 
 
-def insert_vectors_bulk():
-    """Insert vectors with PARALLEL batch sending using ThreadPoolExecutor."""
+def insert_vectors_bootstrap():
+    """Broadcast bootstrap vectors to ALL nodes for clustering (PARALLEL)."""
     print("\n" + "="*60)
-    print(f"2. INSERTING {NUM_VECTORS} VECTORS (Size {VECTOR_SIZE})")
+    print(f"2. BOOTSTRAP: Broadcasting {BOOTSTRAP_VECTORS} vectors to ALL nodes (PARALLEL)")
+    print(f"   Fixed coordinator: {COORDINATOR_NODE_ID}")
     print("="*60)
-    print(f"   Starting with batch size: {batch_metrics.current_batch_size}")
-    print(f"   Minimum batch size: {BATCH_SIZE_MIN}")
-    print(f"   Maximum retries per batch: {MAX_RETRIES}")
-    print(f"   🚀 Parallel workers: {NUM_NODES} (one per node)\n")
     
     insertions = []
-    vector_index = 0
+    batch_size = 256
     batch_num = 0
     
     start_time = time.time()
     
-    # initial update of peer reports
+    # NEW: ThreadPoolExecutor per parallelizzare broadcast
+    with ThreadPoolExecutor(max_workers=NUM_NODES) as executor:
+        for i in range(0, BOOTSTRAP_VECTORS, batch_size):
+            batch_num += 1
+            end_index = min(i + batch_size, BOOTSTRAP_VECTORS)
+            
+            # Prepara batch payload
+            batch_payload = []
+            for j in range(i, end_index):
+                final_vec = data[j]['embedding']
+                vector_data = {
+                    "id": str(uuid.uuid4()),
+                    "vector": final_vec,
+                    "payload": {
+                        "source_type": "bootstrap",
+                        "index": j
+                    }
+                }
+                batch_payload.append(vector_data)
+            
+            # SERIALIZZA UNA VOLTA (evita duplicazione memoria)
+            binary_data = msgpack.packb(batch_payload, use_bin_type=True)
+            
+            # BROADCAST PARALLELO a TUTTI i nodi
+            futures = []
+            for node_idx in range(NUM_NODES):
+                node_url = NODE_URLS[node_idx]
+                node_id = f"node{node_idx + 1}"
+                
+                # Submit task al thread pool
+                future = executor.submit(
+                    _send_bootstrap_batch,
+                    node_url,
+                    node_id,
+                    binary_data,
+                    batch_num
+                )
+                futures.append((future, node_id, len(batch_payload)))
+            
+            # Aspetta che TUTTI i nodi completino questo batch
+            # prima di passare al prossimo
+            for future, node_id, vector_count in futures:
+                try:
+                    success = future.result(timeout=30)
+                    if success:
+                        insertions.extend([node_id] * vector_count)
+                except Exception as e:
+                    print(f"⚠️  Batch {batch_num} failed on {node_id}: {e}")
+            
+            if batch_num % 10 == 0:
+                print(f"Batch {batch_num}: {end_index}/{BOOTSTRAP_VECTORS} vectors → {NUM_NODES} nodes (parallel)")
+    
+    total_time = time.time() - start_time
+    print(f"\n✅ Bootstrap complete in {total_time:.2f}s (parallel)")
+    print(f"   Total insertions: {len(insertions)} ({BOOTSTRAP_VECTORS} × {NUM_NODES})")
+    print(f"   Coordinator {COORDINATOR_NODE_ID} will now perform clustering...\n")
+    
+    return insertions
+
+
+def _send_bootstrap_batch(node_url: str, node_id: str, binary_data: bytes, batch_num: int) -> bool:
+    """
+    Helper function per inviare batch a UN nodo (eseguito in thread separato).
+    
+    Args:
+        node_url: URL del nodo target
+        node_id: ID del nodo
+        binary_data: Batch serializzato (MessagePack)
+        batch_num: Numero batch (per logging)
+    
+    Returns:
+        True se successo, False altrimenti
+    """
     try:
-        update_unavailable_nodes()
-    except Exception as e:
-        print(f"Client: initial peer report failed: {e}")
+        response = requests.post(
+            f"{node_url}/add_vectors_bulk",
+            data=binary_data,
+            headers={"Content-Type": "application/msgpack"},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return True
+        else:
+            print(f"⚠️  Batch {batch_num} → {node_id}: HTTP {response.status_code}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Batch {batch_num} → {node_id}: {e}")
+        return False
+
+
+def wait_for_clustering():
+    """Poll coordinator until clustering is complete."""
+    print("\n" + "="*60)
+    print(f"3. WAITING FOR {COORDINATOR_NODE_ID} TO COMPLETE CLUSTERING")
+    print("="*60)
+    
+    coordinator_url = NODE_URLS[0]
+    max_wait = 1800
+    start_time = time.time()
+    poll_interval = 5
+    last_bootstrap_count = 0
+    
+    print(f"   Max wait time: {max_wait//60} minutes")
+    print(f"   Polling every {poll_interval}s...\n")
+    
+    while time.time() - start_time < max_wait:
+        elapsed = int(time.time() - start_time)
+        
+        try:
+            response = requests.get(f"{coordinator_url}/clustering-status", timeout=5)
+            
+            if response.status_code == 200:
+                status = response.json()
+                
+                bootstrap_count = status.get("bootstrap_vectors_received", 0)
+                if bootstrap_count != last_bootstrap_count:
+                    print(f"  [{elapsed}s] {COORDINATOR_NODE_ID}: {bootstrap_count}/{BOOTSTRAP_VECTORS} vectors")
+                    last_bootstrap_count = bootstrap_count
+                
+                if status.get("clustering_complete", False):
+                    print(f"\n✅ {COORDINATOR_NODE_ID}: Clustering complete after {elapsed}s!")
+                    
+                    # NEW: Verify cleanup completion on all nodes
+                    print(f"\n🔍 Verifying cleanup completion across all nodes...")
+                    all_cleanup_complete = True
+                    
+                    for i in range(NUM_NODES):
+                        node_url = NODE_URLS[i]
+                        node_id = f"node{i+1}"
+                        try:
+                            cleanup_resp = requests.get(f"{node_url}/cleanup-status", timeout=3)
+                            if cleanup_resp.status_code == 200:
+                                cleanup_data = cleanup_resp.json()
+                                cleanup_complete = cleanup_data.get('cleanup_complete', False)
+                                config_version = cleanup_data.get('config_version')
+                                
+                                if cleanup_complete:
+                                    print(f"  ✅ {node_id}: Cleanup complete (version: {config_version})")
+                                else:
+                                    print(f"  ⏳ {node_id}: Cleanup in progress...")
+                                    all_cleanup_complete = False
+                        except:
+                            print(f"  ⚠️  {node_id}: Cannot verify cleanup status")
+                            all_cleanup_complete = False
+                    
+                    if not all_cleanup_complete:
+                        print(f"\n⏳ Waiting for all nodes to complete cleanup...")
+                        time.sleep(poll_interval)
+                        continue
+                    
+                    # Verify config sync
+                    print(f"\n🔍 Verifying config sync...")
+                    all_versions = {}
+                    for i in range(NUM_NODES):
+                        node_url = NODE_URLS[i]
+                        node_id = f"node{i+1}"
+                        try:
+                            cfg_resp = requests.get(f"{node_url}/config/status", timeout=3)
+                            if cfg_resp.status_code == 200:
+                                cfg_data = cfg_resp.json()
+                                version = cfg_data.get('config_version')
+                                all_versions[node_id] = version
+                        except:
+                            all_versions[node_id] = "ERROR"
+                    
+                    unique_versions = set(all_versions.values())
+                    if len(unique_versions) == 1:
+                        print(f"  ✅ All nodes synchronized on version: {list(unique_versions)[0]}")
+                    else:
+                        print(f"  ⚠️  Version mismatch detected: {unique_versions}")
+                    
+                    # NEW: Final verification - ensure ALL nodes accept routing
+                    print(f"\n🔍 Verifying ALL nodes are ready to accept routed vectors...")
+                    all_nodes_ready = True
+                    max_readiness_wait = 30  # 30 seconds max
+                    readiness_start = time.time()
+                    
+                    while time.time() - readiness_start < max_readiness_wait:
+                        ready_count = 0
+                        
+                        for i in range(NUM_NODES):
+                            node_url = NODE_URLS[i]
+                            node_id = f"node{i+1}"
+                            
+                            try:
+                                # Try a test request to see if node is ready
+                                test_resp = requests.get(f"{node_url}/clustering-status", timeout=2)
+                                if test_resp.status_code == 200:
+                                    test_data = test_resp.json()
+                                    if test_data.get('clustering_complete'):
+                                        ready_count += 1
+                            except:
+                                pass
+                        
+                        if ready_count == NUM_NODES:
+                            print(f"  ✅ All {NUM_NODES} nodes are ready for routing")
+                            all_nodes_ready = True
+                            break
+                        
+                        elapsed_readiness = int(time.time() - readiness_start)
+                        if elapsed_readiness % 5 == 0:
+                            print(f"  [{elapsed_readiness}s] Ready: {ready_count}/{NUM_NODES} nodes")
+                        
+                        time.sleep(1)
+                    
+                    if not all_nodes_ready:
+                        print(f"  ⚠️  Some nodes may not be ready yet, but proceeding...")
+                    
+                    return True
+                
+                elif status.get("clustering_in_progress", False):
+                    print(f"  [{elapsed}s] {COORDINATOR_NODE_ID}: 🔄 Clustering in progress...")
+                else:
+                    if elapsed % 30 == 0:
+                        print(f"  [{elapsed}s] {COORDINATOR_NODE_ID}: Collecting bootstrap ({bootstrap_count}/{BOOTSTRAP_VECTORS})...")
+            else:
+                print(f"  ⚠️  [{elapsed}s] Failed to query coordinator: HTTP {response.status_code}")
+                
+        except requests.exceptions.RequestException as e:
+            print(f"  ⚠️  [{elapsed}s] Error querying coordinator: {e}")
+        
+        time.sleep(poll_interval)
+    
+    print(f"\n❌ Timeout: {COORDINATOR_NODE_ID} did not complete clustering in {max_wait}s\n")
+    return False
+
+
+def insert_vectors_routed():
+    """Insert remaining vectors using smart routing (post-clustering)."""
+    print("\n" + "="*60)
+    print(f"4. SMART ROUTING: Inserting {NUM_VECTORS - BOOTSTRAP_VECTORS} remaining vectors")
+    print("="*60)
+    
+    insertions = []
+    vector_index = BOOTSTRAP_VECTORS
+    batch_num = 0
+    
+    # NEW: Track replication statistics
+    replication_stats = {
+        'vectors_processed': 0,
+        'total_replica_sends': 0,
+        'replicas_per_vector': []
+    }
+    
+    start_time = time.time()
     
     with ThreadPoolExecutor(max_workers=NUM_NODES) as executor:
         futures = {}
         
         while vector_index < NUM_VECTORS or futures:
-            # refresh peer reports periodically
-            if time.time() - _last_peer_report_time > PEER_REPORT_REFRESH_INTERVAL:
-                try:
-                    update_unavailable_nodes()
-                except Exception as e:
-                    print(f"Client: peer report update failed: {e}")
-
             # Submit new batches
             while len(futures) < NUM_NODES and vector_index < NUM_VECTORS:
                 batch_num += 1
@@ -462,12 +535,11 @@ def insert_vectors_bulk():
                 current_batch_size = batch_metrics.current_batch_size
                 end_index = min(vector_index + current_batch_size, NUM_VECTORS)
                 
-                # Determine entry node (round-robin but skip unavailable)
-                node_url_index = choose_entry_node(batch_num)
+                # Round-robin entry node
+                node_url_index = (batch_num - 1) % NUM_NODES
                 node_url = NODE_URLS[node_url_index]
                 sent_to_node_id = f"node{node_url_index + 1}"
                 
-                # Create batch payload
                 batch_payload = []
                 for j in range(vector_index, end_index):
                     final_vec = data[j]['embedding']
@@ -475,12 +547,16 @@ def insert_vectors_bulk():
                         "id": str(uuid.uuid4()),
                         "vector": final_vec,
                         "payload": {
-                            "source_type": "json_data",
+                            "source_type": "routed",
                             "sent_to_node": sent_to_node_id,
-                            "index": j
+                            "index": j,
+                            "batch_num": batch_num  # NEW: Track batch
                         }
                     }
                     batch_payload.append(vector_data)
+                    
+                    # NEW: Track expected replicas per vector
+                    replication_stats['vectors_processed'] += 1
                 
                 future = executor.submit(
                     send_batch_with_retry_threadsafe,
@@ -494,68 +570,95 @@ def insert_vectors_bulk():
                     'batch_num': batch_num,
                     'start_index': vector_index,
                     'end_index': end_index,
-                    'node_id': sent_to_node_id
+                    'node_id': sent_to_node_id,
+                    'batch_size': len(batch_payload)  # NEW
                 }
                 
                 vector_index = end_index
             
             # Process completed batches
             if futures:
-                done, pending = as_completed(futures.keys()), set(futures.keys())
+                done_futures = list(as_completed(futures.keys(), timeout=None))
                 
-                for future in done:
+                for future in done_futures:
                     batch_info = futures[future]
                     batch_num_completed, success, res_data = future.result()
                     
                     if success:
                         batches = res_data.get('batches', {})
+                        
+                        # NEW: Verbose logging for first few batches
+                        if batch_num_completed <= 3:
+                            print(f"\n🔍 Batch {batch_num_completed} Routing Detail:")
+                            print(f"   Entry node: {batch_info['node_id']}")
+                            print(f"   Batch size: {batch_info['batch_size']} vectors")
+                            print(f"   Response batches: {batches}")
+                            total_in_batch = sum(batches.values())
+                            print(f"   Total routed: {total_in_batch}")
+                            expected = batch_info['batch_size'] * 3
+                            print(f"   Expected (3x): {expected}")
+                            if total_in_batch < expected:
+                                print(f"   ⚠️  MISSING: {expected - total_in_batch} replicas!")
+                        
+                        # Track replication stats
+                        total_replicas = sum(batches.values())
+                        batch_size = batch_info['batch_size']
+                        avg_replicas = total_replicas / batch_size if batch_size > 0 else 0
+                        
+                        replication_stats['total_replica_sends'] += total_replicas
+                        replication_stats['replicas_per_vector'].append(avg_replicas)
+                        
                         with metrics_lock:
                             for node_id, count in batches.items():
                                 insertions.extend([node_id] * count)
                         
                         if batch_num_completed % 30 == 0:
                             elapsed = time.time() - start_time
-                            total_inserted = batch_info['end_index']
+                            total_inserted = batch_info['end_index'] - BOOTSTRAP_VECTORS
                             vectors_per_sec = total_inserted / elapsed if elapsed > 0 else 0
                             
-                            with metrics_lock:
-                                metrics = batch_metrics.get_stats()
-                            
-                            print(f"Batch {batch_num_completed}: {total_inserted}/{NUM_VECTORS} vectors "
-                                  f"({vectors_per_sec:.0f} vec/s, size={metrics['current_batch_size']}, "
-                                  f"retries={metrics['total_retries']}, splits={metrics['total_splits']}, "
-                                  f"active={len(futures)})")
-                    else:
-                        actual_batch_size = batch_info['end_index'] - batch_info['start_index']
-                        print(f"⚠️  Batch {batch_num_completed} failed completely, skipping {actual_batch_size} vectors")
+                            # NEW: Show replication info
+                            print(f"Batch {batch_num_completed}: {total_inserted}/{NUM_VECTORS - BOOTSTRAP_VECTORS} "
+                                  f"({vectors_per_sec:.0f} vec/s) | Replicas: {avg_replicas:.1f}x per vector")
                     
                     del futures[future]
-                    break
     
     total_time = time.time() - start_time
-    avg_speed = NUM_VECTORS / total_time if total_time > 0 else 0
-    metrics = batch_metrics.get_stats()
     
-    print(f"\n✅ Vector insertion complete in {total_time:.2f}s")
-    print(f"   Average speed: {avg_speed:.0f} vectors/second")
-    print(f"   Final batch size: {metrics['current_batch_size']}")
-    print(f"   Total retries: {metrics['total_retries']}")
-    print(f"   Total splits: {metrics['total_splits']}")
-    print(f"   🚀 Speedup from parallelization: ~{min(NUM_NODES, 3)}x\n")
+    # NEW: Print replication analysis
+    print(f"\n✅ Routed insertion complete in {total_time:.2f}s")
+    print(f"\n📊 Replication Statistics:")
+    print(f"  Vectors processed:     {replication_stats['vectors_processed']:>10,}")
+    print(f"  Total replica sends:   {replication_stats['total_replica_sends']:>10,}")
+    
+    if replication_stats['vectors_processed'] > 0:
+        actual_rep = replication_stats['total_replica_sends'] / replication_stats['vectors_processed']
+        print(f"  Average replication:   {actual_rep:>10.2f}x")
+        print(f"  Expected replication:  {3.0:>10.1f}x")
+        
+        if abs(actual_rep - 3.0) > 0.5:
+            print(f"\n⚠️  WARNING: Replication factor is {actual_rep:.2f}x instead of 3.0x")
+            print(f"     This indicates vectors are NOT being properly replicated!")
+            print(f"     Expected total: {replication_stats['vectors_processed'] * 3:,}")
+            print(f"     Actual total:   {replication_stats['total_replica_sends']:,}")
+            print(f"     Missing:        {replication_stats['vectors_processed'] * 3 - replication_stats['total_replica_sends']:,}")
+    
+    print()
     
     return insertions
 
 
 def check_counts(insertions: list):
-    """Check the final vector counts on each node."""
+    """Check final vector counts on each node with detailed statistics."""
     print("\n" + "="*60)
-    print("3. CHECKING VECTOR COUNTS")
+    print("5. FINAL VECTOR DISTRIBUTION ANALYSIS")
     print("="*60)
     
     try:
         all_counts = []
         total_count = 0
         
+        # Get counts from all nodes
         for i in range(NUM_NODES):
             node_id = f"node{i+1}"
             node_url = NODE_URLS[i]
@@ -567,75 +670,128 @@ def check_counts(insertions: list):
             all_counts.append((node_id, count))
             total_count += count
 
-        print("Vector counts per node:")
+        # Print individual node counts
+        print("\n📊 Vector Counts per Node:")
+        print("-" * 60)
         for node_id, count in all_counts:
-            # Show expected count based on cluster assignment
-            cluster_indices = NODE_ASSIGNMENTS.get(str(int(node_id[4:])-1), [])
-            expected_note = f"({len(cluster_indices)} clusters assigned)" if cluster_indices else ""
-            print(f"  - {node_id} Count: {count} {expected_note}")
+            percentage = (count / total_count * 100) if total_count > 0 else 0
+            bar_length = int(percentage / 2)  # Scale bar to 50 chars max
+            bar = "█" * bar_length
+            print(f"  {node_id}: {count:>6,} vectors ({percentage:5.2f}%) {bar}")
         
-        print(f"\nTotal Vectors Stored: {total_count}")
-        print(f"Expected (with replication): {NUM_VECTORS * REPLICATION_FACTOR}")
-        print(f"Expected (unique): {NUM_VECTORS}")
+        print("-" * 60)
         
-        # Check from test script perspective
-        print("\n(Client-side insertion log check):")
-        for i in range(NUM_NODES):
-            node_id = f"node{i+1}"
-            script_count = insertions.count(node_id)
-            print(f"  - {node_id} received: {script_count}")
+        # Calculate statistics
+        if all_counts:
+            counts_only = [c for _, c in all_counts]
+            max_count = max(counts_only)
+            min_count = min(counts_only)
+            avg_count = total_count / NUM_NODES
+            median_count = sorted(counts_only)[len(counts_only) // 2]
+            
+            # Calculate variance and standard deviation
+            variance = sum((c - avg_count) ** 2 for c in counts_only) / NUM_NODES
+            std_dev = variance ** 0.5
+            
+            imbalance = ((max_count - min_count) / avg_count * 100) if avg_count > 0 else 0
+            
+            print(f"\n📈 Distribution Statistics:")
+            print(f"  Total vectors:        {total_count:>10,}")
+            
+            # FIXED: Expected calculation (REPLICA-AWARE CLEANUP)
+            # Bootstrap: 10k vettori × 3 repliche = 30k totali
+            # Routed:    10k vettori × 3 repliche = 30k totali
+            # TOTALE:    60k vettori
+            
+            bootstrap_kept_with_replicas = BOOTSTRAP_VECTORS * 3  # 10k × 3 = 30k
+            routed_with_replicas = (NUM_VECTORS - BOOTSTRAP_VECTORS) * 3  # 10k × 3 = 30k
+            expected_total = bootstrap_kept_with_replicas + routed_with_replicas  # 60k
+            
+            print(f"  Expected (REPLICA-AWARE): {expected_total:>10,}")
+            print(f"  Calculation: ({BOOTSTRAP_VECTORS:,} bootstrap + {NUM_VECTORS - BOOTSTRAP_VECTORS:,} routed) × 3 rep = {expected_total:,}")
+            print(f"  Breakdown:")
+            print(f"    - Bootstrap with replicas: {bootstrap_kept_with_replicas:>10,}")
+            print(f"    - Routed with replicas:    {routed_with_replicas:>10,}")
+            
+            print(f"  Average per node:     {avg_count:>10,.1f}")
+            print(f"  Median per node:      {median_count:>10,}")
+            print(f"  Min count:            {min_count:>10,} ({all_counts[counts_only.index(min_count)][0]})")
+            print(f"  Max count:            {max_count:>10,} ({all_counts[counts_only.index(max_count)][0]})")
+            print(f"  Range (max-min):      {max_count - min_count:>10,}")
+            print(f"  Standard deviation:   {std_dev:>10,.2f}")
+            print(f"  Imbalance:            {imbalance:>10.2f}%")
+            
+            # Load Balance Assessment (NEW)
+            print(f"\n⚖️ Load Balance Assessment:")
+            for node_id, count in all_counts:
+                expected_count = avg_count
+                diff = count - expected_count
+                diff_percent = (diff / expected_count * 100) if expected_count != 0 else 0
+                
+                status = "✅" if abs(diff_percent) <= 10 else "⚠️" if abs(diff_percent) <= 25 else "❌"
+                print(f"  {node_id}: {count:>6,} vectors (diff: {diff:+.1f}, {diff_percent:+.1f}%) {status}")
+            
+            # Replication factor estimation
+            actual_replication = total_count / NUM_VECTORS if NUM_VECTORS > 0 else 0
+            
+            # NEW: Calculate routed-only replication (excluding bootstrap)
+            routed_only_count = total_count  # After cleanup, all vectors are routed
+            routed_vectors = NUM_VECTORS - BOOTSTRAP_VECTORS
+            routed_replication = routed_only_count / routed_vectors if routed_vectors > 0 else 0
+            
+            # FIXED: Calcola expected replication (da beam search)
+            expected_replication = 3.0  # Default from beam search (rep_factor)
+            
+            print(f"\n🔄 Replication Analysis:")
+            print(f"  Total unique vectors:    {NUM_VECTORS:>10,}")
+            print(f"  Bootstrap (deleted):     {BOOTSTRAP_VECTORS:>10,}")
+            print(f"  Routed (kept):           {routed_vectors:>10,}")
+            print(f"  Total stored:            {total_count:>10,}")
+            print(f"  Overall replication:     {actual_replication:>10.2f}x (vs {NUM_VECTORS:,})")
+            print(f"  Routed replication:      {routed_replication:>10.2f}x (vs {routed_vectors:,})")
+            print(f"  Expected replication:   ~{expected_replication:.1f}x")
+            
+            replication_diff = abs(routed_replication - expected_replication)
+            if replication_diff < 0.3:
+                print(f"  ✅ Replication matches expected")
+            elif replication_diff < 0.7:
+                print(f"  ⚠️  Replication slightly off (diff: {replication_diff:.2f}x)")
+            else:
+                print(f"  ❌ Replication significantly different (diff: {replication_diff:.2f}x)")
+                print(f"     Possible causes:")
+                print(f"     - Cleanup incomplete (bootstrap not fully deleted)")
+                print(f"     - Double routing (vectors routed twice)")
+                print(f"     - Replication factor mismatch in beam search")
         
-        # Validate total count accounting for replication
-        expected_total = NUM_VECTORS * REPLICATION_FACTOR
-        if abs(total_count - expected_total) < NUM_VECTORS * 0.05:  # 5% tolerance
-            print(f"✅  Total counts match expected (within 5% tolerance).")
-        else:
-            print(f"⚠️  Counts deviate from expected!")
-
-        # Check load balancing quality
-        expected_avg = expected_total / NUM_NODES
-        max_count = max(c for _, c in all_counts)
-        min_count = min(c for _, c in all_counts)
-        imbalance = (max_count - min_count) / expected_avg * 100 if expected_avg > 0 else 0
-        
-        print(f"\nLoad Balance Statistics:")
-        print(f"  - Expected avg per node: {expected_avg:,.1f}")
-        print(f"  - Actual range: {min_count:,} to {max_count:,}")
-        print(f"  - Imbalance: {imbalance:.1f}%")
-        
-        if imbalance < 20:
-            print(f"✅  Distribution is well balanced (<20% imbalance).")
-        else:
-            print(f"⚠️  Distribution could be more balanced!")
-        print("")
+        print()
         
     except requests.exceptions.RequestException as e:
         print(f"!!! Error checking counts: {e}")
 
 
 def run_queries():
-    """
-    P2P Federated Search: Query via random entry node con routing server-side.
-    Il nodo entry usa il SUO Meta-HNSW locale per trovare i migliori peer.
-    """
+    """Run P2P federated search queries using HNSW routing."""
     print("\n" + "="*60)
-    print("4. Running P2P Federated Search (Server-Side Meta-HNSW Routing)")
+    print("6. P2P QUERY WITH META-HNSW ROUTING")
     print("="*60)
 
+    # Use last vector as query
     query_vector = np.array(data[NUM_VECTORS]['embedding'])
-    k_nodes = min(3, NUM_NODES)  # Top-K nodi da interrogare
-    k_results = 5  # Risultati per nodo
+    k_nodes = min(3, NUM_NODES)
+    k_results = 5
 
-    # STEP 1: Scelta entry node CASUALE
+    # Random entry node
     import random
     entry_node_idx = random.randint(0, NUM_NODES - 1)
     entry_node_url = NODE_URLS[entry_node_idx]
     entry_node_id = f"node{entry_node_idx + 1}"
     
-    print(f"🎯 Using random entry node: {entry_node_id} ({entry_node_url})")
-    print(f"📊 Query parameters: top_k_nodes={k_nodes}, top_k_results={k_results}")
-
-    # STEP 2: Query l'entry node con endpoint P2P
+    print(f"\n🎯 Query Setup:")
+    print(f"  Entry node:       {entry_node_id}")
+    print(f"  Query vector:     embeddings.json[{NUM_VECTORS}] (384-dim)")
+    print(f"  Target nodes:     {k_nodes} (top-K via Meta-HNSW)")
+    print(f"  Results per node: {k_results}")
+    
     try:
         payload = {
             "query_vector": query_vector.tolist(),
@@ -644,172 +800,242 @@ def run_queries():
         }
 
         print(f"\n📡 Sending P2P query to {entry_node_id}...")
+        print(f"   (Using local Meta-HNSW for intelligent routing)")
+        
+        start_time = time.time()
         response = requests.post(
             f"{entry_node_url}/search/p2p",
             json=payload,
             timeout=30
         )
+        query_time = time.time() - start_time
+        
         response.raise_for_status()
-
         results = response.json()
         
-        # STEP 3: Mostra risultati aggregati
-        print(f"\n✅ P2P query complete:")
-        print(f"  - Entry node: {results['entry_node']}")
-        print(f"  - Routing method: {results.get('routing_method', 'unknown')}")
-        print(f"  - Nodes queried: {results['nodes_queried']} (targets: {results['target_nodes']})")
-        print(f"  - Total results: {results['total_results']}")
-        print(f"  - Best match: {results['best_match']['node']} (Score: {results['best_match']['score']:.4f})")
-
-        print(f"\n📊 Per-node breakdown:")
-        for node_name, node_results in results['results_per_node'].items():
+        print(f"\n✅ Query completed in {query_time:.3f}s")
+        print(f"\n📊 Routing Information:")
+        print(f"  Entry node:       {results['entry_node']}")
+        print(f"  Routing method:   {results.get('routing_method', 'unknown').upper()}")
+        print(f"  Target nodes:     {results['target_nodes']}")
+        print(f"  Nodes queried:    {results['nodes_queried']}/{k_nodes}")
+        print(f"  Total results:    {results['total_results']}")
+        
+        # Best match info
+        best = results['best_match']
+        print(f"\n🏆 Best Match:")
+        print(f"  Node:             {best['node']}")
+        print(f"  Cosine score:     {best['score']:.6f}")
+        
+        # Per-node breakdown
+        print(f"\n📋 Results per Node:")
+        print("-" * 60)
+        
+        for node_name in sorted(results['results_per_node'].keys()):
+            node_results = results['results_per_node'][node_name]
             count = len(node_results)
-            max_score = node_results[0]['score'] if count > 0 else -1
-            min_score = node_results[-1]['score'] if count > 0 else -1
-            print(f"  - {node_name}: {count} results (Best: {max_score:.4f}, Worst: {min_score:.4f})")
-
-        print(f"\n💡 Efficiency: Entry node handled routing using local Meta-HNSW")
-        print(f"   (No client-side Meta-HNSW needed - pure P2P architecture)")
+            
+            if count > 0:
+                scores = [r['score'] for r in node_results]
+                max_score = max(scores)
+                min_score = min(scores)
+                avg_score = sum(scores) / len(scores)
+                
+                # Show if this node had the best match
+                best_marker = "🏆 " if node_name == best['node'] else "   "
+                
+                print(f"{best_marker}{node_name}:")
+                print(f"      Results: {count}")
+                print(f"      Scores:  {max_score:.6f} (best) / {avg_score:.6f} (avg) / {min_score:.6f} (worst)")
+                
+                # Show top 3 results from this node
+                print(f"      Top matches:")
+                for i, result in enumerate(node_results[:3]):
+                    vector_id = result.get('id', 'N/A')
+                    score = result.get('score', 0.0)
+                    payload_info = result.get('payload', {})
+                    source = payload_info.get('source_type', 'unknown')
+                    index = payload_info.get('index', '?')
+                    
+                    print(f"        #{i+1}: score={score:.6f} | id={vector_id[:8]}... | source={source} | idx={index}")
+                
+                print()
+        
+        # Meta-HNSW effectiveness analysis
+        if results.get('routing_method') == 'meta_hnsw':
+            print(f"🔍 Meta-HNSW Routing Effectiveness:")
+            print(f"  ✅ Smart routing active")
+            print(f"  ✅ Queried only {results['nodes_queried']}/{NUM_NODES} nodes ({results['nodes_queried']/NUM_NODES*100:.1f}%)")
+            print(f"  ✅ Found best match on {best['node']}")
+            print(f"  ✅ Estimated latency reduction: {(1 - results['nodes_queried']/NUM_NODES)*100:.1f}%")
+        else:
+            print(f"⚠️  Meta-HNSW Routing:")
+            print(f"  Fallback to broadcast (Meta-HNSW unavailable)")
+        
+        print()
         
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error during P2P query: {e}")
+        print(f"❌ Query error: {e}")
         import traceback
-        print("\nDebug traceback:")
         traceback.print_exc()
 
-def run_queries_debug():
-    """
-    Debug version: Query TUTTI i nodi per confrontare risultati.
-    Usa ancora P2P ma con k_nodes = NUM_NODES.
-    """
-    print("\n" + "="*60)
-    print("4 (DEBUG). Running Full P2P Search (All Nodes)")
-    print("="*60)
 
-    query_vector = np.array(data[NUM_VECTORS]['embedding'])
-    k_nodes = NUM_NODES  # Query TUTTI i nodi
-    k_results = 5
-
-    import random
-    entry_node_idx = random.randint(0, NUM_NODES - 1)
-    entry_node_url = NODE_URLS[entry_node_idx]
-    entry_node_id = f"node{entry_node_idx + 1}"
+def print_post_cleanup_report():
+    """Print detailed vector counts after cleanup on all nodes."""
+    print("\n" + "="*80)
+    print("POST-CLEANUP VECTOR DISTRIBUTION (BEFORE ROUTING)")
+    print("="*80)
     
-    print(f"🎯 Using entry node: {entry_node_id} (querying ALL {k_nodes} nodes for comparison)")
-
-    try:
-        payload = {
-            "query_vector": query_vector.tolist(),
-            "top_k_nodes": k_nodes,
-            "top_k_results": k_results
-        }
-
-        response = requests.post(
-            f"{entry_node_url}/search/p2p",
-            json=payload,
-            timeout=30
-        )
-        response.raise_for_status()
-
-        results = response.json()
-        
-        print(f"\n✅ Full P2P query complete (ALL nodes):")
-        print(f"  - Entry node: {results['entry_node']}")
-        print(f"  - Nodes queried: {results['nodes_queried']}/{NUM_NODES}")
-        print(f"  - Total results: {results['total_results']}")
-        print(f"  - Best match: {results['best_match']['node']} (Score: {results['best_match']['score']:.4f})")
-
-        print(f"\n📊 Per-node breakdown:")
-        for node_name, node_results in results['results_per_node'].items():
-            count = len(node_results)
-            max_score = node_results[0]['score'] if count > 0 else -1
-            min_score = node_results[-1]['score'] if count > 0 else -1
-            print(f"  - {node_name}: {count} results (Best: {max_score:.4f}, Worst: {min_score:.4f})")
-        
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Error during debug query: {e}")
-        import traceback
-        print("\nDebug traceback:")
-        traceback.print_exc()
-
-def initialize_distributed_meta_hnsw():
-    """
-    Send Meta-HNSW initialization data to all nodes.
-    Each node will build its own local Meta-HNSW instance.
-    """
-    print("\n" + "="*60)
-    print("1.5. Initializing Distributed Meta-HNSW on Nodes")
-    print("="*60)
+    all_counts = []
+    total_vectors = 0
     
-    payload = {
-        "dimension": VECTOR_SIZE,
-        "max_clusters": max(len(CENTROIDS), NUM_NODES * 10),
-        "centroids": CENTROIDS,
-        "node_assignments": NODE_ASSIGNMENTS
-    }
-    
-    success_count = 0
-    for i, node_url in enumerate(NODE_URLS):
+    # FIXED: Use simple /count endpoint like check_counts() does
+    for i in range(NUM_NODES):
+        node_url = NODE_URLS[i]
         node_id = f"node{i+1}"
+        
         try:
-            response = requests.post(
-                f"{node_url}/init-meta-hnsw",
-                json=payload,
-                timeout=30
-            )
+            # Use the working /count endpoint
+            response = requests.get(f"{node_url}/count", timeout=5)
             
             if response.status_code == 200:
-                print(f"  ✓ {node_id}: Meta-HNSW initialized")
-                success_count += 1
+                count = response.json().get('count', 0)
+                all_counts.append((node_id, count))
+                total_vectors += count
+                print(f"  ✓ {node_id}: {count:>6,} vectors")
             else:
-                print(f"  ✗ {node_id}: Failed (HTTP {response.status_code}) - {response.text}")
+                print(f"  ⚠️  {node_id}: Failed (HTTP {response.status_code})")
+                all_counts.append((node_id, 0))
                 
         except requests.exceptions.RequestException as e:
-            print(f"  ✗ {node_id}: Error - {e}")
+            print(f"  ⚠️  {node_id}: Error - {e}")
+            all_counts.append((node_id, 0))
     
-    print(f"\n✅ Distributed Meta-HNSW initialized on {success_count}/{NUM_NODES} nodes\n")
+    print("-" * 80)
     
-    if success_count < NUM_NODES:
-        print("⚠️  Warning: Not all nodes initialized Meta-HNSW successfully!")
-        print("   The system might not route queries correctly. Check server logs.")
-        time.sleep(3)
+    # Analysis
+    if not all_counts:
+        print("❌ No data collected")
+        return
+    
+    counts_only = [c for _, c in all_counts]
+    max_count = max(counts_only)
+    min_count = min(counts_only)
+    avg_count = total_vectors / NUM_NODES if NUM_NODES > 0 else 0
+    
+    print(f"\n📈 Post-Cleanup Analysis:")
+    print(f"  Total vectors across all nodes:     {total_vectors:>10,}")
+    
+    # Expected: 10k bootstrap × 3 replicas = 30k
+    expected_bootstrap = BOOTSTRAP_VECTORS * 3
+    print(f"  Expected bootstrap (with replicas): {expected_bootstrap:>10,}")
+    print(f"  Actual total:                       {total_vectors:>10,}")
+    
+    if total_vectors == expected_bootstrap:
+        print(f"  ✅ Vector count matches expected (cleanup preserved correct replicas)")
+    elif total_vectors < expected_bootstrap:
+        diff = expected_bootstrap - total_vectors
+        print(f"  ⚠️  Vector count LOWER than expected (missing: {diff:,})")
+        print(f"     Some replicas may have been incorrectly deleted")
+    else:
+        diff = total_vectors - expected_bootstrap
+        print(f"  ⚠️  Vector count HIGHER than expected (extra: {diff:,})")
+        print(f"     Some non-replica vectors were not cleaned up")
+    
+    # Load balance
+    print(f"\n⚖️  Load Balance (Post-Cleanup):")
+    print(f"  Average per node:  {avg_count:>10,.1f}")
+    print(f"  Min count:         {min_count:>10,} ({all_counts[counts_only.index(min_count)][0]})")
+    print(f"  Max count:         {max_count:>10,} ({all_counts[counts_only.index(max_count)][0]})")
+    print(f"  Range (max-min):   {max_count - min_count:>10,}")
+    
+    if avg_count > 0:
+        imbalance_pct = ((max_count - min_count) / avg_count * 100)
+        print(f"  Imbalance:         {imbalance_pct:>10.2f}%")
+        
+        if imbalance_pct <= 10:
+            print(f"  ✅ Good balance (within 10%)")
+        elif imbalance_pct <= 25:
+            print(f"  ⚠️  Moderate imbalance (within 25%)")
+        else:
+            print(f"  ❌ Poor balance (exceeds 25%)")
+    
+    # Per-node breakdown
+    print(f"\n📊 Per-Node Breakdown:")
+    for node_id, count in all_counts:
+        diff = count - avg_count
+        diff_pct = (diff / avg_count * 100) if avg_count > 0 else 0
+        status = "✅" if abs(diff_pct) <= 10 else "⚠️" if abs(diff_pct) <= 25 else "❌"
+        bar_length = int((count / max_count * 30)) if max_count > 0 else 0
+        bar = "█" * bar_length
+        print(f"  {node_id}: {count:>6,} ({diff:+6.0f}, {diff_pct:+5.1f}%) {status} {bar}")
+    
+    print()
+    print("="*80)
+    print()
 
 
 def main_app():
     print("\n" + "="*60)
-    print(f"QDRANT SMART SHARDING TEST ({NUM_NODES} NODES)")
+    print(f"QDRANT SERVER-SIDE CLUSTERING ({NUM_NODES} NODES)")
     print("="*60)
-    print(f"Test will insert {NUM_VECTORS} vectors with {REPLICATION_FACTOR}x replication.")
-    print(f"Using {len(CENTROIDS)} clusters balanced across {NUM_NODES} nodes.\n")
+    print(f"Phase 1: Register peers")
+    print(f"Phase 2: Bootstrap {BOOTSTRAP_VECTORS} vectors (broadcast)")
+    print(f"Phase 3: Wait for {COORDINATOR_NODE_ID} clustering")
+    print(f"Phase 4: Smart routing {NUM_VECTORS - BOOTSTRAP_VECTORS} remaining vectors")
+    print(f"Phase 5: Verify distribution")
+    print(f"Phase 6: Test Meta-HNSW query routing\n")
     
     time.sleep(2)
     
     start_time = time.time()
     
+    # PHASE 1: Register peers
     register_peers()
     
-    # Inizializza Meta-HNSW sui SERVER (mantieni questa chiamata!)
-    initialize_distributed_meta_hnsw()
+    # PHASE 2: Bootstrap broadcast
+    bootstrap_insertions = insert_vectors_bootstrap()
     
-    insertions = insert_vectors_bulk()
-
-    #wait_for_qdrant_indexing()
+    # PHASE 3: Wait for clustering
+    if not wait_for_clustering():
+        print("❌ Clustering failed, aborting")
+        sys.exit(1)
+    
+    # NEW: Print detailed post-cleanup report
+    print("\n" + "="*80)
+    print("VERIFYING CLEANUP COMPLETION AND VECTOR DISTRIBUTION")
+    print("="*80)
+    print_post_cleanup_report()
+    
+    # NEW: Reduced wait time (cleanup already verified)
+    print("--- Waiting 10s for final synchronization before routing... ---")
+    time.sleep(10)
+    
+    # PHASE 4: Smart routing
+    routed_insertions = insert_vectors_routed()
+    
+    # Wait for background ops
+    print("\n--- Waiting 15s for background insertions... ---")
     time.sleep(15)
-
-    # REMOVED: initialize_meta_hnsw() ← DELETE questa chiamata (era per client Meta-HNSW)
     
-    print("--- Waiting 15s for background insertions to settle... ---")
-    time.sleep(15)
+    # PHASE 5: Verification (ENHANCED)
+    all_insertions = bootstrap_insertions + routed_insertions
+    check_counts(all_insertions)
     
-    check_counts(insertions)
-    
-    # Nuove query P2P
+    # PHASE 6: Queries (ENHANCED with HNSW)
     run_queries()
-    run_queries_debug()
     
     end_time = time.time()
+    total_time = end_time - start_time
+    
     print("\n" + "="*60)
-    print(f"TEST COMPLETE IN {end_time - start_time:.2f} SECONDS")
+    print(f"✅ TEST COMPLETE")
+    print("="*60)
+    print(f"Total execution time: {total_time:.2f}s ({total_time/60:.2f} minutes)")
+    print(f"Vectors inserted:     {NUM_VECTORS:,}")
+    print(f"Nodes used:           {NUM_NODES}")
+    print(f"Bootstrap phase:      {BOOTSTRAP_VECTORS:,} vectors")
+    print(f"Routed phase:         {NUM_VECTORS - BOOTSTRAP_VECTORS:,} vectors")
     print("="*60)
 
 if __name__ == "__main__":
