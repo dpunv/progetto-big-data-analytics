@@ -139,15 +139,8 @@ def insert_vectors_bulk(config: AppConfig, data: list, batch_sender: BatchSender
     """
     Insert vectors in bulk with parallel batch sending.
     
-    Args:
-        config: Application configuration
-        data: Embeddings data
-        batch_sender: BatchSender instance
-        coordinator: NodeCoordinator instance
-        node_assignments: Node assignment mapping
-        
-    Returns:
-        List of node IDs where vectors were inserted (for validation)
+    FIXED: Now properly implements replication factor routing.
+    Each vector is sent to ALL replica nodes, not just the entry node.
     """
     print("\n" + "="*60)
     print(f"2. INSERTING {config.num_vectors} VECTORS (Size {config.vector_size})")
@@ -209,22 +202,25 @@ def insert_vectors_bulk(config: AppConfig, data: list, batch_sender: BatchSender
                 node_url = config.get_node_urls()[node_url_index]
                 sent_to_node_id = config.get_node_id(node_url_index)
                 
-                # Create batch payload
+                # Create batch payload WITH REPLICATION ROUTING INFO
                 batch_payload = []
                 for j in range(vector_index, end_index):
                     final_vec = data[j]['embedding']
+                    
+                    # NEW: Include replication routing info in payload
                     vector_data = {
                         "id": str(uuid.uuid4()),
                         "vector": final_vec,
                         "payload": {
                             "source_type": "json_data",
                             "sent_to_node": sent_to_node_id,
-                            "index": j
+                            "index": j,
+                            "route_to_replicas": True  # NEW: Flag for replication
                         }
                     }
                     batch_payload.append(vector_data)
                 
-                # Submit async
+                # Submit async (entry node will handle replication routing)
                 future = executor.submit(
                     batch_sender.send_batch,
                     batch_payload,
@@ -366,7 +362,17 @@ def main_app():
     
     centroids = node_assignment_data.get('centroids', [])
     node_assignments = node_assignment_data.get('node_assignments', {})
-    replication_factor = node_assignment_data.get('stats', {}).get('replication_factor', 1)
+    
+    # NEW: Use AppConfig method instead of reading from file
+    replication_factor = config.calculate_replication_factor(len(centroids))
+    
+    # Override with file value if available (for backward compatibility)
+    file_rep_factor = node_assignment_data.get('stats', {}).get('replication_factor')
+    if file_rep_factor is not None:
+        replication_factor = file_rep_factor
+        print(f"Using replication factor from assignments file: {replication_factor}")
+    else:
+        print(f"Calculated replication factor: {replication_factor} (min: {config.min_replication_factor})")
     
     print(f"Loaded {len(centroids)} centroids; node assignment map contains {len(node_assignments)} nodes' assignments.")
     

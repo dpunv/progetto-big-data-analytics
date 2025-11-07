@@ -8,18 +8,16 @@ import uuid
 import json
 import numpy as np
 import utils
-import msgpack
-from collections import defaultdict
-from urllib.parse import urlparse
-import socket
-import threading
-import time
-import random  # NEW: Add missing import for gossip protocol
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from embeddings import EmbeddingService
-from meta_hnsw import MetaHNSW
-import pickle
-import base64
+import grpc
+from concurrent import futures
+import threading  # ADD: Missing import for threading
+import time  # ADD: Missing import for time
+import random  # ADD: Missing import for random
+
+# NEW: Import gRPC services
+from grpc_services import VectorServiceServicer
+from grpc_services.grpc_client import GRPCClient
+from generated import vector_service_pb2_grpc
 
 # NEW: Import models from centralized location
 from api.models import (
@@ -32,8 +30,13 @@ from api.models import (
     SyncRequest,
     RegisterPeerRequest
 )
-from utils.serialization import deserialize_request, prepare_bulk_payload
+
+# NEW: Import routers
 from api.routers import peer_router, vector_router, search_router, admin_router
+
+# NEW: Import other dependencies
+from embeddings import EmbeddingService
+from meta_hnsw import MetaHNSW
 
 @dataclass
 class VectorData:
@@ -45,18 +48,24 @@ class VectorData:
 class QdrantNodeWrapper:
     """
     Wrapper for a Qdrant vector database node with inter-node communication capabilities.
+    NOW SUPPORTS: Dual-stack FastAPI (public) + gRPC (internal P2P)
     """
 
-    def __init__(self, node_id: str, qdrant_host: str = "localhost", qdrant_port: int = 6335, collection_name: str = "vectors", self_url: str = "http://localhost:8000", vector_size: int = 384):
+    def __init__(self, node_id: str, qdrant_host: str = "localhost", qdrant_port: int = 6335, collection_name: str = "vectors", self_url: str = "http://localhost:8000", vector_size: int = 384, grpc_port: int = 9001):
         self.node_id = node_id
         self.qdrant_url = f"http://{qdrant_host}:{qdrant_port}"
         self.collection_name = collection_name
-        self.peer_nodes = {}
+        self.peer_nodes = {}  # peer_id -> fastapi_url (for backward compat)
         self.self_url = self_url
         self.vector_size = vector_size
         self.node_vectors: List[List[float]] = []
         self.peer_node_vectors: Dict[str, List[List[float]]] = {}
         self.embedding_service: Optional[object] = None 
+        
+        # NEW: gRPC configuration
+        self.grpc_port = grpc_port
+        self.grpc_server: Optional[grpc.Server] = None
+        self.grpc_client = GRPCClient(node_id)
         
         # --- NEW: per-peer health status ---
         self.peer_status: Dict[str, Dict[str, Any]] = {}
@@ -78,8 +87,17 @@ class QdrantNodeWrapper:
         # Track local cluster updates for gossip
         self.local_cluster_updates: Dict[int, Dict] = {}  # {cluster_id: {centroid, count, timestamp}}
 
-    def register_peer(self, peer_id: str, peer_url: str):
+    def register_peer(self, peer_id: str, peer_url: str, grpc_port: Optional[int] = None):
+        """
+        Register peer for BOTH FastAPI (legacy) and gRPC (primary) communication.
+        
+        Args:
+            peer_id: Peer node ID
+            peer_url: Peer FastAPI URL (for backward compatibility)
+            grpc_port: Peer gRPC port (if None, inferred from peer_id)
+        """
         self.peer_nodes[peer_id] = peer_url
+        
         # Initialize peer status
         if peer_id not in self.peer_status:
             self.peer_status[peer_id] = {
@@ -91,7 +109,21 @@ class QdrantNodeWrapper:
             }
         else:
             self.peer_status[peer_id]["url"] = peer_url
-        print(f"Node {self.node_id}: Registered peer {peer_id} at {peer_url}")
+        
+        # NEW: Register gRPC peer
+        if grpc_port is None:
+            # Infer gRPC port from peer_id (convention: node1 → 9001, node2 → 9002, etc.)
+            peer_num = int(peer_id.replace("node", ""))
+            grpc_port = 9000 + peer_num
+        
+        # Extract host from peer_url
+        from urllib.parse import urlparse
+        parsed = urlparse(peer_url)
+        grpc_host = parsed.hostname or "localhost"
+        
+        self.grpc_client.register_peer(peer_id, grpc_host, grpc_port)
+        
+        print(f"Node {self.node_id}: Registered peer {peer_id} at {peer_url} (gRPC: {grpc_host}:{grpc_port})")
 
     def set_node_vectors(self, vectors: List[List[float]]):
         """
@@ -200,7 +232,17 @@ class QdrantNodeWrapper:
 
     # --- NEW METHOD FOR BULK FORWARDING ---
     def send_vectors_bulk(self, target_node_id: str, vectors_data: List[VectorData]) -> bool:
-        # Check peer status before attempting send
+        """
+        Send bulk vectors via gRPC (REPLACES HTTP+MessagePack).
+        
+        Args:
+            target_node_id: Target peer ID
+            vectors_data: List of VectorData objects
+            
+        Returns:
+            True if successful
+        """
+        # Check peer status
         status = self.peer_status.get(target_node_id, {}).get("status")
         if status == "DOWN":
             print(f"Node {self.node_id}: Skipping bulk send to {target_node_id} because it is DOWN")
@@ -210,31 +252,22 @@ class QdrantNodeWrapper:
             print(f"Node {self.node_id}: Unknown peer {target_node_id}")
             return False
         
-        peer_url = self.peer_nodes[target_node_id]
-        
         try:
-            # Convert List[VectorData] to List[Dict] for serialization
-            vectors_data_dicts = [asdict(vd) for vd in vectors_data]
+            # Convert VectorData to dict for gRPC client
+            vectors_dicts = [asdict(vd) for vd in vectors_data]
             
-            # NEW: Use centralized serialization utility
-            binary_data = prepare_bulk_payload(self.node_id, vectors_data_dicts)
+            # NEW: Use gRPC client instead of HTTP+MessagePack
+            response = self.grpc_client.send_vectors_bulk(target_node_id, vectors_dicts, timeout=30)
             
-            response = requests.post(
-                f"{peer_url}/receive_vectors_bulk",
-                data=binary_data,
-                headers={"Content-Type": "application/msgpack"},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                print(f"Node {self.node_id}: Successfully sent/forwarded {len(vectors_data)} vectors to {target_node_id}")
+            if response and response.get('vectors_stored', 0) > 0:
+                print(f"Node {self.node_id}: Successfully sent/forwarded {len(vectors_data)} vectors to {target_node_id} via gRPC")
                 return True
             else:
-                print(f"Node {self.node_id}: Failed to send bulk vectors to {target_node_id}. Status: {response.status_code}")
+                print(f"Node {self.node_id}: Failed to send bulk vectors to {target_node_id} via gRPC")
                 return False
                 
-        except requests.exceptions.RequestException as e:
-            print(f"Node {self.node_id}: Error sending bulk vectors to {target_node_id}: {e}")
+        except Exception as e:
+            print(f"Node {self.node_id}: Error sending bulk vectors via gRPC to {target_node_id}: {e}")
             return False
     # --- END NEW METHOD ---
 
@@ -330,30 +363,34 @@ class QdrantNodeWrapper:
     
     def query_peer(self, peer_id: str, query_vector: List[float], 
                    top_k: int = 5) -> Optional[List[Dict]]:
+        """
+        Query peer via gRPC (REPLACES HTTP).
+        
+        Args:
+            peer_id: Peer node ID
+            query_vector: Query vector
+            top_k: Number of results
+            
+        Returns:
+            List of results, or None on failure
+        """
         if peer_id not in self.peer_nodes:
             print(f"Node {self.node_id}: Unknown peer {peer_id}")
             return None
-        peer_url = self.peer_nodes[peer_id]
+        
         try:
-            payload = {
-                "from_node": self.node_id,
-                "query_vector": query_vector,
-                "top_k": top_k
-            }
-            response = requests.post(
-                f"{peer_url}/search",
-                json=payload,
-                timeout=10
-            )
-            if response.status_code == 200:
-                results = response.json()
-                print(f"Node {self.node_id}: Received {len(results)} results from {peer_id}")
+            # NEW: Use gRPC client instead of HTTP
+            results = self.grpc_client.search_peer(peer_id, query_vector, top_k, timeout=10)
+            
+            if results is not None:
+                print(f"Node {self.node_id}: Received {len(results)} results from {peer_id} via gRPC")
                 return results
             else:
-                print(f"Node {self.node_id}: Query failed. Status: {response.status_code}")
+                print(f"Node {self.node_id}: Query failed for {peer_id}")
                 return None
-        except requests.exceptions.RequestException as e:
-            print(f"Node {self.node_id}: Error querying peer: {e}")
+        
+        except Exception as e:
+            print(f"Node {self.node_id}: Error querying peer via gRPC: {e}")
             return None
     
     def search_local(self, query_vector: List[float], top_k: int = 5) -> Optional[List[Dict]]:
@@ -668,6 +705,35 @@ class QdrantNodeWrapper:
             print(f"Node {self.node_id}: Meta-HNSW query failed: {e}, using fallback")
             return self.find_best_nodes(vector)
 
+    def start_grpc_server(self):
+        """Start gRPC server for internal P2P communication."""
+        self.grpc_server = grpc.server(
+            futures.ThreadPoolExecutor(max_workers=10),
+            options=[
+                ('grpc.max_send_message_length', 100 * 1024 * 1024),
+                ('grpc.max_receive_message_length', 100 * 1024 * 1024),
+            ]
+        )
+        
+        # Register service
+        vector_service_pb2_grpc.add_VectorServiceServicer_to_server(
+            VectorServiceServicer(self), 
+            self.grpc_server
+        )
+        
+        # Bind port
+        self.grpc_server.add_insecure_port(f'[::]:{self.grpc_port}')
+        self.grpc_server.start()
+        
+        print(f"Node {self.node_id}: gRPC server started on port {self.grpc_port}")
+    
+    def stop_grpc_server(self):
+        """Stop gRPC server."""
+        if self.grpc_server:
+            self.grpc_server.stop(grace=5)
+            self.grpc_client.close_all()
+            print(f"Node {self.node_id}: gRPC server stopped")
+
 # FastAPI Application
 def create_app(node: QdrantNodeWrapper) -> FastAPI:
     """Create FastAPI application for a Qdrant node"""
@@ -725,12 +791,26 @@ def create_app(node: QdrantNodeWrapper) -> FastAPI:
 
 def run_node(node_id: str, port: int, qdrant_host: str = "localhost", 
              qdrant_port: int = 6333, collection_name: str = "vectors",
-             vector_size: int = 384):
+             vector_size: int = 384, grpc_port: Optional[int] = None):
     """
-    Run a Qdrant node with FastAPI server
+    Run a Qdrant node with DUAL-STACK: FastAPI (public) + gRPC (internal).
+    
+    Args:
+        node_id: Node identifier
+        port: FastAPI port (for public API)
+        qdrant_host: Qdrant database host
+        qdrant_port: Qdrant database port
+        collection_name: Qdrant collection name
+        vector_size: Vector dimension
+        grpc_port: gRPC port for internal P2P (if None, auto-assigned)
     """
     
     self_url = f"http://localhost:{port}"
+    
+    # Auto-assign gRPC port if not specified
+    if grpc_port is None:
+        node_num = int(node_id.replace("node", ""))
+        grpc_port = 9000 + node_num
     
     node = QdrantNodeWrapper(
         node_id, 
@@ -738,7 +818,8 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
         qdrant_port, 
         collection_name,
         self_url=self_url,
-        vector_size=vector_size
+        vector_size=vector_size,
+        grpc_port=grpc_port
     )
     
     if node.create_collection(vector_size):
@@ -765,16 +846,23 @@ def run_node(node_id: str, port: int, qdrant_host: str = "localhost",
         node.embedding_service = None
         print(f"Node {node_id}: WARNING - could not initialize embedding service: {e}")
     
+    # NEW: Start gRPC server in background
+    node.start_grpc_server()
+    
     app = create_app(node)
     
     print(f"\n{'='*60}")
     print(f"Starting Qdrant Node: {node_id}")
-    print(f"FastAPI Server: {self_url}")
+    print(f"FastAPI Server (Public): {self_url}")
+    print(f"gRPC Server (Internal P2P): localhost:{grpc_port}")
     print(f"Qdrant Backend: {node.qdrant_url}")
     print(f"Collection: {collection_name}")
     print(f"{'='*60}\n")
     
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    finally:
+        node.stop_grpc_server()
 
 
 if __name__ == "__main__":

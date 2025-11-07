@@ -1,13 +1,26 @@
-numpy
-uvicorn
-requests
-fastapi
-pydantic
-scikit-learn
-transformers
-torch
-faiss-cpu
-hnswlib
-msgpack
-matplotlib
-ijson
+# Core dependencies
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+requests>=2.31.0
+
+# gRPC (NEW - replaces msgpack)
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+protobuf>=4.25.0
+
+# Data processing
+numpy>=1.24.0
+ijson>=3.2.0
+
+# ML/Clustering
+scikit-learn>=1.3.0
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.2
+
+# HNSW
+hnswlib>=0.8.0
+
+# Utilities
+joblib>=1.3.0
+matplotlib>=3.7.0

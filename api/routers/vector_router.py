@@ -1,14 +1,15 @@
 """
 Vector insertion and forwarding endpoints.
+PUBLIC API: Receives JSON from external clients
+INTERNAL: Delegates to gRPC for P2P communication
 """
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from collections import defaultdict
-from dataclasses import asdict
 
 from api.models import VectorDataModel, SendVectorRequest, BroadcastRequest
 from utils.serialization import deserialize_request
-from server import VectorData  # Import from server module
+from server import VectorData
 
 router = APIRouter(prefix="", tags=["vectors"])
 
@@ -21,7 +22,8 @@ def get_node():
 @router.post("/receive_vector")
 async def receive_vector_endpoint(request: SendVectorRequest, node=Depends(get_node)):
     """
-    Endpoint to receive a SINGLE vector from other nodes
+    Endpoint to receive a SINGLE vector from other nodes.
+    NOTE: This endpoint is kept for backward compatibility but internal P2P uses gRPC.
     """
     vector_data = VectorData(
         id=request.vector_data.id,
@@ -42,10 +44,11 @@ async def receive_vector_endpoint(request: SendVectorRequest, node=Depends(get_n
 @router.post("/receive_vectors_bulk")
 async def receive_vectors_bulk_endpoint(request: Request, node=Depends(get_node)):
     """
-    Endpoint to receive a BATCH of vectors from other nodes.
-    Supports both JSON (legacy) and MessagePack (preferred).
+    Endpoint to receive a BATCH of vectors.
+    NOTE: Public endpoint (JSON). Internal P2P uses gRPC directly.
     """
     try:
+        # Deserialize JSON (for external clients)
         payload = await deserialize_request(request)
         
         from_node = payload.get("from_node")
@@ -80,7 +83,8 @@ async def receive_vectors_bulk_endpoint(request: Request, node=Depends(get_node)
 @router.post("/send_vector/{target_node_id}")
 async def send_vector_endpoint(target_node_id: str, vector_data: VectorDataModel, node=Depends(get_node)):
     """
-    Send a vector to a specific peer node
+    Send a vector to a specific peer node.
+    NOTE: Public endpoint. Uses gRPC internally.
     """
     vec_data = VectorData(
         id=vector_data.id,
@@ -104,7 +108,7 @@ async def send_vector_endpoint(target_node_id: str, vector_data: VectorDataModel
 @router.post("/broadcast")
 async def broadcast_vector_endpoint(request: BroadcastRequest, node=Depends(get_node)):
     """
-    Store a vector locally AND broadcast it to all peer nodes
+    Store a vector locally AND broadcast it to all peer nodes.
     """
     vector_data = VectorData(
         id=request.vector_data.id,
@@ -131,9 +135,8 @@ async def broadcast_vector_endpoint(request: BroadcastRequest, node=Depends(get_
 @router.post("/add_vector")
 async def add_vector_endpoint(vector_data: VectorDataModel, node=Depends(get_node)):
     """
-    Add a new SINGLE vector from an external client.
-    This node will find the best cluster and route the vector
-    to ALL replica nodes for that cluster.
+    Add a new SINGLE vector from an external client (JSON).
+    This node will find the best cluster and route via gRPC to replica nodes.
     """
     vec_data = VectorData(
         id=vector_data.id,
@@ -149,7 +152,7 @@ async def add_vector_endpoint(vector_data: VectorDataModel, node=Depends(get_nod
     success_nodes = []
     failed_nodes = []
 
-    # Send to all replicas
+    # Send to all replicas (uses gRPC for peer forwarding)
     for node_id in replica_node_ids:
         success = False
         if node_id == node.node_id:
@@ -159,7 +162,7 @@ async def add_vector_endpoint(vector_data: VectorDataModel, node=Depends(get_nod
                 vector_data=vec_data
             )
         else:
-            print(f"Node {node.node_id}: Forwarding vector {vec_data.id} to replica {node_id}.")
+            print(f"Node {node.node_id}: Forwarding vector {vec_data.id} to replica {node_id} via gRPC.")
             success = node.send_vector(node_id, vec_data)
         
         if success:
@@ -175,7 +178,7 @@ async def add_vector_endpoint(vector_data: VectorDataModel, node=Depends(get_nod
 
     return {
         "status": "success",
-        "message": f"Vector {vector_data.id} routed to {len(replica_node_ids)} replicas.",
+        "message": f"Vector {vector_data.id} routed to {len(replica_node_ids)} replicas via gRPC.",
         "action": "routed_to_replicas",
         "replicas_targeted": replica_node_ids,
         "replicas_succeeded": success_nodes,
@@ -186,10 +189,13 @@ async def add_vector_endpoint(vector_data: VectorDataModel, node=Depends(get_nod
 @router.post("/add_vectors_bulk")
 async def add_vectors_bulk_endpoint(request: Request, background_tasks: BackgroundTasks, node=Depends(get_node)):
     """
-    Add a new BATCH of vectors from an external client.
-    Supports both JSON (legacy) and MessagePack (preferred).
+    Add a new BATCH of vectors from an external client (JSON).
+    PUBLIC ENDPOINT: Receives JSON, routes via gRPC to ALL replica nodes.
+    
+    FIXED: Properly implements replication factor routing.
     """
     try:
+        # Deserialize JSON from external client
         vectors_raw = await deserialize_request(request)
         
         # Convert to VectorDataModel (Pydantic validation)
@@ -206,10 +212,8 @@ async def add_vectors_bulk_endpoint(request: Request, background_tasks: Backgrou
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {str(e)}")
     
-    # Classify all vectors and group them by best node
+    # Classify all vectors and group them by target replica nodes
     nodes_to_vectors: Dict[str, List[VectorData]] = defaultdict(list)
-    
-    total_vectors = len(vectors)
     total_routings = 0
     
     for vd_model in vectors:
@@ -222,13 +226,18 @@ async def add_vectors_bulk_endpoint(request: Request, background_tasks: Backgrou
         # Find ALL nodes responsible for this vector
         replica_node_ids = node.find_best_nodes(vec_data.vector)
         
+        # Add the vector to the batch of EACH replica node
         for node_id in replica_node_ids:
             nodes_to_vectors[node_id].append(vec_data)
             total_routings += 1
     
-    print(f"Node {node.node_id}: Received bulk of {total_vectors}. Routing to {len(nodes_to_vectors)} nodes (total routings: {total_routings}).")
+    num_vectors = len(vectors)
+    replication_factor_achieved = total_routings / num_vectors if num_vectors > 0 else 0
+    
+    print(f"Node {node.node_id}: Received bulk of {num_vectors}. Routing to {len(nodes_to_vectors)} nodes (total routings: {total_routings}) via gRPC.")
+    print(f"  Replication factor achieved: {replication_factor_achieved:.1f}x")
 
-    # Process/forward the batches in the background
+    # Process/forward the batches in the background (gRPC streaming)
     routing_summary = {}
     
     for target_node_id, vectors_list in nodes_to_vectors.items():
@@ -236,14 +245,14 @@ async def add_vectors_bulk_endpoint(request: Request, background_tasks: Backgrou
         routing_summary[target_node_id] = batch_size
         
         if target_node_id == node.node_id:
-            print(f"Node {node.node_id}: Queuing local storage of {batch_size} vectors.")
+            print(f"Node {node.node_id}: Queuing local storage of {batch_size} vectors (includes replicas).")
             background_tasks.add_task(
                 node.receive_vectors_bulk,
                 from_node_id="external_client_routed",
                 vectors_data=vectors_list
             )
         else:
-            print(f"Node {node.node_id}: Queuing forward of {batch_size} vectors to {target_node_id}.")
+            print(f"Node {node.node_id}: Queuing gRPC forward of {batch_size} vectors to {target_node_id} (includes replicas).")
             background_tasks.add_task(
                 node.send_vectors_bulk,
                 target_node_id=target_node_id,
@@ -252,6 +261,8 @@ async def add_vectors_bulk_endpoint(request: Request, background_tasks: Backgrou
     
     return {
         "status": "processing_bulk",
-        "message": f"Processing {total_vectors} vectors. Total routings: {total_routings} across {len(nodes_to_vectors)} nodes.",
-        "batches": routing_summary
+        "message": f"Processing {num_vectors} vectors with {replication_factor_achieved:.1f}x replication via gRPC. Total routings: {total_routings} across {len(nodes_to_vectors)} nodes.",
+        "batches": routing_summary,
+        "transport": "gRPC_streaming",
+        "replication_factor": replication_factor_achieved
     }

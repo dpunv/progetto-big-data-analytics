@@ -1,11 +1,12 @@
 """
 Adaptive batch sender with intelligent retry logic.
+NOW USES: gRPC streaming instead of HTTP+MessagePack
 """
 import time
-import requests
+import grpc
 from typing import List, Dict, Tuple
 from threading import Lock
-from utils.serialization import serialize_msgpack
+from generated import vector_service_pb2, vector_service_pb2_grpc
 
 
 class AdaptiveBatchMetrics:
@@ -68,12 +69,62 @@ class AdaptiveBatchMetrics:
 
 
 class BatchSender:
-    """Handles batch sending with adaptive retry logic."""
+    """
+    Handles batch sending with adaptive retry logic via gRPC.
+    REPLACES: HTTP+MessagePack with gRPC streaming
+    """
     
-    def __init__(self, batch_tiers: List[int], base_timeout: int = 10):
+    def __init__(self, batch_tiers: List[int], base_timeout: int = 10, grpc_port_offset: int = 9000):
         self.batch_tiers = batch_tiers
         self.base_timeout = base_timeout
         self.metrics = AdaptiveBatchMetrics(batch_tiers[0], batch_tiers[-1])
+        self.grpc_port_offset = grpc_port_offset
+        
+        # gRPC channel cache
+        self.grpc_channels: Dict[str, grpc.Channel] = {}
+        self.grpc_stubs: Dict[str, vector_service_pb2_grpc.VectorServiceStub] = {}
+    
+    def _get_grpc_stub(self, node_url: str) -> vector_service_pb2_grpc.VectorServiceStub:
+        """
+        Get or create gRPC stub for a node.
+        
+        Args:
+            node_url: FastAPI URL (e.g., "http://localhost:8001")
+            
+        Returns:
+            gRPC stub for the node
+        """
+        if node_url in self.grpc_stubs:
+            return self.grpc_stubs[node_url]
+        
+        # Extract host and infer gRPC port
+        from urllib.parse import urlparse
+        parsed = urlparse(node_url)
+        host = parsed.hostname or "localhost"
+        fastapi_port = parsed.port or 8001
+        
+        # Infer gRPC port (convention: node1 @ 8001 → gRPC @ 9001)
+        node_num = fastapi_port - 8000
+        grpc_port = self.grpc_port_offset + node_num
+        
+        grpc_address = f"{host}:{grpc_port}"
+        
+        # Create gRPC channel
+        channel = grpc.insecure_channel(
+            grpc_address,
+            options=[
+                ('grpc.max_send_message_length', 100 * 1024 * 1024),
+                ('grpc.max_receive_message_length', 100 * 1024 * 1024),
+                ('grpc.keepalive_time_ms', 30000),
+            ]
+        )
+        
+        stub = vector_service_pb2_grpc.VectorServiceStub(channel)
+        
+        self.grpc_channels[node_url] = channel
+        self.grpc_stubs[node_url] = stub
+        
+        return stub
     
     def calculate_timeout(self, batch_size: int) -> int:
         """Calculate adaptive timeout based on batch size."""
@@ -89,8 +140,17 @@ class BatchSender:
         retry_count: int = 0
     ) -> Tuple[bool, Dict]:
         """
-        Send a batch with intelligent retry using predefined size tiers.
+        Send a batch via gRPC streaming with intelligent retry.
         
+        REPLACES: HTTP POST with MessagePack
+        NOW USES: gRPC streaming RPC
+        
+        Args:
+            vectors_batch: List of vector dicts
+            node_url: Target node FastAPI URL (for stub lookup)
+            sent_to_node_id: Target node ID (for logging)
+            retry_count: Current retry attempt
+            
         Returns:
             (success: bool, response_data: dict)
         """
@@ -131,47 +191,71 @@ class BatchSender:
             
             return True, {"batches": merged_batches}
         
-        # Send batch
+        # Send batch via gRPC
         timeout = self.calculate_timeout(batch_size)
         
         try:
-            binary_data = serialize_msgpack(vectors_batch)
+            stub = self._get_grpc_stub(node_url)
             
-            response = requests.post(
-                f"{node_url}/add_vectors_bulk",
-                data=binary_data,
-                headers={"Content-Type": "application/msgpack"},
-                timeout=timeout
-            )
-            response.raise_for_status()
+            # Create gRPC streaming generator
+            def vector_generator():
+                for vec_dict in vectors_batch:
+                    yield vector_service_pb2.VectorData(
+                        id=vec_dict['id'],
+                        vector=vec_dict['vector'],
+                        payload={k: str(v) for k, v in vec_dict.get('payload', {}).items()},
+                        from_node=sent_to_node_id
+                    )
             
-            res_data = response.json()
+            # Call gRPC streaming method
+            response = stub.AddVectorsBulk(vector_generator(), timeout=timeout)
+            
+            res_data = {
+                'batches': dict(response.batches),
+                'vectors_stored': response.vectors_stored,
+                'node_id': response.node_id
+            }
+            
             self.metrics.on_success(batch_size)
             return True, res_data
             
-        except requests.exceptions.Timeout:
-            next_tier = retry_count + 1
-            if next_tier < len(self.batch_tiers):
-                next_tier_size = self.batch_tiers[next_tier]
-                print(f"⏱️  Timeout with batch size {batch_size} (tier {retry_count+1}: {current_tier_size})")
-                print(f"   Falling back to tier {next_tier+1} (max size: {next_tier_size})...")
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                # Timeout - try next tier
+                next_tier = retry_count + 1
+                if next_tier < len(self.batch_tiers):
+                    next_tier_size = self.batch_tiers[next_tier]
+                    print(f"⏱️  gRPC timeout with batch size {batch_size} (tier {retry_count+1}: {current_tier_size})")
+                    print(f"   Falling back to tier {next_tier+1} (max size: {next_tier_size})...")
+                    self.metrics.on_retry()
+                    return self.send_batch(vectors_batch, node_url, sent_to_node_id, next_tier)
+                else:
+                    print(f"❌ gRPC timeout even with smallest tier ({current_tier_size})")
+                    self.metrics.on_failure()
+                    return False, {}
+            else:
+                # Other gRPC error
+                print(f"❌ gRPC error with batch size {batch_size} (tier {retry_count+1}): {e.code()} - {e.details()}")
                 self.metrics.on_retry()
-                return self.send_batch(vectors_batch, node_url, sent_to_node_id, next_tier)
-            else:
-                print(f"❌ Timeout even with smallest tier ({current_tier_size})")
-                self.metrics.on_failure()
-                return False, {}
                 
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Network error with batch size {batch_size} (tier {retry_count+1}): {e}")
-            self.metrics.on_retry()
-            
-            if retry_count == 0:
-                time.sleep(2)
-            
-            next_tier = retry_count + 1
-            if next_tier < len(self.batch_tiers):
-                return self.send_batch(vectors_batch, node_url, sent_to_node_id, next_tier)
-            else:
-                self.metrics.on_failure()
-                return False, {}
+                if retry_count == 0:
+                    time.sleep(2)
+                
+                next_tier = retry_count + 1
+                if next_tier < len(self.batch_tiers):
+                    return self.send_batch(vectors_batch, node_url, sent_to_node_id, next_tier)
+                else:
+                    self.metrics.on_failure()
+                    return False, {}
+                    
+        except Exception as e:
+            print(f"❌ Unexpected error with batch size {batch_size}: {e}")
+            self.metrics.on_failure()
+            return False, {}
+    
+    def close_all_channels(self):
+        """Close all gRPC channels."""
+        for channel in self.grpc_channels.values():
+            channel.close()
+        self.grpc_channels.clear()
+        self.grpc_stubs.clear()
