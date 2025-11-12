@@ -8,6 +8,34 @@ import itertools
 from typing import List, Tuple, Dict
 import heapq
 from compound_types import *
+import hnswlib
+
+class MetaHNSW:
+    def __init__(self, dimension: int, max_clusters: int = 500, ef_construction: int = 200, M: int = 16):
+        self.dimension = dimension
+        self.max_clusters = max_clusters
+        self.ef_construction = ef_construction
+        self.M = M
+        self.hnsw_index = None
+    
+    def build(self, clusters: ListOfVectorsWithId):
+        self.hnsw_index = hnswlib.Index(space='cosine', dim=self.dimension)
+        self.hnsw_index.init_index(
+            max_elements=max(len(self.cluster_centroids), self.max_clusters),
+            ef_construction=self.ef_construction,
+            M=self.M
+        )
+        self.hnsw_index.set_ef(50) # What this is?
+        
+        indices = [cluster[0] for cluster in clusters]
+        centroids = [cluster[1] for cluster in clusters]
+        self.hnsw_index.add_items(np.array(centroids), np.array(indices))
+
+    def find_nearest_nodes(self, query_vector: Vector, k: int = None) -> List[Tuple[str, float]]:
+        if self.hnsw_index == None:
+            raise "Error: hnsw still unbuilt"
+        cluster_ids, distances = self.hnsw_index.knn_query(query_vector, k)
+        return sorted([(cluster_id, dist) for cluster_id, dist in zip(cluster_ids[0], distances[0])], key=lambda x: x[1])
 
 def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette score
     k_range = range(2, max_k + 1)
@@ -112,5 +140,10 @@ def get_node_assignment(clusters: Dict[VectorId: Tuple[Vector, List[VectorId]]],
     return find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
 
 
-def build_meta_hnsw(clusters):
-    pass
+def build_meta_hnsw(clusters, dimension):
+    clusters_adjusted = [(cluster_id, cluster_centroid) for cluster_id, (cluster_centroid, _) in clusters]
+    hnsw = MetaHNSW(dimension)
+    hnsw.build(clusters_adjusted)
+
+def find(hnsw: MetaHNSW, v: Vector, k: int) -> List[VectorId, float]:
+    return [cluster_id for cluster_id, _ in hnsw.find_nearest_nodes(v, k)]

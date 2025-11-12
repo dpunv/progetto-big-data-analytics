@@ -39,7 +39,7 @@ class Peer:
             f'{self.url}/notify_clustering'
         )
     
-    def send_clusters(self, assignment: Dict[str: ListOfVectorsWithId], clusters: Dict[VectorId: Tuple[Vector, List[VectorId]]], meta_hnsw):
+    def send_clusters(self, assignment: Dict[str: ListOfVectorsWithId], clusters: Dict[VectorId: Tuple[Vector, List[VectorId]]], meta_hnsw: clustering_module.MetaHNSW):
         to_send = {
             'my_vectors': [vector_id for cluster_id, _ in assignment[self.id] for vector_id in clusters[cluster_id][1]],
             'peers_clusters': assignment,
@@ -62,12 +62,13 @@ class Peer:
         return response.json()['results']
 
 class ServerApp:
-    def __init__(self, id, url, qdrant_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000):
+    def __init__(self, id, url, qdrant_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
         self.node_id = id
         self.url = url
         self.qdrant_url = qdrant_url
         self.coordinator_url = coordinator_url
         self.collection_name = collection_name
+        self.dimension = dimension
         self.node_clusters = [] # ListOfVectorsWithId: Tuples of cluster_id, cluster_centroid
         self.status = 'bootstrap'
         self.num_vectors = 0
@@ -120,7 +121,7 @@ class ServerApp:
                     peer.notify_clustering()
                 clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{VectorId: Tuple[Vector, List[VectorId]]}
                 assignment = clustering_module.get_node_assignment(clusters, self.peers[:].extend(Peer(self.node_id, self.url)), self.replicas) # Dict{str: ListOfVectorsWithId}
-                self.meta_hnsw = clustering_module.build_meta_hnsw(clusters)
+                self.meta_hnsw = clustering_module.build_meta_hnsw(clusters, self.dimension)
                 for peer in self.peers:
                     peer.send_clusters(assignment, clusters, self.meta_hnsw)
                 my_vectors = []
@@ -182,7 +183,7 @@ class ServerApp:
         self.vector_buffer = []
 
     def route_vector(self, vector: Vector, k: int):
-        return self.meta_hnsw.find(vector, k)
+        return clustering_module.find(self.meta_hnsw, vector, k)
 
     def route_vectors_send(self, vectors: ListOfVectorsComplete, request_id):
         assigned_vectors = [[] for _ in range(self.peers)]
