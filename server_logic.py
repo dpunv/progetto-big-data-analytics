@@ -1,10 +1,20 @@
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import requests
 import clustering_module
 import threading
 import qdrant_module
 
-ListOfVectors = List[Tuple[str, List[float]]]
+Vector = List[float]
+VectorId = str
+VectorPayload = str
+VectorWithId = Tuple[VectorId, Vector]
+VectorWithPayload = Tuple[Vector, VectorPayload]
+VectorComplete = Tuple[Vector, VectorId, VectorPayload]
+ListOfVectors = List[Vector]
+ListOfVectorsWithId = List[VectorWithId]
+ListOfVectorsWithPayload = List[VectorWithPayload]
+ListOfVectorsComplete = List[VectorComplete]
+MetaHNSW = None
 
 class Peer:
     def __init__(self, id, url):
@@ -16,16 +26,16 @@ class Peer:
     def set_status(self, status):
         self.status = status
 
-    def set_clusters(self, clusters: ListOfVectors):
+    def set_clusters(self, clusters: ListOfVectorsWithId):
         self.clusters = clusters
         
-    def add_clusters(self, clusters: ListOfVectors):
+    def add_clusters(self, clusters: ListOfVectorsWithId):
         self.clusters.extend(clusters)
     
-    def contains(self, cluster: List[float]):
+    def contains(self, cluster: VectorWithId):
         return cluster in self.clusters
     
-    def send(self, vectors: ListOfVectors, id):
+    def send(self, vectors: ListOfVectorsComplete, id):
         payload = {
             'id': id,
             'vectors': vectors
@@ -40,9 +50,9 @@ class Peer:
             f'{self.url}/notify_clustering'
         )
     
-    def send_clusters(self, assignment, clusters, meta_hnsw):
+    def send_clusters(self, assignment: Dict[str: ListOfVectorsWithId], clusters: Dict[VectorId: Tuple[Vector, List[VectorId]]], meta_hnsw):
         to_send = {
-            'my_vectors': [vector_id for cluster_id, _ in assignment[self.id] for vector_id in clusters[cluster_id].second],
+            'my_vectors': [vector_id for cluster_id, _ in assignment[self.id] for vector_id in clusters[cluster_id][1]],
             'peers_clusters': assignment,
             'meta_hnsw': meta_hnsw
         }
@@ -50,7 +60,7 @@ class Peer:
         requests.post(f'{self.url}/set_clusters',
                     json=to_send)
         
-    def query_peer(self, query: List[List[float]], topk: int, request_id: int):
+    def query_peer(self, query: ListOfVectors, topk: int, request_id: int):
         payload = {
             'id': request_id,
             'query': query,
@@ -69,7 +79,7 @@ class ServerApp:
         self.qdrant_url = qdrant_url
         self.coordinator_url = coordinator_url
         self.collection_name = collection_name
-        self.node_clusters = [] # Tuples of cluster_id, cluster_centroid
+        self.node_clusters = [] # ListOfVectorsWithId: Tuples of cluster_id, cluster_centroid
         self.status = 'bootstrap'
         self.num_vectors = 0
         self.replicas = replicas
@@ -79,6 +89,8 @@ class ServerApp:
         self.additional_buffer = []
         self.num_vectors_before_clustering = num_vectors_before_clustering
         self.additional_buffer_lock = threading.Lock()
+        self.id_lock = threading.Lock()
+        self.id_count = 0
     
     def i_am_coord(self):
         return self.coordinator_url == self.url
@@ -104,34 +116,21 @@ class ServerApp:
         for id, url in peers:
             self.peers.append(Peer(id, url))
     
-    def add_peers_clusters(self, peers_vectors: ListOfVectors):
-        '''
-        Add clusters to peers.
-        
-        Args:
-            peers_vectors: List of Tuple(id, List of clusters)
-            
-        '''
-        for id, vector_list in peers_vectors:
+    """def add_peers_clusters(self, peers_vectors: Dict[str: ListOfVectorsWithId]):
+        for id, vector_list in peers_vectors.items():
             for peer in self.peers:
                 if peer.id == id:
-                    peer.add_clusters(vector_list)
+                    peer.add_clusters(vector_list)"""
     
-    def add_vectors(self, vectors: ListOfVectors):
-        '''
-        Add vectors to the Qdrant database.
-        
-        Args:
-            vectors: List of vectors to add
-        '''
+    def add_vectors(self, vectors: ListOfVectorsComplete, request_id):
         if self.status == 'bootstrap':
             self.vector_buffer.extend(vectors)
             if self.i_am_coord() and len(self.vector_buffer) >= self.num_vectors_before_clustering:
                 self.status = 'clustering'
                 for peer in self.peers:
                     peer.notify_clustering()
-                clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{id: Tuple[List[float], List[str]]}
-                assignment = clustering_module.get_assignment(clusters, self.peers[:].extend(Peer(self.node_id, self.url))) # Dict{id: List[Tuple[str, List[float]]]}
+                clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{id: Tuple[List[float], List[str]]} # Dict{VectorId: Tuple[Vector, List[VectorId]]}
+                assignment = clustering_module.get_assignment(clusters, self.peers[:].extend(Peer(self.node_id, self.url))) # Dict{str: ListOfVectorsWithId}
                 self.meta_hnsw = clustering_module.build_meta_hnsw(clusters)
                 for peer in self.peers:
                     peer.send_clusters(assignment, clusters, self.meta_hnsw)
@@ -140,9 +139,9 @@ class ServerApp:
                 for cluster_id, (centroid, vector_ids) in clusters.items():
                     if (cluster_id, centroid) in self.node_clusters:
                         my_vectors.extend(vector_ids)
-                self.adjust_after_clustering(my_vectors)
+                self.adjust_after_clustering(my_vectors, request_id)
                 with self.additional_buffer_lock:
-                    self.route_vectors_send(self.additional_buffer, -1) #TODO change request id
+                    self.route_vectors_send(self.additional_buffer, request_id)
                     self.additional_buffer = []
                 self.vector_buffer = []
         elif self.status == 'clustering':
@@ -155,46 +154,53 @@ class ServerApp:
             self.num_vectors += len(vectors)
         else:
             raise("ERROR: status Undefined")
+    
+    def get_id(self):
+        with self.id_lock:
+            self.id_count += 1
+            return f'{self.node_id}_{self.id_count}'
 
-    def add_vectors_client(self, vectors: ListOfVectors, request_id):
+    def add_vectors_client(self, vectors: ListOfVectorsWithPayload, request_id):
+        vectors_with_id = [(vector_content, self.get_id(), vector_payload) for vector_content, vector_payload  in vectors]
         if self.status == 'bootstrap':
             for peer in self.peers:
-                peer.send(vectors, request_id)
-            self.add_vectors(vectors, True)
+                peer.send(vectors_with_id, request_id)
+            self.add_vectors(vectors_with_id, request_id)
         elif self.status == 'clustered':
-            self.route_vectors_send(vectors, request_id)
+            self.route_vectors_send(vectors_with_id, request_id)
         elif self.status == 'clustering':
             with self.additional_buffer_lock:
-                self.additional_buffer.extend(vectors)
-            if self.i_am_coord():
-                self.coordinator().send(vectors, request_id)
+                self.additional_buffer.extend(vectors_with_id)
+            if not self.i_am_coord():
+                self.coordinator().send(vectors_with_id, request_id)
         else:
             raise("Error: Undefined status")
     
-    def set_clusters(self, assignment): # assignment = Dict{'my_vectors': List[str], 'peers_clusters': Dict{peer_id: List[Tuple[str, List[float]]]}, 'meta_hnsw': meta_hnsw}
+    def set_clusters(self, assignment: Dict['my_vectors': List[VectorId], 'peers_clusters': Dict[str: ListOfVectorsWithId], 'meta_hnsw': MetaHNSW], request_id):
         for peer in self.peers:
             peer.set_clusters(assignment['peers_clusters'][peer.id])
         self.node_clusters = assignment['peers_clusters'][self.node_id]
         self.meta_hnsw = assignment['meta_hnsw']
-        self.adjust_after_clustering(assignment['my_vectors'])
+        self.adjust_after_clustering(assignment['my_vectors'], request_id)
 
-    def adjust_after_clustering(self, my_vector_ids):
+    def adjust_after_clustering(self, my_vector_ids: List[VectorId], request_id):
         self.status = 'clustered'
         to_save = []
         for vector in self.vector_buffer:
             if vector.first in my_vector_ids:
                 to_save.append(vector)
-        self.add_vectors(to_save)
+        self.add_vectors(to_save, request_id)
         self.vector_buffer = []
 
-    def route_vectors(self, vector: Tuple[str, List[float]], k: int):
-        return self.meta_hnsw.find(vector, k) # trovo il cluster più vicino a vector, ricerca top 1
+    def route_vector(self, vector: Vector, k: int):
+        return self.meta_hnsw.find(vector, k)
 
-    def route_vectors_send(self, vectors: ListOfVectors, request_id):
+    def route_vectors_send(self, vectors: ListOfVectorsComplete, request_id):
         assigned_vectors = [[] for _ in range(self.peers)]
         to_me = []
-        for vector in vectors:
-            top_1 = self.route_vector(vector, 1)[0]
+        for vector_content, vector_id, vector_payload in vectors:
+            vector = (vector_content, vector_id, vector_payload)
+            top_1 = self.route_vector(vector_content, 1)[0]
             found = 0
             for index, peer in enumerate(self.peers):
                 if peer.contains(top_1):
@@ -205,17 +211,17 @@ class ServerApp:
         for index, peer in enumerate(self.peers):
             peer.send(assigned_vectors[index], request_id)
         if len(to_me) > 0:
-            self.add_vectors(to_me)
+            self.add_vectors(to_me, request_id)
 
-    def query_me(self, query: List[List[float]], topk: int):
+    def query_me(self, query: ListOfVectors, topk: int):
         return qdrant_module.query_vectors(self.qdrant_url, self.collection_name, query, topk)
     
-    def query(self, query: List[List[float]], topk: int, request_id: int):
+    def query(self, query: ListOfVectors, topk: int, request_id: int):
         response = []
         to_query_peer = [[] for _ in range(self.peers)]
         to_query_me = []
         for vector in query:
-            top_3 = self.route_vectors(vector, 3)
+            top_3 = self.route_vector(vector, 3)
             for index, peer in enumerate(self.peers):
                 for result in top_3:
                     if peer.contains(result):
