@@ -1,15 +1,39 @@
-import numpy as np
 import json
+import os
+import sys
+import numpy as np
+from typing import Tuple, List, Dict
 import faiss
 from sklearn.metrics import silhouette_score
+import matplotlib.pyplot as plt
 from collections import Counter
-import time
 import itertools
-from typing import List, Tuple, Dict
+import random
+import math
 import heapq
-from compound_types import *
+import time
 
-def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette score
+def load_vectors(filename, max_vectors):
+    if not os.path.exists(filename):
+        print(f"Error: File not found at '{filename}'")
+        sys.exit(1)
+    try:
+        with open(filename, 'r') as f:
+            vectors = [item['embedding'] for item in json.load(f)]
+        if max_vectors > 0:
+            vectors = vectors[:max_vectors]
+        
+        X = np.array(vectors)
+        
+        if len(X.shape) != 2 or X.shape[1] == 0:
+            print(f"Error: Data in '{filename}' is not a valid 2D array.")
+            sys.exit(1)
+        return X
+    except Exception as e:
+        print(f"Error loading or processing '{filename}': {e}")
+        sys.exit(1)
+
+def find_k_and_run_kmeans(X, max_k, random_state): # using silhouette score
     k_range = range(2, max_k + 1)
     
     if X.shape[0] <= max_k:
@@ -44,18 +68,18 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette scor
             best_centroids = kmeans.centroids
             best_labels = labels
             best_k = k
-
+    
     centroids_list = best_centroids.tolist()
     with open('centroids.json', 'w') as f:
         json.dump(centroids_list, f, indent=2)
-    #label_counts = Counter(best_labels)
-    #print("\n[Vector Count per Cluster]")
-    #for cluster_label, count in sorted(label_counts.items()):
-    #    print(f"  Cluster {cluster_label:2}: {count} vectors")
+    label_counts = Counter(best_labels)
+    print("\n[Vector Count per Cluster]")
+    for cluster_label, count in sorted(label_counts.items()):
+        print(f"  Cluster {cluster_label:2}: {count} vectors")
 
-    return best_k, best_centroids, best_labels
+    return best_k, best_centroids, label_counts
 
-def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, replication_factor, beam_width) -> Dict[str: ListOfVectorsWithId]: # clusters è la lista di coppie 
+def find_assignment(clusters: List[Tuple[int, List[float]]], all_nodes, replication_factor, beam_width): # clusters è la lista di coppie 
     """
     Finds a high-quality assignment using Beam Search.
     """
@@ -65,7 +89,7 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
     
     beam = [(0.0, [], {id: 0.0 for id in all_nodes})] # State: (score, partial_assignment, node_loads)
     
-    clusters_sorted = sorted(clusters, key=lambda x: x[1], reverse=True)
+    clusters_sorted = sorted(clusters, key=lambda x: x[0], reverse=True)
 
     for cluster_load, _ in clusters_sorted:
         potential_states = []
@@ -95,22 +119,6 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
 
     for index, nodes_tuple in enumerate(best_assignment):
         for node in nodes_tuple:
-            assignment[node].append((clusters_sorted[index][0], clusters_sorted[index][2]))
+            assignment[node].append(clusters_sorted[index][1])
 
     return assignment
-
-def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId: Tuple[Vector, List[VectorId]]]:
-    _, best_centroids, labels = find_k_and_run_kmeans(np.array([vector for vector, _, _ in vectors]))
-    best_c = best_centroids.tolist()
-    result = {}
-    for i in range(len(best_c)):
-        result[i] = (best_c[i], [vectors[j][1] for j in range(len(labels)) if labels[j] == i])
-    return result
-
-def get_node_assignment(clusters: Dict[VectorId: Tuple[Vector, List[VectorId]]], peers, replication_factor) -> Dict[str: ListOfVectorsWithId]:
-    request = [(id, len(v_ids), centroid)for id, (centroid, v_ids) in clusters.items()]
-    return find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
-
-
-def build_meta_hnsw(clusters):
-    pass

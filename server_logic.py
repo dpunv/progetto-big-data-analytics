@@ -3,18 +3,7 @@ import requests
 import clustering_module
 import threading
 import qdrant_module
-
-Vector = List[float]
-VectorId = str
-VectorPayload = str
-VectorWithId = Tuple[VectorId, Vector]
-VectorWithPayload = Tuple[Vector, VectorPayload]
-VectorComplete = Tuple[Vector, VectorId, VectorPayload]
-ListOfVectors = List[Vector]
-ListOfVectorsWithId = List[VectorWithId]
-ListOfVectorsWithPayload = List[VectorWithPayload]
-ListOfVectorsComplete = List[VectorComplete]
-MetaHNSW = None
+from compound_types import *
 
 class Peer:
     def __init__(self, id, url):
@@ -129,8 +118,8 @@ class ServerApp:
                 self.status = 'clustering'
                 for peer in self.peers:
                     peer.notify_clustering()
-                clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{id: Tuple[List[float], List[str]]} # Dict{VectorId: Tuple[Vector, List[VectorId]]}
-                assignment = clustering_module.get_assignment(clusters, self.peers[:].extend(Peer(self.node_id, self.url))) # Dict{str: ListOfVectorsWithId}
+                clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{VectorId: Tuple[Vector, List[VectorId]]}
+                assignment = clustering_module.get_node_assignment(clusters, self.peers[:].extend(Peer(self.node_id, self.url)), self.replicas) # Dict{str: ListOfVectorsWithId}
                 self.meta_hnsw = clustering_module.build_meta_hnsw(clusters)
                 for peer in self.peers:
                     peer.send_clusters(assignment, clusters, self.meta_hnsw)

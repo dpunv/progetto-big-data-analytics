@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
-from typing import List, Tuple
-from server_logic import *
+from typing import List, Tuple, Dict
+from server_logic import ServerApp
 import argparse
+from compound_types import *
 
 app = FastAPI()
 server = None
