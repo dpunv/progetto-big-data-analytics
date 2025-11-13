@@ -149,7 +149,10 @@ class ServerApp:
         with self.id_lock:
             self.id_count += 1
             return f'{self.node_id}_{self.id_count}'
-
+        
+    """
+    È la porta d'ingresso pubblica per i client. Quando un utente vuole aggiungere un nuovo "libro" (vettore), chiama questa funzione.
+    """
     def add_vectors_client(self, vectors: ListOfVectorsWithPayload, request_id):
         vectors_with_id = [(vector_content, self.get_id(), vector_payload) for vector_content, vector_payload  in vectors]
         if self.status == 'bootstrap':
@@ -173,6 +176,9 @@ class ServerApp:
         self.meta_hnsw = assignment['meta_hnsw']
         self.adjust_after_clustering(assignment['my_vectors'], request_id)
 
+    """
+    Fa pulizia. Dopo a clustering finito, il peer guarda nella suo vector_buffer e salva solo i libri che gli sono stati assegnati, buttando il resto.
+    """
     def adjust_after_clustering(self, my_vector_ids: List[VectorId], request_id):
         self.status = 'clustered'
         to_save = []
@@ -182,9 +188,19 @@ class ServerApp:
         self.add_vectors(to_save, request_id)
         self.vector_buffer = []
 
+    """
+    Input: Un vettore, quanti nodi trovare (k).
+    Output: Una lista dei k nodi più rilevanti per quel vettore.
+    """
     def route_vector(self, vector: Vector, k: int):
         return clustering_module.find(self.meta_hnsw, vector, k)
 
+    """
+    Prende una lista intera di vettori da spedire. Per ogni singolo vettore:
+     - Usa route_vector(k=1) per chiedere: "Qual è il nodo migliore per questo vettore?".
+     - Mette il vettore nel batch destinato a quel nodo (Peer).
+     - Se non trova un proprietario chiaro o se la replica fallisce, tiene il vettore per sé (to_me).
+    """
     def route_vectors_send(self, vectors: ListOfVectorsComplete, request_id):
         assigned_vectors = [[] for _ in range(self.peers)]
         to_me = []
@@ -203,9 +219,17 @@ class ServerApp:
         if len(to_me) > 0:
             self.add_vectors(to_me, request_id)
 
+    """
+    Cerca un vettore/i solo nel suo database locale (il suo Qdrant).
+    """
     def query_me(self, query: ListOfVectors, topk: int):
         return qdrant_module.query_vectors(self.qdrant_url, self.collection_name, query, topk)
     
+    """
+    Cerca un vettore/i sia nel suo database locale che in quello dei peer.
+        -usa route_vector per decidere quali peer interrogare
+        -chiama query_peer su quei peer
+    """
     def query(self, query: ListOfVectors, topk: int, request_id: int):
         response = []
         to_query_peer = [[] for _ in range(self.peers)]
@@ -225,6 +249,9 @@ class ServerApp:
         response = list(set(response))
         return response
 
+    """
+    Usata dal coordinatore per notificare tutti i peer che ci sono abbastanza vettori dunque è ora di fare il clustering.
+    """
     def notify_clustering(self):
         for peer in self.peers:
             peer.notify_clustering()

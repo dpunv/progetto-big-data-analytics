@@ -1,6 +1,11 @@
 import requests
 
-
+"""
+- Prende la tua lista di query (sì, puoi fare più ricerche in un colpo solo!).
+- Per ogni query, chiede i topk risultati più vicini.
+- Invia la richiesta con POST (che significa "ehi, dammi questi dati").
+- Ti restituisce la lista dei risultati trovati.
+"""
 def query_vectors(url, collection, query, topk):
     """Query vectors from Qdrant collection."""
     payload = [{
@@ -18,6 +23,13 @@ def query_vectors(url, collection, query, topk):
     return results
 
 
+"""
+Ogni dato che inserisci è un "punto" e deve avere:
+    - Un ID (un nome unico, es. "documento_abc").
+    - Un vettore (i numeri che ne rappresentano il significato, es. [0.1, 0.2, 0.3]).
+    - Un payload (dati extra che vuoi salvare insieme, es. il testo originale, un titolo, un link).
+La funzione prende la tua lista di dati, la formatta nel modo corretto per Qdrant e la invia con un comando PUT
+"""
 def insert_vectors(url, collection, vectors):
     """Insert vectors into Qdrant collection."""
     points = [
