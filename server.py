@@ -1,10 +1,11 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import uvicorn
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, TypedDict
 from server_logic import ServerApp
 import argparse
 from compound_types import *
+from clustering_module import MetaHNSW
 
 app = FastAPI()
 server = None
@@ -26,9 +27,32 @@ class AddPeersRequest(BaseModel):
     id: int
     peers: List[Tuple[str, str]]
 
+class MetaHNSWStructure(TypedDict):
+    dimension: int
+    max_clusters: int
+    ef_construction: int
+    M: int
+    index_data: str
+
+class AssignmentStructure(TypedDict):
+    my_vectors: List[VectorId]
+    peers_clusters: Dict[str, ListOfVectorsWithId]
+    meta_hnsw: MetaHNSWStructure
+
 class SetClustersRequest(BaseModel):
     id: int
-    content: Dict['my_vectors': List[VectorId], 'peers_clusters': Dict[str: ListOfVectorsWithId], 'meta_hnsw': MetaHNSW]
+    content: AssignmentStructure
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+@app.get("/")
+async def healh_check_endpoint():
+    return {
+        "status": "healthy",
+        "node_id": server.node_id,
+        "is_coordinator": server.i_am_coord(),
+        "is_clustered": server.status,
+    }
 
 @app.post("/query")
 async def query_endpoint(query: QueryVectorsRequest):
@@ -54,15 +78,19 @@ async def query_peer_endpoint(query: QueryVectorsRequest):
 
 @app.post("/add")
 async def add_vectors_endpoint(vectors: AddVectorsRequest):
+    print(f"vector add endpoint start: {server.node_id}")
     if server == None:
         raise "ServerApp not created"
     server.add_vectors_client(vectors.content, vectors.id)
+    print(f"vector add endpoint end")
 
 @app.post("/receive_vectors_peer")
 async def receive_vectors_peer_endpoint(vectors: AddVectorsPeerRequest):
+    print("receive_vectors_peer created")
     if server == None:
         raise "ServerApp not created"
     server.add_vectors(vectors.content, vectors.id)
+    print("vector added")
 
 @app.post("/register_peers")
 async def register_peers_endpoint(peers: AddPeersRequest):
@@ -74,6 +102,8 @@ async def register_peers_endpoint(peers: AddPeersRequest):
 async def set_clusters_endpoint(data: SetClustersRequest):
     if server == None:
         raise "ServerApp not created"
+    content = data.content
+    content["meta_hnsw"] = MetaHNSW.from_serializable_dict(content["meta_hnsw"])
     server.set_clusters(data.content, data.id)
 
 @app.get("/notify_clustering")
@@ -93,15 +123,9 @@ if __name__ == "__main__":
     
 
     args = parser.parse_args()
-    #print(f'node name:    {args.node_name}')
-    #print(f'node url:     {args.node_url}')
-    #print(f'qdrant url:   {args.qdrant_url}')
-    #print(f'is coord:     {args.coordinator_url}')
-    #print(f'replicas:     {args.replicas}')
-    #print(f'before clust: {args.num_before_clustering}')
 
     server = ServerApp(args.node_name, args.node_url, args.qdrant_url, args.coordinator_url, args.replicas, num_vectors_before_clustering=args.num_before_clustering)
 
-    port = int(args.node_url.split(":")[1])
+    port = int(args.node_url.split(":")[-1])
 
     uvicorn.run(app, host="0.0.0.0", port=port)

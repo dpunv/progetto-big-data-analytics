@@ -2,13 +2,15 @@ import numpy as np
 import json
 import faiss
 from sklearn.metrics import silhouette_score
-from collections import Counter
+#from collections import Counter
 import time
 import itertools
 from typing import List, Tuple, Dict
 import heapq
 from compound_types import *
 import hnswlib
+import pickle
+import base64
 
 class MetaHNSW:
     def __init__(self, dimension: int, max_clusters: int = 500, ef_construction: int = 200, M: int = 16):
@@ -21,7 +23,7 @@ class MetaHNSW:
     def build(self, clusters: ListOfVectorsWithId):
         self.hnsw_index = hnswlib.Index(space='cosine', dim=self.dimension)
         self.hnsw_index.init_index(
-            max_elements=max(len(self.cluster_centroids), self.max_clusters),
+            max_elements=max(len(clusters), self.max_clusters),
             ef_construction=self.ef_construction,
             M=self.M
         )
@@ -36,6 +38,40 @@ class MetaHNSW:
             raise "Error: hnsw still unbuilt"
         cluster_ids, distances = self.hnsw_index.knn_query(query_vector, k)
         return sorted([(cluster_id, dist) for cluster_id, dist in zip(cluster_ids[0], distances[0])], key=lambda x: x[1])
+
+    def to_serializable_dict(self):
+        """Serializes the entire object, including the binary index."""
+        
+        index_base64 = None
+        if self.hnsw_index:
+            index_binary = pickle.dumps(self.hnsw_index)
+            index_base64 = base64.b64encode(index_binary).decode('utf-8')
+
+        return {
+            'dimension': self.dimension,
+            'max_clusters': self.max_clusters,
+            'ef_construction': self.ef_construction,
+            'M': self.M,
+            'index_data': index_base64
+        }
+
+    @classmethod
+    def from_serializable_dict(cls, data: dict):
+        """Reconstructs the object from a serialized dictionary."""
+
+        new_obj = cls(
+            dimension=data['dimension'],
+            max_clusters=data['max_clusters'],
+            ef_construction=data['ef_construction'],
+            M=data['M']
+        )
+        
+        index_base64 = data.get('index_data')
+        if index_base64:
+            index_binary = base64.b64decode(index_base64)
+            new_obj.hnsw_index = pickle.loads(index_binary)
+            
+        return new_obj
 
 def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette score
     k_range = range(2, max_k + 1)
@@ -83,7 +119,7 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette scor
 
     return best_k, best_centroids, best_labels
 
-def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, replication_factor, beam_width) -> Dict[str: ListOfVectorsWithId]: # clusters è la lista di coppie 
+def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, replication_factor, beam_width) -> Dict[str, ListOfVectorsWithId]: # clusters è la lista di coppie 
     """
     Finds a high-quality assignment using Beam Search.
     """
@@ -95,7 +131,7 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
     
     clusters_sorted = sorted(clusters, key=lambda x: x[1], reverse=True)
 
-    for cluster_load, _ in clusters_sorted:
+    for _, cluster_load, _ in clusters_sorted:
         potential_states = []
         
         for _, current_assignment, current_node_loads in beam:
@@ -107,7 +143,7 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
                 
                 new_assignment = current_assignment + [combo]
                 
-                partial_score = sum(load**2 for load in new_node_loads)
+                partial_score = sum(load**2 for _, load in new_node_loads.items())
                 
                 potential_states.append(
                     (partial_score, new_assignment, new_node_loads)
@@ -127,7 +163,7 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
 
     return assignment
 
-def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId: Tuple[Vector, List[VectorId]]]:
+def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId, Tuple[Vector, List[VectorId]]]:
     _, best_centroids, labels = find_k_and_run_kmeans(np.array([vector for vector, _, _ in vectors]))
     best_c = best_centroids.tolist()
     result = {}
@@ -135,15 +171,17 @@ def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId: Tuple[Vector,
         result[i] = (best_c[i], [vectors[j][1] for j in range(len(labels)) if labels[j] == i])
     return result
 
-def get_node_assignment(clusters: Dict[VectorId: Tuple[Vector, List[VectorId]]], peers, replication_factor) -> Dict[str: ListOfVectorsWithId]:
+def get_node_assignment(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], peers, replication_factor) -> Dict[str, ListOfVectorsWithId]:
     request = [(id, len(v_ids), centroid)for id, (centroid, v_ids) in clusters.items()]
+    print(f'type of peers: {type(peers)}')
     return find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
 
 
-def build_meta_hnsw(clusters, dimension):
-    clusters_adjusted = [(cluster_id, cluster_centroid) for cluster_id, (cluster_centroid, _) in clusters]
+def build_meta_hnsw(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], dimension):
+    clusters_adjusted = [(cluster_id, cluster_centroid) for cluster_id, (cluster_centroid, _) in clusters.items()]
     hnsw = MetaHNSW(dimension)
     hnsw.build(clusters_adjusted)
+    return hnsw
 
-def find(hnsw: MetaHNSW, v: Vector, k: int) -> List[VectorId, float]:
+def find(hnsw: MetaHNSW, v: Vector, k: int) -> List[VectorId]:
     return [cluster_id for cluster_id, _ in hnsw.find_nearest_nodes(v, k)]
