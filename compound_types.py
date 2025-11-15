@@ -1,7 +1,7 @@
 from typing import List, Tuple
 
 Vector = List[float]
-VectorId = str
+VectorId = int
 VectorPayload = str
 VectorWithId = Tuple[VectorId, Vector]
 VectorWithPayload = Tuple[Vector, VectorPayload]

@@ -104,6 +104,7 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette scor
         
         score = silhouette_score(X, labels)
         if score > max_score:
+            print(score)
             max_score = score
             best_centroids = kmeans.centroids
             best_labels = labels

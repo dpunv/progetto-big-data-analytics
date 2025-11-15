@@ -27,7 +27,7 @@ class AddPeersRequest(BaseModel):
     id: int
     peers: List[Tuple[str, str]]
 
-class MetaHNSWStructure(BaseModel):
+"""class MetaHNSWStructure(BaseModel):
     dimension: int
     max_clusters: int
     ef_construction: int
@@ -39,11 +39,11 @@ class AssignmentStructure(BaseModel):
     peers_clusters: Dict[str, ListOfVectorsWithId]
     meta_hnsw: MetaHNSWStructure
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    
+    """
 
 class SetClustersRequest(BaseModel):
     id: int
-    content: dict #To review 
+    content: dict # To review 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -113,6 +113,12 @@ async def notify_clustering_endpoint():
     if server == None:
         raise "ServerApp not created"
     server.notify_clustering()
+@app.get("/count")
+async def count_endpoint():
+    if server == None:
+        raise "ServerApp not created"
+    #server.notify_clustering()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PBDN Server Node")

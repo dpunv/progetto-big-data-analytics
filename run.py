@@ -7,6 +7,7 @@ import shutil
 import signal
 import atexit
 import requests
+import qdrant_module
 
 server_processes = []
 
@@ -24,14 +25,14 @@ def write_docker_compose(qdrant_ports):
             qdrant_http_port = port
             qdrant_grpc_port = qdrant_http_port + 1
             
-            f.write(f"  qdrant-{i}:\n")
+            f.write(f"  qdrant-{i+1}:\n")
             f.write(f"    image: qdrant/qdrant:latest\n")
-            f.write(f"    container_name: qdrant-{i}\n")
+            f.write(f"    container_name: qdrant-{i+1}\n")
             f.write(f"    ports:\n")
             f.write(f"      - \"{qdrant_http_port}:6333\"\n")
             f.write(f"      - \"{qdrant_grpc_port}:6334\"\n")
             f.write(f"    volumes:\n")
-            f.write(f"      - ./qdrant_storage_{i}:/qdrant/storage:z\n")
+            f.write(f"      - ./qdrant_storage_{i+1}:/qdrant/storage:z\n")
             f.write(f"    restart: unless-stopped\n")
 
     print("compose.yml generated successfully.")
@@ -50,11 +51,13 @@ def launch_servers(fast_api_ports, qdrant_ports, coordinator_url='http://localho
         fastapi_port = fast_api_ports[i-1]
         qdrant_http_port = qdrant_ports[i-1]
         
+        qdrant_url = f'http://localhost:{qdrant_http_port}'
+
         proc = subprocess.Popen(
             [sys.executable, "server.py",
                 '--node-name', node_id,
                 '--node-url', f'http://localhost:{fastapi_port}',
-                '--qdrant-url', f'http://localhost:{qdrant_http_port}',
+                '--qdrant-url', qdrant_url,
                 '--coordinator-url', coordinator_url,
                 '--replicas', str(replicas),
                 '--num-before-clustering', str(num_before_clustering)
@@ -64,6 +67,8 @@ def launch_servers(fast_api_ports, qdrant_ports, coordinator_url='http://localho
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
         )
         server_processes.append(proc)
+        
+        qdrant_module.create_collection(qdrant_url, 'vectors', 384)
         
         print(f"Started server '{node_id}' on port {fastapi_port} (Qdrant: {qdrant_http_port}, PID: {proc.pid})")
 
@@ -142,7 +147,7 @@ def main():
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 256,
-        'num_vectors': 25000
+        'num_vectors': 15000
     }
     # step 1: writing configuration to json file
     write_config(config)

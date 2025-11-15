@@ -70,7 +70,7 @@ class Peer:
             f'{self.url}/query_peer',
             json=payload
         )
-        return response.json()['results']
+        return {}
 
 class ServerApp:
     def __init__(self, id, url, qdrant_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
@@ -159,7 +159,7 @@ class ServerApp:
                     with self.additional_buffer_lock:
                         self.route_vectors_send(self.additional_buffer, request_id)
                         self.additional_buffer = []
-                    self.vector_buffer = []
+                    #self.vector_buffer = []
         elif self.status == 'clustering':
             with self.additional_buffer_lock:
                 self.additional_buffer.extend(vectors)
@@ -174,7 +174,8 @@ class ServerApp:
     def get_id(self):
         with self.id_lock:
             self.id_count += 1
-            return f'{self.node_id}_{self.id_count}'
+            n = len(str(abs(len(self.peers)+1)))
+            return int(f'{self.id_count}{self.id_count:0{n}d}')
         
     """
     È la porta d'ingresso pubblica per i client. Quando un utente vuole aggiungere un nuovo "libro" (vettore), chiama questa funzione.
@@ -211,14 +212,15 @@ class ServerApp:
     Fa pulizia. Dopo a clustering finito, il peer guarda nella suo vector_buffer e salva solo i libri che gli sono stati assegnati, buttando il resto.
     """
     def adjust_after_clustering(self, my_vector_ids: List[VectorId], request_id):
-        #with self.vector_buffer_lock:
-        self.status = 'clustered'
-        to_save = []
-        for vector in self.vector_buffer:
-            if vector[0] in my_vector_ids:
-                to_save.append(vector)
-        self.add_vectors(to_save, request_id)
-        self.vector_buffer = []
+        with self.vector_buffer_lock:
+            self.status = 'clustered'
+            to_save = []
+            for vector in self.vector_buffer:
+                if vector[1] in my_vector_ids:
+                    to_save.append(vector)
+            print(f"len of to_save = {len(to_save)} - len of vector_buffer = {len(self.vector_buffer)} - len of my_vector_ids = {len(my_vector_ids)}")
+            self.add_vectors(to_save, request_id)
+            self.vector_buffer = []
 
     """
     Input: Un vettore, quanti nodi trovare (k).
@@ -247,7 +249,8 @@ class ServerApp:
             if found != self.replicas:
                 to_me.append(vector)
         for index, peer in enumerate(self.peers):
-            peer.send(assigned_vectors[index], request_id)
+            if len(assigned_vectors[index]) > 0:
+                peer.send(assigned_vectors[index], request_id)
         if len(to_me) > 0:
             self.add_vectors(to_me, request_id)
 
@@ -278,7 +281,8 @@ class ServerApp:
         for index, peer in enumerate(self.peers):
             response.extend(peer.query_peer(to_query_peer[index], topk, request_id))
         response.extend(self.query_me(to_query_me, topk))
-        response = list(set(response))
+        #response = list(set(response))
+
         return response
 
     """
