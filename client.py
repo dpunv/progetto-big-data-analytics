@@ -58,6 +58,7 @@ def main():
     data = []
     with open('embeddings.json') as f:
         data = json.load(f)
+        
     
     print(f'{start_color}data and configuration loaded{end_color}')
 

@@ -273,7 +273,7 @@ class ServerApp:
                     if peer.contains(result):
                         to_query_peer[index].append(vector)
             for result in top_3:
-                if result in self.node_clusters:
+                if result in [c[0] for c in self.node_clusters]:
                     to_query_me.append(vector)
         for index, peer in enumerate(self.peers):
             response.extend(peer.query_peer(to_query_peer[index], topk, request_id))
