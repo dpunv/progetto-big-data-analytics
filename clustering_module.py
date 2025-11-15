@@ -130,7 +130,7 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
     beam = [(0.0, [], {id: 0.0 for id in all_nodes})] # State: (score, partial_assignment, node_loads)
     
     clusters_sorted = sorted(clusters, key=lambda x: x[1], reverse=True)
-
+    print()
     for _, cluster_load, _ in clusters_sorted:
         potential_states = []
         

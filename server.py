@@ -27,21 +27,23 @@ class AddPeersRequest(BaseModel):
     id: int
     peers: List[Tuple[str, str]]
 
-class MetaHNSWStructure(TypedDict):
+class MetaHNSWStructure(BaseModel):
     dimension: int
     max_clusters: int
     ef_construction: int
     M: int
     index_data: str
 
-class AssignmentStructure(TypedDict):
+class AssignmentStructure(BaseModel):
     my_vectors: List[VectorId]
     peers_clusters: Dict[str, ListOfVectorsWithId]
     meta_hnsw: MetaHNSWStructure
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
 
 class SetClustersRequest(BaseModel):
     id: int
-    content: AssignmentStructure
+    content: dict #To review 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -102,8 +104,8 @@ async def register_peers_endpoint(peers: AddPeersRequest):
 async def set_clusters_endpoint(data: SetClustersRequest):
     if server == None:
         raise "ServerApp not created"
-    content = data.content
-    content["meta_hnsw"] = MetaHNSW.from_serializable_dict(content["meta_hnsw"])
+    data.content["meta_hnsw"] = MetaHNSW.from_serializable_dict(data.content["meta_hnsw"])
+    print("TIPO"+str(type(data.content)))
     server.set_clusters(data.content, data.id)
 
 @app.get("/notify_clustering")

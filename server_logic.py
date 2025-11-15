@@ -22,7 +22,7 @@ class Peer:
         self.clusters.extend(clusters)
     
     def contains(self, cluster: VectorWithId):
-        if cluster in self.clusters:
+        if cluster in [c[0] for c in self.clusters]:
             return True
         else:
             return False
@@ -245,7 +245,7 @@ class ServerApp:
                     assigned_vectors[index].append(vector)
                     found += 1
             if found != self.replicas:
-                to_me.append(vector, False)
+                to_me.append(vector)
         for index, peer in enumerate(self.peers):
             peer.send(assigned_vectors[index], request_id)
         if len(to_me) > 0:
