@@ -31,8 +31,10 @@ def write_docker_compose(qdrant_ports):
             f.write(f"    ports:\n")
             f.write(f"      - \"{qdrant_http_port}:6333\"\n")
             f.write(f"      - \"{qdrant_grpc_port}:6334\"\n")
+            f.write(f"    environment:\n")
+            f.write(f"      - QDRANT__STORAGE__STRICT_MODE=false\n")
             f.write(f"    volumes:\n")
-            f.write(f"      - ./qdrant_storage_{i+1}:/qdrant/storage:z\n")
+            f.write(f"      - ./qdrant_storage_{i+1}:/qdrant/storage\n")
             f.write(f"    restart: unless-stopped\n")
 
     print("compose.yml generated successfully.")
@@ -44,6 +46,41 @@ def launch_docker():
     print("Waiting for databases to initialize (10s)...")
     time.sleep(10)
 
+def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
+    print(f"Starting {len(qdrant_ports)} Qdrant databases with Docker Compose...")
+    try:
+        subprocess.run(["docker", "compose", "-f", "compose.yml", "up", "-d"], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Errore durante l'avvio di Docker Compose: {e}")
+        return False
+
+    print("Waiting for Qdrant nodes to be ready (checking /readyz)...")
+    start_time = time.time()
+    ready_nodes = set()
+    
+    while len(ready_nodes) < len(qdrant_ports):
+        if time.time() - start_time > timeout:
+            print(f"Timeout! Only {len(ready_nodes)}/{len(qdrant_ports)} Qdrant nodes are ready.")
+            return False
+
+        for port in qdrant_ports:
+            if port in ready_nodes:
+                continue
+            url = f"http://localhost:{port}/readyz"
+            print(f"Checking Qdrant node on port {port} at {url}...")
+            try:
+                response = requests.get(url, timeout=1) 
+                
+                if response.status_code == 200:
+                    ready_nodes.add(port)
+                    print(f"  ✓ Qdrant node on port {port} is ready. ({len(ready_nodes)}/{len(qdrant_ports)})")
+            except requests.exceptions.RequestException:
+                pass
+        if len(ready_nodes) < len(qdrant_ports):
+            time.sleep(2)
+
+    print("All Qdrant nodes are ready.")
+    return True
 
 def launch_servers(fast_api_ports, qdrant_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=10000):
     for i in range(1, len(fast_api_ports) + 1):
@@ -90,14 +127,11 @@ def wait_for_servers(fast_api_ports, timeout=60):
                     ready_nodes.append(i)
                     print(f"  ✓ Server on port {port} is ready ({len(ready_nodes)}/{len(fast_api_ports)})")
             except (requests.exceptions.RequestException, requests.exceptions.ConnectionError):
-                pass  # Server not ready yet
+                pass
         
         if len(ready_nodes) < len(fast_api_ports):
             time.sleep(1)
     return True
-
-def launch_client():
-    pass
 
 def cleaning(N):
     print("\nShutting down...")
@@ -155,8 +189,9 @@ def main():
     # step 2: writing docker compose file
     write_docker_compose(qdrant_ports)
 
-    # step 3: launch docker compose
-    launch_docker()
+    if not launch_and_wait_for_qdrant(qdrant_ports):
+        print("Failed to start Qdrant servers. Exiting.")
+        sys.exit(1) # Esce con un codice di errore
 
     # step 4: launch servers
     launch_servers(fast_api_ports, qdrant_ports)

@@ -129,9 +129,8 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
     all_combos = list(itertools.combinations(all_nodes, replication_factor))
     
     beam = [(0.0, [], {id: 0.0 for id in all_nodes})] # State: (score, partial_assignment, node_loads)
-    
+    print(f"Total cluster: {len(clusters)}")
     clusters_sorted = sorted(clusters, key=lambda x: x[1], reverse=True)
-    print()
     for _, cluster_load, _ in clusters_sorted:
         potential_states = []
         
@@ -151,7 +150,7 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
                 )
 
         beam = heapq.nsmallest(beam_width, potential_states, key=lambda x: x[0]) # Prune: Keep only the B best new states
-        
+    print(f"Total states evaluated: {len(potential_states)}")
     _, best_assignment, _ = beam[0]
     end_time = time.time()
     print(f"Beam Search completed in {end_time - start_time:.4f} seconds.")
@@ -174,7 +173,6 @@ def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId, Tuple[Vector,
 
 def get_node_assignment(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], peers, replication_factor) -> Dict[str, ListOfVectorsWithId]:
     request = [(id, len(v_ids), centroid)for id, (centroid, v_ids) in clusters.items()]
-    print(f'type of peers: {type(peers)}')
     return find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
 
 

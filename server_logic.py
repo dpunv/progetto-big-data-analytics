@@ -77,7 +77,6 @@ class ServerApp:
         self.node_id = id
         self.url = url
         self.qdrant_url = qdrant_url
-        #print(self.qdrant_url)
         self.coordinator_url = coordinator_url
         self.collection_name = collection_name
         self.dimension = dimension
@@ -175,7 +174,8 @@ class ServerApp:
         with self.id_lock:
             self.id_count += 1
             n = len(str(abs(len(self.peers)+1)))
-            return int(f'{self.id_count}{self.id_count:0{n}d}')
+            numeric_id = self.node_id.split("node")[-1]
+            return int(f'{self.id_count}{numeric_id:0{n}d}')
         
     """
     È la porta d'ingresso pubblica per i client. Quando un utente vuole aggiungere un nuovo "libro" (vettore), chiama questa funzione.
