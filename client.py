@@ -84,10 +84,9 @@ def main():
     print(f'{start_color}sending query{end_color}')
 
     query_vector = data[-1]['embedding']
-    res = [j for i in servers[0].query_vectors([query_vector]).json()['results'] for j in i]
-
-    for result in sorted(res, key=lambda x: x['score']):
-        print(f"{result['id']}: {result['score']} -> {result['payload']}")
+    res = servers[0].query_vectors([query_vector]).json()['results']
+    for result in res:
+        print(f"{result['id']}: {result['score']} -> {result['payload']['string']}")
 
     print("### FOR CORRESPONDENCE")
 

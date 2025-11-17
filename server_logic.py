@@ -4,6 +4,7 @@ import clustering_module
 import threading
 import qdrant_module
 from compound_types import *
+import utils
 
 class Peer:
     def __init__(self, id, url):
@@ -70,7 +71,7 @@ class Peer:
             f'{self.url}/query_peer',
             json=payload
         )
-        return {}
+        return response.json()['results']
 
 class ServerApp:
     def __init__(self, id, url, qdrant_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
@@ -254,6 +255,11 @@ class ServerApp:
         if len(to_me) > 0:
             self.add_vectors(to_me, request_id)
 
+    def linear_search(self, query: ListOfVectors, topk: int):
+        distances_calcs = [(vector, utils.cosine_similarity(vector[0], query)) for vector in self.vector_buffer]
+        distances_calcs.sort(key=lambda x: x[1], reverse=True)
+        return [{'id': v[1], 'score': d, 'payload': {'string': v[2], 'vector': v[0]}} for v, d in distances_calcs[:topk]]
+
     """
     Cerca un vettore/i solo nel suo database locale (il suo Qdrant).
     """
@@ -267,6 +273,8 @@ class ServerApp:
     """
     def query(self, query: ListOfVectors, topk: int, request_id: int):
         response = []
+        if(self.meta_hnsw is None):
+            return self.linear_search(query, topk)    
         to_query_peer = [[] for _ in range(len(self.peers))]
         to_query_me = []
         for vector in query:
@@ -281,8 +289,15 @@ class ServerApp:
         for index, peer in enumerate(self.peers):
             response.extend(peer.query_peer(to_query_peer[index], topk, request_id))
         response.extend(self.query_me(to_query_me, topk))
-        #response = list(set(response))
-
+        res = [j for i in response for j in i]
+        seen = set()
+        unique_response = []
+        for item in res:
+            item_id = item.get('id')
+            if item_id not in seen:
+                seen.add(item_id)
+                unique_response.append(item)
+        response = sorted(unique_response, key=lambda x: x['score'])
         return response
 
     """
@@ -290,5 +305,3 @@ class ServerApp:
     """
     def notify_clustering(self):
         self.status = 'clustering'
-        #for peer in self.peers:
-        #    peer.notify_clustering()

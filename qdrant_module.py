@@ -47,8 +47,7 @@ def query_vectors(url, collection, query, topk):
             json={"searches": payload},
             timeout=10
         )
-        results = response.json()['result']
-        
+                
         print(f"[Qdrant Query] Status code: {response.status_code}")
 
         if response.status_code != 200:

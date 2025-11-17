@@ -72,6 +72,7 @@ async def query_peer_endpoint(query: QueryVectorsRequest):
     if server == None:
         raise "ServerApp not created"
     results = server.query_me(query.query, query.topk)
+    print(results)
     return {
         "results": results,
         "status": "success",
@@ -105,7 +106,6 @@ async def set_clusters_endpoint(data: SetClustersRequest):
     if server == None:
         raise "ServerApp not created"
     data.content["meta_hnsw"] = MetaHNSW.from_serializable_dict(data.content["meta_hnsw"])
-    print("TIPO"+str(type(data.content)))
     server.set_clusters(data.content, data.id)
 
 @app.get("/notify_clustering")
