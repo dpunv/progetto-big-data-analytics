@@ -1,6 +1,7 @@
 import requests
 import json
 from compound_types import *
+import utils
 
 request_ids = 0
 def get_id():
@@ -73,16 +74,29 @@ def main():
     print(f'{start_color}peers registered{end_color}')
 
     batch_size_send = config['batch_size']
-    
+    vector_sent = 0
     for i in range(min(len(data), config['num_vectors'] // batch_size_send) - 1):
         batch = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * (batch_size_send)]]
         print(f'{start_color}sending vector batch {i+1} / {min(len(data), config['num_vectors'] // batch_size_send) - 1}: {len(batch)} vectors {end_color}')
-
+        vector_sent += ((i+1) * (batch_size_send)) - (i * batch_size_send)
         servers[i%len(servers)].send_vectors(batch)
     
     print(f'{start_color}sending query{end_color}')
 
-    print(servers[0].query_vectors([data[-1]['embedding']]))
+    query_vector = data[-1]['embedding']
+    res = [j for i in servers[0].query_vectors([query_vector]).json()['results'] for j in i]
+
+    for result in sorted(res, key=lambda x: x['score']):
+        print(f"{result['id']}: {result['score']} -> {result['payload']}")
+
+    print("### FOR CORRESPONDENCE")
+
+    distances_calcs = [(vector, utils.cosine_similarity(vector['embedding'], query_vector)) for vector in data[:vector_sent]]
+    distances_calcs.sort(key=lambda x: x[1], reverse=True)
+    for v, d in distances_calcs[:5]:
+        print(f"{d} -> {v['text']}")
+        
+
 
     print(f'{start_color}client application end{end_color}')
 

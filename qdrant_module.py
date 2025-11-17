@@ -57,7 +57,7 @@ def query_vectors(url, collection, query, topk):
 
         results = response.json()['result']
         print(f"[Qdrant Query] Successo: trovati {len(results)} risultati")
-        print(results)
+        #print(results)
         return results
 
     except requests.exceptions.Timeout:
@@ -70,14 +70,7 @@ def query_vectors(url, collection, query, topk):
         print(f"[Qdrant Query] ERRORE generico: {e}")
         return None
 
-"""
-Ogni dato che inserisci è un "punto" e deve avere:
-    - Un ID (un nome unico, es. "documento_abc").
-    - Un vettore (i numeri che ne rappresentano il significato, es. [0.1, 0.2, 0.3]).
-    - Un payload (dati extra che vuoi salvare insieme, es. il testo originale, un titolo, un link).
-La funzione prende la tua lista di dati, la formatta nel modo corretto per Qdrant e la invia con un comando PUT
-"""
-def insert_vectors(url, collection, vectors):
+def insert_vectors_batch(url, collection, vectors):
     """Insert vectors into Qdrant collection."""
     try:
         points = [
@@ -119,3 +112,18 @@ def insert_vectors(url, collection, vectors):
     except Exception as e:
         print(f"[Qdrant Insert] ERRORE generico: {e}")
         return False
+
+
+"""
+Ogni dato che inserisci è un "punto" e deve avere:
+    - Un ID (un nome unico, es. "documento_abc").
+    - Un vettore (i numeri che ne rappresentano il significato, es. [0.1, 0.2, 0.3]).
+    - Un payload (dati extra che vuoi salvare insieme, es. il testo originale, un titolo, un link).
+La funzione prende la tua lista di dati, la formatta nel modo corretto per Qdrant e la invia con un comando PUT
+"""
+def insert_vectors(url, collection, vectors, batch_size=256):
+    num_batches = len(vectors) // batch_size
+    for batch_id in range(num_batches):
+        insert_vectors_batch(url, collection, vectors[batch_size * batch_id:batch_size * (batch_id+1)])
+    if len(vectors)% num_batches != 0:
+        insert_vectors_batch(url, collection, vectors[batch_size * num_batches:])
