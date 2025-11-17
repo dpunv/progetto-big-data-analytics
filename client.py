@@ -46,6 +46,8 @@ class Server:
             'topk': 5
         }
         return requests.post(f'{self.url}/query', json=payload)
+    def get_count(self):
+        return requests.get(f'{self.url}/count')
 
 def main():
     start_color = '\033[33m'
@@ -60,7 +62,6 @@ def main():
     with open('embeddings.json') as f:
         data = json.load(f)
         
-    
     print(f'{start_color}data and configuration loaded{end_color}')
 
     servers = []
@@ -75,7 +76,7 @@ def main():
 
     batch_size_send = config['batch_size']
     vector_sent = 0
-    for i in range(min(len(data), config['num_vectors'] // batch_size_send) - 1):
+    for i in range(min(len(data), config['num_vectors'] // batch_size_send)):
         batch = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * (batch_size_send)]]
         print(f'{start_color}sending vector batch {i+1} / {min(len(data), config['num_vectors'] // batch_size_send) - 1}: {len(batch)} vectors {end_color}')
         vector_sent += ((i+1) * (batch_size_send)) - (i * batch_size_send)
@@ -83,7 +84,7 @@ def main():
     
     print(f'{start_color}sending query{end_color}')
 
-    query_vector = data[-1]['embedding']
+    query_vector = data[0]['embedding']
     res = servers[0].query_vectors([query_vector]).json()['results']
     for result in res:
         print(f"{result['id']}: {result['score']} -> {result['payload']['string']}")
@@ -94,8 +95,9 @@ def main():
     distances_calcs.sort(key=lambda x: x[1], reverse=True)
     for v, d in distances_calcs[:5]:
         print(f"{d} -> {v['text']}")
-        
 
+    print(f'{start_color}getting vector counts{end_color}')
+    print(servers[0].get_count().json())
 
     print(f'{start_color}client application end{end_color}')
 

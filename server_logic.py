@@ -72,6 +72,10 @@ class Peer:
             json=payload
         )
         return response.json()['results']
+    def get_count(self):
+        return requests.get(
+            f'{self.url}/count_peer'
+        ).json()
 
 class ServerApp:
     def __init__(self, id, url, qdrant_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
@@ -137,6 +141,7 @@ class ServerApp:
                     print("start clustering")
                     self.status = 'clustering'
                     for peer in self.peers:
+                        print(f"notify {peer.id}")
                         peer.notify_clustering()
                     print("all peers clustering notified")
                     clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{VectorId: Tuple[Vector, List[VectorId]]}
@@ -256,9 +261,12 @@ class ServerApp:
             self.add_vectors(to_me, request_id)
 
     def linear_search(self, query: ListOfVectors, topk: int):
-        distances_calcs = [(vector, utils.cosine_similarity(vector[0], query)) for vector in self.vector_buffer]
-        distances_calcs.sort(key=lambda x: x[1], reverse=True)
-        return [{'id': v[1], 'score': d, 'payload': {'string': v[2], 'vector': v[0]}} for v, d in distances_calcs[:topk]]
+        to_return = []
+        for qv in query:
+            distances_calcs = [(vector, utils.cosine_similarity(vector[0], qv)) for vector in self.vector_buffer]
+            distances_calcs.sort(key=lambda x: x[1], reverse=True)
+            to_return.extend([{'id': v[1], 'score': d, 'payload': {'string': v[2], 'vector': v[0]}} for v, d in distances_calcs[:topk]])
+        return to_return
 
     """
     Cerca un vettore/i solo nel suo database locale (il suo Qdrant).
@@ -305,3 +313,20 @@ class ServerApp:
     """
     def notify_clustering(self):
         self.status = 'clustering'
+    
+    def get_count(self):
+        if self.status == 'bootstrap':
+            return 0
+        elif self.status == 'clustering':
+            return 0
+        elif self.status == 'clustered':
+            return qdrant_module.count(self.qdrant_url, self.collection_name)
+        else:
+            raise("Error: status Undefined")
+    
+    def get_count_client(self):
+        res = {}
+        for peer in self.peers:
+            res[peer.id] = peer.get_count()
+        res[self.node_id] = self.get_count()
+        return res

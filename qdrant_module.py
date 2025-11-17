@@ -126,3 +126,18 @@ def insert_vectors(url, collection, vectors, batch_size=256):
         insert_vectors_batch(url, collection, vectors[batch_size * batch_id:batch_size * (batch_id+1)])
     if len(vectors)% num_batches != 0:
         insert_vectors_batch(url, collection, vectors[batch_size * num_batches:])
+
+def count(url, collection):
+    try:
+        payload = {"exact": True}
+        response = requests.post(
+            f"{url}/collections/{collection}/points/count",
+            json=payload,
+            timeout=5
+        )
+        response.raise_for_status()
+        count = response.json().get("result", {}).get("count", 0)
+        return count
+    except requests.exceptions.RequestException as e:
+        print(f"Node {url}: Error counting vectors: {e}")
+        return -1

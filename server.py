@@ -117,7 +117,12 @@ async def notify_clustering_endpoint():
 async def count_endpoint():
     if server == None:
         raise "ServerApp not created"
-    #server.notify_clustering()
+    return server.get_count_client() # Dict[str, int] # id server: count su quel server
+@app.get("/count_peer")
+async def count_peer_endpoint():
+    if server == None:
+        raise "ServerApp not created"
+    return server.get_count() # Dict[str, int] # id server: count su quel server
 
 
 if __name__ == "__main__":

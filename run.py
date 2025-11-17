@@ -82,7 +82,7 @@ def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
     print("All Qdrant nodes are ready.")
     return True
 
-def launch_servers(fast_api_ports, qdrant_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=10000):
+def launch_servers(fast_api_ports, qdrant_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000):
     for i in range(1, len(fast_api_ports) + 1):
         node_id = f"node{i}"
         fastapi_port = fast_api_ports[i-1]
@@ -181,7 +181,7 @@ def main():
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 256,
-        'num_vectors': 5000
+        'num_vectors': 8192
     }
     # step 1: writing configuration to json file
     write_config(config)
