@@ -9,6 +9,9 @@ import grpc
 import p2p_pb2
 import p2p_pb2_grpc
 import pickle
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Peer:
     def __init__(self, id, url, grpc_url):
@@ -28,15 +31,11 @@ class Peer:
         self.clusters.extend(clusters)
     
     def contains(self, cluster: VectorWithId):
-        if cluster in [c[0] for c in self.clusters]:
-            return True
-        else:
-            return False
+        return cluster in [c[0] for c in self.clusters]
     
     def send(self, vectors: ListOfVectorsComplete, status: str, id):
-        print(f"\tsend (gRPC) to peer: {self.id} at {self.grpc_url}")
+        logger.info(f"--> [Peer Send] Sending {len(vectors)} vectors to Peer {self.id} ({self.grpc_url}) | Status: {status}")
         
-        # Convert Python data to Proto objects
         proto_vectors = [
             p2p_pb2.VectorPoint(vector=v[0], id=v[1], payload=v[2]) 
             for v in vectors
@@ -48,57 +47,68 @@ class Peer:
             type=status
         )
 
-        with grpc.insecure_channel(self.grpc_url) as channel:
-            stub = p2p_pb2_grpc.P2PNodeStub(channel)
-            stub.ReceiveVectors(req)
-
-    def notify_clustering(self):
-        with grpc.insecure_channel(self.grpc_url) as channel:
-            stub = p2p_pb2_grpc.P2PNodeStub(channel)
-            stub.NotifyClustering(p2p_pb2.Empty())
+        try:
+            with grpc.insecure_channel(self.grpc_url) as channel:
+                stub = p2p_pb2_grpc.P2PNodeStub(channel)
+                stub.ReceiveVectors(req)
+            logger.info(f"--> [Peer Send] Success: Sent vectors to {self.id}")
+        except grpc.RpcError as e:
+            logger.error(f"--> [Peer Send] FAILED to {self.id}: {e}")
 
     def send_clusters(self, assignment, clusters, meta_hnsw, request_id):
-        # Prepare data as before
+        logger.info(f"--> [Peer SendClusters] Sending cluster assignment to Peer {self.id}")
         to_send_dict = {
-            'my_vectors': [vector_id for cluster_id, _ in assignment[self.id] for vector_id in clusters[cluster_id][1]],
+            'my_vectors': [vector_complete for cluster_id, _ in assignment[self.id] for vector_complete in clusters[cluster_id][1]],
             'peers_clusters': assignment,
             'meta_hnsw': meta_hnsw.to_serializable_dict()
         }
+
+        self.set_clusters(assignment[self.id])
         
-        # Serialize using Pickle for binary transfer over gRPC
         data_bytes = pickle.dumps(to_send_dict)
         
         req = p2p_pb2.SetClustersRequest(req_id=request_id, content_pickle=data_bytes)
         
-        with grpc.insecure_channel(self.grpc_url) as channel:
-            stub = p2p_pb2_grpc.P2PNodeStub(channel)
-            stub.SetClusters(req)
+        try:
+            with grpc.insecure_channel(self.grpc_url) as channel:
+                stub = p2p_pb2_grpc.P2PNodeStub(channel)
+                stub.SetClusters(req)
+            logger.info(f"--> [Peer SendClusters] Success: Sent clusters to {self.id}")
+        except grpc.RpcError as e:
+            logger.error(f"--> [Peer SendClusters] FAILED to {self.id}: {e}")
 
     def query_peer(self, query: ListOfVectors, topk: int, request_id: int):
+        logger.info(f"--> [Peer Query] Querying Peer {self.id} for {len(query)} vectors")
         proto_query = [p2p_pb2.VectorList(values=v) for v in query]
         req = p2p_pb2.QueryRequest(req_id=request_id, query_vectors=proto_query, topk=topk)
         
-        with grpc.insecure_channel(self.grpc_url) as channel:
-            stub = p2p_pb2_grpc.P2PNodeStub(channel)
-            response = stub.QueryPeer(req)
-        
-        # Convert Proto response back to Python Dict structure expected by ServerApp.query
-        results = []
-        for sp in response.results:
-            results.append({
-                'id': sp.id,
-                'score': sp.score,
-                'payload': {
-                    'string': sp.payload.payload,
-                    'vector': list(sp.payload.vector)
-                }
-            })
-        return results
+        try:
+            with grpc.insecure_channel(self.grpc_url) as channel:
+                stub = p2p_pb2_grpc.P2PNodeStub(channel)
+                response = stub.QueryPeer(req)
+            
+            results = []
+            for sp in response.results:
+                results.append({
+                    'id': sp.id,
+                    'score': sp.score,
+                    'payload': {
+                        'string': sp.payload.payload,
+                        'vector': list(sp.payload.vector)
+                    }
+                })
+            logger.info(f"--> [Peer Query] Success: Peer {self.id} returned {len(results)} results")
+            return results
+        except grpc.RpcError as e:
+            logger.error(f"--> [Peer Query] FAILED to {self.id}: {e}")
+            return []
 
     def get_count(self):
-        return requests.get(
-            f'{self.url}/count_peer'
-        ).json()
+        try:
+            return requests.get(f'{self.url}/count_peer').json()
+        except Exception as e:
+            logger.error(f"Error getting count from {self.id}: {e}")
+            return {}
 
 class ServerApp:
     def __init__(self, id, url, qdrant_url, grpc_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
@@ -109,7 +119,7 @@ class ServerApp:
         self.coordinator_url = coordinator_url
         self.collection_name = collection_name
         self.dimension = dimension
-        self.node_clusters = [] # ListOfVectorsWithId: Tuples of cluster_id, cluster_centroid
+        self.node_clusters = [] 
         self.status = 'bootstrap'
         self.replicas = replicas
         self.peers = []
@@ -119,9 +129,11 @@ class ServerApp:
         self.num_vectors_before_clustering = num_vectors_before_clustering
         self.vector_buffer_lock = threading.RLock()
         self.additional_buffer_lock = threading.Lock()
+        self.status_lock = threading.Lock()
         self.clustering_lock = threading.Lock()
         self.id_lock = threading.Lock()
         self.id_count = 0
+        logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
     
     def i_am_coord(self):
         return self.coordinator_url == self.url
@@ -130,71 +142,92 @@ class ServerApp:
         for peer in self.peers:
             if peer.url == self.coordinator_url:
                 return peer
+        logger.warning("Coordinator not found in peers list!")
+        return None
     
-    def clustering_notified(self):
-        if self.status == 'bootstrap':
-            self.status = 'clustering'
-        else:
-            raise("Error: status Undefined")
-    
-    def add_peers(self, peers: List[Tuple[str, str, str]]): # Added 3rd tuple element
+    def add_peers(self, peers: List[Tuple[str, str, str]]):
+        logger.info(f"[Add Peers] Adding {len(peers)} peers: {peers}")
         for id, http_url, grpc_url in peers:
             self.peers.append(Peer(id, http_url, grpc_url))
     
     def start_clustering_thread(self, request_id):
-        print("start clustering")
-        self.status = 'clustering'
-        for peer in self.peers:
-            print(f"notify {peer.id}")
-            peer.notify_clustering()
-        clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{VectorId: Tuple[Vector, List[VectorId]]}
+        logger.info(f"*** START CLUSTERING THREAD (ReqID: {request_id}) ***")
+        with self.vector_buffer_lock:
+            logger.info(f"Clustering: Converting buffer of {len(self.vector_buffer)} vectors.")
+            clusters = clustering_module.get_clusters(self.vector_buffer)
+            self.vector_buffer = []
+        
         peers_with_me = self.peers[:]
         peers_with_me.append(Peer(self.node_id, self.url, self.grpc_url))
-        assignment = clustering_module.get_node_assignment(clusters, peers_with_me, self.replicas) # Dict{str: ListOfVectorsWithId}
+        
+        logger.info("Clustering: Calculating node assignments...")
+        assignment = clustering_module.get_node_assignment(clusters, peers_with_me, self.replicas)
         self.meta_hnsw = clustering_module.build_meta_hnsw(clusters, self.dimension)
+        
+        [logger.info(f"Clusters and vectors count per node: {node_id}: Clusters: {len(clusters_in_node)} - Vectors: {sum([len(clusters[cluster[0]][1]) for cluster in clusters_in_node])}") for node_id, clusters_in_node in assignment.items()]
+
+        logger.info("Clustering: Broadcasting assignments to peers...")
         for peer in self.peers:
             peer.send_clusters(assignment, clusters, self.meta_hnsw, request_id)
-        my_vectors = []
+        
         self.node_clusters = assignment[self.node_id]
-        for cluster_id, (centroid, vector_ids) in clusters.items():
-            if (cluster_id, centroid) in self.node_clusters:
-                my_vectors.extend(vector_ids)
-        self.adjust_after_clustering(my_vectors, request_id)
+        
+        with self.vector_buffer_lock:
+            with self.status_lock:
+                self.status = 'clustered'
+            logger.info(f"*** Status changed to 'clustered'. Processing local assignment ({len(assignment[self.node_id])} clusters)...")
+            
+            local_vectors = [vector_complete for cluster_id, _ in assignment[self.node_id] for vector_complete in clusters[cluster_id][1]]
+            logger.info(f"Clustering: Inserting {len(local_vectors)} assigned vectors to local Qdrant.")
+            self.add_vectors(local_vectors, self.status, request_id)
+            
         with self.additional_buffer_lock:
+            logger.info(f"Clustering: Processing additional buffer ({len(self.additional_buffer)} vectors)...")
             self.route_vectors_send(self.additional_buffer, request_id)
             self.additional_buffer = []
-        #self.vector_buffer = []
+            
+        logger.info("*** CLUSTERING FINISHED ***")
 
     def add_vectors(self, vectors: ListOfVectorsComplete, status_of_sender: str, request_id):
+        logger.info(f"[Add Vectors] Processing {len(vectors)} vectors. Sender Status: {status_of_sender}. Current Node Status: {self.status}")
+        
         if status_of_sender == 'clustered':
+            logger.info(f"[Add Vectors] Direct Insert: Storing {len(vectors)} vectors in local Qdrant (Sender is clustered).")
             qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors)
         else:
-            if self.status == 'bootstrap':
-                with self.vector_buffer_lock:
-                    self.vector_buffer.extend(vectors)
-                if self.i_am_coord() and len(self.vector_buffer) >= self.num_vectors_before_clustering:
-                    with self.clustering_lock:
-                        if not self.status == 'clustered':
-                            cluster_thread = threading.Thread(
-                                target=self.start_clustering_thread,
-                                args=(request_id,)
-                            )
-                            cluster_thread.start()
-                            return
-            elif self.status == 'clustering':
-                if not self.i_am_coord():
+            if not self.i_am_coord():
+                logger.error("Error: Received bootstrap/clustering vectors but I am not coordinator.")
+                raise Exception('Error: status Undefined')
+            else:
+                if self.status == 'bootstrap':
+                    with self.vector_buffer_lock:
+                        self.vector_buffer.extend(vectors)
+                        buffer_len = len(self.vector_buffer)
+                    
+                    logger.info(f"[Buffer Update] Bootstrap mode. Buffer size: {buffer_len}/{self.num_vectors_before_clustering}")
+                    
+                    if buffer_len >= self.num_vectors_before_clustering:
+                        with self.clustering_lock:
+                            if self.status == 'bootstrap':
+                                self.status = 'clustering'
+                                logger.info("THRESHOLD REACHED: Triggering Clustering.")
+                                cluster_thread = threading.Thread(
+                                    target=self.start_clustering_thread,
+                                    args=(request_id,)
+                                )
+                                cluster_thread.start()
+                                return
+                elif self.status == 'clustering':
                     with self.additional_buffer_lock:
                         self.additional_buffer.extend(vectors)
+                    logger.info(f"[Buffer Update] Clustering in progress. Added to additional buffer. Size: {len(self.additional_buffer)}")
+                elif self.status == 'clustered':
                     if status_of_sender == 'bootstrap':
-                        return
-                    self.coordinator().send(vectors, self.status, request_id)
-            elif self.status == 'clustered':
-                if self.i_am_coord() and (status_of_sender == 'clustering' or status_of_sender == 'bootstrap'):
-                    self.route_vectors_send(vectors, request_id)
+                        logger.info("[Add Vectors] Node is clustered but sender is bootstrap. Routing vectors.")
+                        self.route_vectors_send(vectors, request_id)
                 else:
-                    qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors)
-            else:
-                raise("ERROR: status Undefined")
+                    logger.error(f"Undefined status encountered: {self.status}")
+                    raise Exception("ERROR: status Undefined")
     
     def get_id(self):
         with self.id_lock:
@@ -203,67 +236,56 @@ class ServerApp:
             numeric_id = int(self.node_id.split("node")[-1])
             return int(f'{self.id_count}{numeric_id:0{n}d}')
         
-    """
-    È la porta d'ingresso pubblica per i client. Quando un utente vuole aggiungere un nuovo "libro" (vettore), chiama questa funzione.
-    """
     def add_vectors_client(self, vectors: ListOfVectorsWithPayload, request_id):
-        print("add_vectors_client_start")
+        logger.info(f"[Client Request] Client wants to add {len(vectors)} vectors. My Status: {self.status}")
         vectors_with_id = [(vector_content, self.get_id(), vector_payload) for vector_content, vector_payload  in vectors]
-        if self.status == 'bootstrap':
-            print("entered first if branch: bootstrap")
-            for peer in self.peers:
-                print(f"sending peer {peer.id} the vectors")
-                peer.send(vectors_with_id, self.status, request_id)
-            print("vectors sent to all peers")
-            self.add_vectors(vectors_with_id, self.status, request_id)
-            print("vectors added to buffer")
-        elif self.status == 'clustered':
+        with self.status_lock:
+            status = self.status
+        
+        if status == 'bootstrap':
+            if self.i_am_coord():
+                logger.info("[Client Request] I am Coordinator (Bootstrap). Adding to buffer.")
+                self.add_vectors(vectors_with_id, status, request_id)
+            else:
+                coord = self.coordinator()
+                if coord:
+                    logger.info(f"[Client Request] Forwarding {len(vectors)} vectors to Coordinator {coord.id}.")
+                    coord.send(vectors_with_id, status, request_id)
+                else:
+                    logger.error("Cannot send vectors: Coordinator undefined.")
+        elif status == 'clustered':
+            logger.info("[Client Request] System Clustered. Routing vectors to appropriate peers.")
             self.route_vectors_send(vectors_with_id, request_id)
-        elif self.status == 'clustering':
-            with self.additional_buffer_lock:
-                self.additional_buffer.extend(vectors_with_id)
+        elif status == 'clustering':
             if not self.i_am_coord():
-                self.coordinator().send(vectors_with_id, self.status, request_id)
+                raise Exception("Error: status Undefined")
+            else:
+                logger.info("[Client Request] System Clustering. Buffering at Coordinator.")
+                self.add_vectors(vectors_with_id, status, request_id)
         else:
-            raise("Error: Undefined status")
+            raise Exception("Error: Undefined status")
     
-    def set_clusters(self, assignment, request_id): # assignment is of type Dict['my_vectors': List[VectorId], 'peers_clusters': Dict[str, ListOfVectorsWithId], 'meta_hnsw': MetaHNSW]
+    def set_clusters(self, assignment, request_id): 
+        logger.info(f"[Set Clusters] Received assignment (ReqID: {request_id}).")
         for peer in self.peers:
             peer.set_clusters(assignment['peers_clusters'][peer.id])
         self.node_clusters = assignment['peers_clusters'][self.node_id]
         self.meta_hnsw = clustering_module.MetaHNSW.from_serializable_dict(assignment['meta_hnsw'])
-        self.adjust_after_clustering(assignment['my_vectors'], request_id)
+        self.status = 'clustered'
+        
+        my_vecs = assignment['my_vectors']
+        logger.info(f"[Set Clusters] Storing {len(my_vecs)} assigned vectors locally.")
+        self.add_vectors(my_vecs, self.status, request_id)
+        logger.info(f"[Set Clusters] Complete. My Total Count: {self.get_count()}")
 
-    """
-    Fa pulizia. Dopo a clustering finito, il peer guarda nella suo vector_buffer e salva solo i libri che gli sono stati assegnati, buttando il resto.
-    """
-    def adjust_after_clustering(self, my_vector_ids: List[VectorId], request_id):
-        with self.vector_buffer_lock:
-            self.status = 'clustered'
-            to_save = []
-            for vector in self.vector_buffer:
-                if vector[1] in my_vector_ids:
-                    to_save.append(vector)
-            print(f"len of to_save = {len(to_save)} - len of vector_buffer = {len(self.vector_buffer)} - len of my_vector_ids = {len(my_vector_ids)}")
-            self.add_vectors(to_save, self.status, request_id)
-            self.vector_buffer = []
-
-    """
-    Input: Un vettore, quanti nodi trovare (k).
-    Output: Una lista dei k nodi più rilevanti per quel vettore.
-    """
     def route_vector(self, vector: Vector, k: int):
         return clustering_module.find(self.meta_hnsw, vector, k)
 
-    """
-    Prende una lista intera di vettori da spedire. Per ogni singolo vettore:
-     - Usa route_vector(k=1) per chiedere: "Qual è il nodo migliore per questo vettore?".
-     - Mette il vettore nel batch destinato a quel nodo (Peer).
-     - Se non trova un proprietario chiaro o se la replica fallisce, tiene il vettore per sé (to_me).
-    """
     def route_vectors_send(self, vectors: ListOfVectorsComplete, request_id):
+        logger.info(f"[Router] Routing {len(vectors)} vectors among {len(self.peers) + 1} nodes (Replicas: {self.replicas}).")
         assigned_vectors = [[] for _ in range(len(self.peers))]
         to_me = []
+        
         for vector_content, vector_id, vector_payload in vectors:
             vector = (vector_content, vector_id, vector_payload)
             top_1 = self.route_vector(vector_content, 1)[0]
@@ -272,15 +294,27 @@ class ServerApp:
                 if peer.contains(top_1):
                     assigned_vectors[index].append(vector)
                     found += 1
+                    logger.info(f"[DEBUG] found replica for vector: {found}")
             if found != self.replicas:
+                logger.info(f"[DEBUG] to me replica for vector: {found}")
                 to_me.append(vector)
+            if found < self.replicas-1:
+                logger.info(f"[DEBUG] not enough replicas found: {found}")
+        
+        # Log distribution summary
+        summary = [f"Peer {peer.id}: {len(assigned_vectors[i])}" for i, peer in enumerate(self.peers)]
+        summary.append(f"Me ({self.node_id}): {len(to_me)}")
+        logger.info(f"[Router] Distribution: {', '.join(summary)}")
+
         for index, peer in enumerate(self.peers):
             if len(assigned_vectors[index]) > 0:
                 peer.send(assigned_vectors[index], self.status, request_id)
+        
         if len(to_me) > 0:
             self.add_vectors(to_me, self.status, request_id)
 
     def linear_search(self, query: ListOfVectors, topk: int):
+        logger.info(f"[Linear Search] Searching buffer ({len(self.vector_buffer)} vectors) for {len(query)} queries.")
         to_return = []
         for qv in query:
             distances_calcs = [(vector, utils.cosine_similarity(vector[0], qv)) for vector in self.vector_buffer]
@@ -288,23 +322,21 @@ class ServerApp:
             to_return.extend([{'id': v[1], 'score': d, 'payload': {'string': v[2], 'vector': v[0]}} for v, d in distances_calcs[:topk]])
         return to_return
 
-    """
-    Cerca un vettore/i solo nel suo database locale (il suo Qdrant).
-    """
     def query_me(self, query: ListOfVectors, topk: int):
+        logger.info(f"[Local Query] Querying local Qdrant for {len(query)} vectors.")
         return qdrant_module.query_vectors(self.qdrant_url, self.collection_name, query, topk)
     
-    """
-    Cerca un vettore/i sia nel suo database locale che in quello dei peer.
-        -usa route_vector per decidere quali peer interrogare
-        -chiama query_peer su quei peer
-    """
     def query(self, query: ListOfVectors, topk: int, request_id: int):
+        logger.info(f"[Global Query] Processing query (ReqID: {request_id}). Queries: {len(query)}, TopK: {topk}")
         response = []
         if(self.meta_hnsw is None):
+            logger.warning("MetaHNSW not built. Falling back to Linear Search.")
             return self.linear_search(query, topk)    
+        
         to_query_peer = [[] for _ in range(len(self.peers))]
         to_query_me = []
+        
+        # Routing queries
         for vector in query:
             top_3 = self.route_vector(vector, 3)
             for index, peer in enumerate(self.peers):
@@ -314,10 +346,24 @@ class ServerApp:
             for result in top_3:
                 if result in [c[0] for c in self.node_clusters]:
                     to_query_me.append(vector)
+        
+        # Log Routing
+        q_summary = [f"Peer {peer.id}: {len(to_query_peer[i])}" for i, peer in enumerate(self.peers)]
+        q_summary.append(f"Me: {len(to_query_me)}")
+        logger.info(f"[Global Query] Routing: {', '.join(q_summary)}")
+
+        # Executing queries
         for index, peer in enumerate(self.peers):
-            response.extend(peer.query_peer(to_query_peer[index], topk, request_id))
-        response.extend(self.query_me(to_query_me, topk))
-        #res = [j for i in response for j in i]
+            if to_query_peer[index]:
+                res = peer.query_peer(to_query_peer[index], topk, request_id)
+                response.extend(res)
+        
+        if to_query_me:
+            res_me = self.query_me(to_query_me, topk)
+            response.extend(res_me)
+        
+        logger.info(f"[Global Query] Aggregating {len(response)} raw results...")
+
         seen = set()
         unique_response = []
         for item in response:
@@ -325,24 +371,14 @@ class ServerApp:
             if item_id not in seen:
                 seen.add(item_id)
                 unique_response.append(item)
-        response = sorted(unique_response, key=lambda x: x['score'])
-        return response
-
-    """
-    Usata dal coordinatore per notificare tutti i peer che ci sono abbastanza vettori dunque è ora di fare il clustering.
-    """
-    def notify_clustering(self):
-        self.status = 'clustering'
+        
+        # Sorting
+        unique_response = sorted(unique_response, key=lambda x: x['score'], reverse=True) 
+        logger.info(f"[Global Query] Final unique results: {len(unique_response)}")
+        return unique_response
     
     def get_count(self):
-        if self.status == 'bootstrap':
-            return 0
-        elif self.status == 'clustering':
-            return 0
-        elif self.status == 'clustered':
-            return qdrant_module.count(self.qdrant_url, self.collection_name)
-        else:
-            raise("Error: status Undefined")
+        return qdrant_module.count(self.qdrant_url, self.collection_name)
     
     def get_count_client(self):
         res = {}

@@ -1,0 +1,51 @@
+2025-11-18 17:30:17,994 - INFO - Config file written.
+2025-11-18 17:30:17,994 - INFO - Generating compose.yml for 8 nodes...
+2025-11-18 17:30:17,995 - INFO - compose.yml generated successfully.
+2025-11-18 17:30:17,995 - INFO - Starting 8 Qdrant databases with Docker Compose...
+2025-11-18 17:30:18,728 - INFO - Waiting for Qdrant nodes to be ready (checking /readyz)...
+2025-11-18 17:30:18,747 - INFO -   ✓ Qdrant node on port 6333 is ready. (1/8)
+2025-11-18 17:30:18,794 - INFO -   ✓ Qdrant node on port 6337 is ready. (2/8)
+2025-11-18 17:30:18,797 - INFO -   ✓ Qdrant node on port 6339 is ready. (3/8)
+2025-11-18 17:30:18,800 - INFO -   ✓ Qdrant node on port 6341 is ready. (4/8)
+2025-11-18 17:30:18,802 - INFO -   ✓ Qdrant node on port 6343 is ready. (5/8)
+2025-11-18 17:30:18,805 - INFO -   ✓ Qdrant node on port 6345 is ready. (6/8)
+2025-11-18 17:30:18,808 - INFO -   ✓ Qdrant node on port 6347 is ready. (7/8)
+2025-11-18 17:30:20,822 - INFO -   ✓ Qdrant node on port 6335 is ready. (8/8)
+2025-11-18 17:30:20,822 - INFO - All Qdrant nodes are ready.
+2025-11-18 17:30:20,946 - INFO - HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+2025-11-18 17:30:21,068 - INFO - Collection 'vectors' created successfully on http://localhost:6333
+2025-11-18 17:30:21,069 - INFO - Started server 'node1' on port 8001 (Qdrant: 6333, PID: 66658). Log: logs/node1.log
+2025-11-18 17:30:21,129 - INFO - HTTP Request: GET http://localhost:6335 "HTTP/1.1 200 OK"
+2025-11-18 17:30:21,301 - INFO - Collection 'vectors' created successfully on http://localhost:6335
+2025-11-18 17:30:21,305 - INFO - Started server 'node2' on port 8002 (Qdrant: 6335, PID: 66662). Log: logs/node2.log
+2025-11-18 17:30:21,437 - INFO - HTTP Request: GET http://localhost:6337 "HTTP/1.1 200 OK"
+2025-11-18 17:30:21,641 - INFO - Collection 'vectors' created successfully on http://localhost:6337
+2025-11-18 17:30:21,643 - INFO - Started server 'node3' on port 8003 (Qdrant: 6337, PID: 66666). Log: logs/node3.log
+2025-11-18 17:30:21,738 - INFO - HTTP Request: GET http://localhost:6339 "HTTP/1.1 200 OK"
+2025-11-18 17:30:22,083 - INFO - Collection 'vectors' created successfully on http://localhost:6339
+2025-11-18 17:30:22,086 - INFO - Started server 'node4' on port 8004 (Qdrant: 6339, PID: 66667). Log: logs/node4.log
+2025-11-18 17:30:22,191 - INFO - HTTP Request: GET http://localhost:6341 "HTTP/1.1 200 OK"
+2025-11-18 17:30:22,551 - INFO - Collection 'vectors' created successfully on http://localhost:6341
+2025-11-18 17:30:22,553 - INFO - Started server 'node5' on port 8005 (Qdrant: 6341, PID: 66673). Log: logs/node5.log
+2025-11-18 17:30:22,722 - INFO - HTTP Request: GET http://localhost:6343 "HTTP/1.1 200 OK"
+2025-11-18 17:30:22,956 - INFO - Collection 'vectors' created successfully on http://localhost:6343
+2025-11-18 17:30:22,959 - INFO - Started server 'node6' on port 8006 (Qdrant: 6343, PID: 66692). Log: logs/node6.log
+2025-11-18 17:30:23,101 - INFO - HTTP Request: GET http://localhost:6345 "HTTP/1.1 200 OK"
+2025-11-18 17:30:23,444 - INFO - Collection 'vectors' created successfully on http://localhost:6345
+2025-11-18 17:30:23,446 - INFO - Started server 'node7' on port 8007 (Qdrant: 6345, PID: 66698). Log: logs/node7.log
+2025-11-18 17:30:23,580 - INFO - HTTP Request: GET http://localhost:6347 "HTTP/1.1 200 OK"
+2025-11-18 17:30:24,160 - INFO - Collection 'vectors' created successfully on http://localhost:6347
+2025-11-18 17:30:24,162 - INFO - Started server 'node8' on port 8008 (Qdrant: 6347, PID: 66699). Log: logs/node8.log
+2025-11-18 17:30:24,178 - INFO -   ✓ Server on port 8001 is ready (1/8)
+2025-11-18 17:30:25,198 - INFO -   ✓ Server on port 8002 is ready (2/8)
+2025-11-18 17:30:25,202 - INFO -   ✓ Server on port 8003 is ready (3/8)
+2025-11-18 17:30:25,207 - INFO -   ✓ Server on port 8004 is ready (4/8)
+2025-11-18 17:30:26,228 - INFO -   ✓ Server on port 8005 is ready (5/8)
+2025-11-18 17:30:26,234 - INFO -   ✓ Server on port 8006 is ready (6/8)
+2025-11-18 17:30:26,239 - INFO -   ✓ Server on port 8007 is ready (7/8)
+2025-11-18 17:30:26,242 - INFO -   ✓ Server on port 8008 is ready (8/8)
+2025-11-18 17:30:26,242 - INFO - Launching Client...
+2025-11-18 17:32:09,647 - INFO - Shutting down...
+2025-11-18 17:32:09,647 - INFO - Stopping 8 Python servers...
+2025-11-18 17:32:11,102 - INFO - Stopping Docker containers...
+2025-11-18 17:32:12,884 - INFO - Cleanup complete.

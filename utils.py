@@ -3,10 +3,14 @@ import os
 import sys
 from typing import List
 import json
+import logging
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 def load_vectors(filename, max_vectors):
     if not os.path.exists(filename):
-        print(f"Error: File not found at '{filename}'")
+        logger.error(f"Error: File not found at '{filename}'")
         sys.exit(1)
     try:
         with open(filename, 'r') as f:
@@ -17,11 +21,11 @@ def load_vectors(filename, max_vectors):
         X = np.array(vectors)
         
         if len(X.shape) != 2 or X.shape[1] == 0:
-            print(f"Error: Data in '{filename}' is not a valid 2D array.")
+            logger.error(f"Error: Data in '{filename}' is not a valid 2D array.")
             sys.exit(1)
         return X
     except Exception as e:
-        print(f"Error loading or processing '{filename}': {e}")
+        logger.error(f"Error loading or processing '{filename}': {e}")
         sys.exit(1)
 
 

@@ -54,11 +54,6 @@ class P2PNodeStub(object):
                 request_serializer=p2p__pb2.SetClustersRequest.SerializeToString,
                 response_deserializer=p2p__pb2.Empty.FromString,
                 _registered_method=True)
-        self.NotifyClustering = channel.unary_unary(
-                '/p2p.P2PNode/NotifyClustering',
-                request_serializer=p2p__pb2.Empty.SerializeToString,
-                response_deserializer=p2p__pb2.Empty.FromString,
-                _registered_method=True)
 
 
 class P2PNodeServicer(object):
@@ -88,12 +83,6 @@ class P2PNodeServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def NotifyClustering(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
 
 def add_P2PNodeServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -115,11 +104,6 @@ def add_P2PNodeServicer_to_server(servicer, server):
             'SetClusters': grpc.unary_unary_rpc_method_handler(
                     servicer.SetClusters,
                     request_deserializer=p2p__pb2.SetClustersRequest.FromString,
-                    response_serializer=p2p__pb2.Empty.SerializeToString,
-            ),
-            'NotifyClustering': grpc.unary_unary_rpc_method_handler(
-                    servicer.NotifyClustering,
-                    request_deserializer=p2p__pb2.Empty.FromString,
                     response_serializer=p2p__pb2.Empty.SerializeToString,
             ),
     }
@@ -230,33 +214,6 @@ class P2PNode(object):
             target,
             '/p2p.P2PNode/SetClusters',
             p2p__pb2.SetClustersRequest.SerializeToString,
-            p2p__pb2.Empty.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def NotifyClustering(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/p2p.P2PNode/NotifyClustering',
-            p2p__pb2.Empty.SerializeToString,
             p2p__pb2.Empty.FromString,
             options,
             channel_credentials,

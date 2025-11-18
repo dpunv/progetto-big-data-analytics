@@ -8,15 +8,29 @@ import signal
 import atexit
 import requests
 import qdrant_module
+import logging
+
+# Setup local logging for run.py
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("logs/run.log", mode='w')
+    ]
+)
+logger = logging.getLogger("Runner")
 
 server_processes = []
 
 def write_config(config):
     with open('config.json', 'w') as f:
         json.dump(config, f)
+    logger.info("Config file written.")
 
 def write_docker_compose(qdrant_ports):
-    print(f"Generating compose.yml for {len(qdrant_ports)} nodes...")
+    logger.info(f"Generating compose.yml for {len(qdrant_ports)} nodes...")
 
     with open("compose.yml", "w") as f:
         f.write("services:\n")
@@ -37,53 +51,45 @@ def write_docker_compose(qdrant_ports):
             f.write(f"      - ./qdrant_storage_{i+1}:/qdrant/storage\n")
             f.write(f"    restart: unless-stopped\n")
 
-    print("compose.yml generated successfully.")
-
-def launch_docker():
-    print(f"Starting Qdrant databases with Docker Compose...")
-    subprocess.run(["docker", "compose", "-f", "compose.yml", "up", "-d"], check=True)
-
-    print("Waiting for databases to initialize (10s)...")
-    time.sleep(10)
+    logger.info("compose.yml generated successfully.")
 
 def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
-    print(f"Starting {len(qdrant_ports)} Qdrant databases with Docker Compose...")
+    logger.info(f"Starting {len(qdrant_ports)} Qdrant databases with Docker Compose...")
     try:
-        subprocess.run(["docker", "compose", "-f", "compose.yml", "up", "-d"], check=True)
+        subprocess.run(["docker", "compose", "-f", "compose.yml", "up", "-d"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError as e:
-        print(f"Errore durante l'avvio di Docker Compose: {e}")
+        logger.error(f"Error starting Docker Compose: {e}")
         return False
 
-    print("Waiting for Qdrant nodes to be ready (checking /readyz)...")
+    logger.info("Waiting for Qdrant nodes to be ready (checking /readyz)...")
     start_time = time.time()
     ready_nodes = set()
     
     while len(ready_nodes) < len(qdrant_ports):
         if time.time() - start_time > timeout:
-            print(f"Timeout! Only {len(ready_nodes)}/{len(qdrant_ports)} Qdrant nodes are ready.")
+            logger.error(f"Timeout! Only {len(ready_nodes)}/{len(qdrant_ports)} Qdrant nodes are ready.")
             return False
 
         for port in qdrant_ports:
             if port in ready_nodes:
                 continue
             url = f"http://localhost:{port}/readyz"
-            print(f"Checking Qdrant node on port {port} at {url}...")
+            # logger.debug(f"Checking Qdrant node on port {port} at {url}...")
             try:
                 response = requests.get(url, timeout=1) 
                 
                 if response.status_code == 200:
                     ready_nodes.add(port)
-                    print(f"  ✓ Qdrant node on port {port} is ready. ({len(ready_nodes)}/{len(qdrant_ports)})")
+                    logger.info(f"  ✓ Qdrant node on port {port} is ready. ({len(ready_nodes)}/{len(qdrant_ports)})")
             except requests.exceptions.RequestException:
                 pass
         if len(ready_nodes) < len(qdrant_ports):
             time.sleep(2)
 
-    print("All Qdrant nodes are ready.")
+    logger.info("All Qdrant nodes are ready.")
     return True
 
 def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000):
-    print("I'M HERE")
     for i in range(1, len(fast_api_ports) + 1):
         node_id = f"node{i}"
         fastapi_port = fast_api_ports[i-1]
@@ -91,6 +97,7 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, coordinator_url='ht
         grpc_port = grpc_ports[i-1]
         
         qdrant_url = f'http://localhost:{qdrant_http_port}'
+        log_file = f'logs/{node_id}.log'
 
         proc = subprocess.Popen(
             [sys.executable, "server.py",
@@ -100,17 +107,22 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, coordinator_url='ht
                 '--qdrant-url', qdrant_url,
                 '--coordinator-url', coordinator_url,
                 '--replicas', str(replicas),
-                '--num-before-clustering', str(num_before_clustering)
+                '--num-before-clustering', str(num_before_clustering),
+                '--log-file', log_file
             ],
-            stdout=sys.stdout,  # MODIFIED: Redirect stdout
-            stderr=sys.stderr,  # MODIFIED: Redirect stderr
+            # We do NOT redirect stdout/stderr here so that the server process
+            # can write to its own log file cleanly via logging module,
+            # but we can let it print to the shell (subprocess default) if we want to see live output,
+            # OR we can silence it. 
+            # Given the user request, we rely on the internal file logging of the server.
+            # We keep stdout visible for basic liveness check in the terminal if needed.
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
         )
         server_processes.append(proc)
         
         qdrant_module.create_collection(qdrant_url, 'vectors', 384)
         
-        print(f"Started server '{node_id}' on port {fastapi_port} (Qdrant: {qdrant_http_port}, PID: {proc.pid})")
+        logger.info(f"Started server '{node_id}' on port {fastapi_port} (Qdrant: {qdrant_http_port}, PID: {proc.pid}). Log: {log_file}")
 
     return server_processes
 
@@ -119,7 +131,7 @@ def wait_for_servers(fast_api_ports, timeout=60):
     ready_nodes = []
     while len(ready_nodes) < len(fast_api_ports):
         if time.time() - start_time > timeout:
-            print(f"Timeout! Only {len(ready_nodes)}/{len(fast_api_ports)} servers are ready.")
+            logger.error(f"Timeout! Only {len(ready_nodes)}/{len(fast_api_ports)} servers are ready.")
             return False
         for i, port in enumerate(fast_api_ports):
             if i in ready_nodes:
@@ -128,7 +140,7 @@ def wait_for_servers(fast_api_ports, timeout=60):
                 response = requests.get(f"http://localhost:{port}/", timeout=2)
                 if response.status_code == 200:
                     ready_nodes.append(i)
-                    print(f"  ✓ Server on port {port} is ready ({len(ready_nodes)}/{len(fast_api_ports)})")
+                    logger.info(f"  ✓ Server on port {port} is ready ({len(ready_nodes)}/{len(fast_api_ports)})")
             except (requests.exceptions.RequestException, requests.exceptions.ConnectionError):
                 pass
         
@@ -137,10 +149,10 @@ def wait_for_servers(fast_api_ports, timeout=60):
     return True
 
 def cleaning(N):
-    print("\nShutting down...")
+    logger.info("Shutting down...")
     
     if server_processes:
-        print(f"Stopping {len(server_processes)} Python servers...")
+        logger.info(f"Stopping {len(server_processes)} Python servers...")
         for proc in server_processes:
             try:
                 proc.terminate()
@@ -148,7 +160,7 @@ def cleaning(N):
             except:
                 proc.kill()
 
-    print("Stopping Docker containers...")
+    logger.info("Stopping Docker containers...")
     try:
         subprocess.run(["docker", "compose", "-f", "compose.yml", "down"], 
                         check=False, capture_output=True)
@@ -166,7 +178,7 @@ def cleaning(N):
         if os.path.exists(storage_dir):
             shutil.rmtree(storage_dir, ignore_errors=True)
 
-    print("Cleanup complete.")
+    logger.info("Cleanup complete.")
 
 def main():
     N = int(sys.argv[1]) if len(sys.argv) > 1 else 3
@@ -181,36 +193,32 @@ def main():
 
     fast_api_ports = [FASTAPI_START_PORT + i + 1 for i in range(N)]
     qdrant_ports = [QDRANT_START_PORT + (i * QDRANT_PORT_STEP) for i in range(N)]
-    grpc_ports = [GRPC_START_PORT + i + 1 for i in range(N)] # Generate gRPC ports
+    grpc_ports = [GRPC_START_PORT + i + 1 for i in range(N)] 
 
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'localhost:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 256,
-        'num_vectors': 65_536,
+        'num_vectors': 32_768,
         'num_before_clustering': 2_048,
-        'replicas': 2
+        'replicas': 4
     }
-    # step 1: writing configuration to json file
+
     write_config(config)
 
-    # step 2: writing docker compose file
     write_docker_compose(qdrant_ports)
 
     if not launch_and_wait_for_qdrant(qdrant_ports):
-        print("Failed to start Qdrant servers. Exiting.")
-        sys.exit(1) # Esce con un codice di errore
+        logger.error("Failed to start Qdrant servers. Exiting.")
+        sys.exit(1)
 
-    # step 4: launch servers
     launch_servers(fast_api_ports, qdrant_ports, grpc_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'])
 
-    # step 5: check servers health
     if not wait_for_servers(fast_api_ports):
         sys.exit()
     
-    # step 6: launch client
-    result = subprocess.run([sys.executable, "client.py"])
+    logger.info("Launching Client...")
+    result = subprocess.run([sys.executable, "client.py", "--log-file", "logs/client.log"])
 
-    # step 7: terminate application
     sys.exit(result.returncode)
 
 if __name__ == '__main__':
