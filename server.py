@@ -6,6 +6,11 @@ from server_logic import ServerApp
 import argparse
 from compound_types import *
 from clustering_module import MetaHNSW
+import threading
+from concurrent import futures
+import grpc
+import p2p_pb2_grpc
+from grpc_handler import P2PNodeServicer
 
 app = FastAPI()
 server = None
@@ -26,7 +31,7 @@ class QueryVectorsRequest(BaseModel):
 
 class AddPeersRequest(BaseModel):
     id: int
-    peers: List[Tuple[str, str]]
+    peers: List[Tuple[str, str, str]] # Added string for gRPC url
 
 """class MetaHNSWStructure(BaseModel):
     dimension: int
@@ -128,21 +133,38 @@ async def count_peer_endpoint():
         raise "ServerApp not created"
     return server.get_count() # Dict[str, int] # id server: count su quel server
 
-
+# Add gRPC URL argument
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PBDN Server Node")
     parser.add_argument("--node-name", type=str, required=True, help="Name of the node")
     parser.add_argument("--node-url", type=str, required=True, help="URL of this node")
     parser.add_argument("--qdrant-url", type=str, required=True, help="URL of Qdrant instance")
+    parser.add_argument("--node-grpc-url", type=str, required=True, help="gRPC URL of this node") # NEW
     parser.add_argument("--coordinator-url", type=str, required=True, help="URL of coordinator node")
     parser.add_argument("--replicas", type=int, default=1, help="Number of replicas")
     parser.add_argument("--num-before-clustering", type=int, default=10000, help="Number of vectors before triggering clustering")
     
-
     args = parser.parse_args()
 
-    server = ServerApp(args.node_name, args.node_url, args.qdrant_url, args.coordinator_url, args.replicas, num_vectors_before_clustering=args.num_before_clustering)
+    # Initialize ServerApp
+    server = ServerApp(args.node_name, args.node_url, args.qdrant_url, args.node_grpc_url, args.coordinator_url, args.replicas, num_vectors_before_clustering=args.num_before_clustering)
 
-    port = int(args.node_url.split(":")[-1])
+    # --- START GRPC SERVER ---
+    def serve_grpc(server_app, grpc_port):
+        grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        p2p_pb2_grpc.add_P2PNodeServicer_to_server(P2PNodeServicer(server_app), grpc_server)
+        grpc_server.add_insecure_port(f'[::]:{grpc_port}')
+        print(f"gRPC server started on port {grpc_port}")
+        grpc_server.start()
+        grpc_server.wait_for_termination()
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    grpc_port = args.node_grpc_url.split(":")[-1]
+    
+    # Run gRPC in a background thread
+    grpc_thread = threading.Thread(target=serve_grpc, args=(server, grpc_port))
+    grpc_thread.daemon = True
+    grpc_thread.start()
+
+    # --- START FASTAPI (Main Thread) ---
+    http_port = int(args.node_url.split(":")[-1])
+    uvicorn.run(app, host="0.0.0.0", port=http_port)

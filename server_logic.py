@@ -5,11 +5,16 @@ import threading
 import qdrant_module
 from compound_types import *
 import utils
+import grpc
+import p2p_pb2
+import p2p_pb2_grpc
+import pickle
 
 class Peer:
-    def __init__(self, id, url):
+    def __init__(self, id, url, grpc_url):
         self.id = id
         self.url = url
+        self.grpc_url = grpc_url
         self.status = 'active'
         self.clusters = []
 
@@ -29,50 +34,66 @@ class Peer:
             return False
     
     def send(self, vectors: ListOfVectorsComplete, status: str, id):
-        print(f"\tsend function start: sending to peer: {self.id} with url {self.url}")
-        payload = {
-            'id': id,
-            'content': vectors,
-            'type': status
-        }
-        print("\tpayload created")
-        requests.post(
-            f'{self.url}/receive_vectors_peer',
-            json=payload
-        )
-        print("\trequest sent; return")
-    
-    def notify_clustering(self):
-        print(f"notifying node {self.id} with url = {self.url}")
-        requests.get(
-            f'{self.url}/notify_clustering'
-        )
-        print(f"node {self.id} notified")
-    
-    def send_clusters(self, assignment: Dict[str, ListOfVectorsWithId], clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], meta_hnsw: clustering_module.MetaHNSW, request_id):
-        to_send = {
-            'id': request_id,
-            'content': {
-                'my_vectors': [vector_id for cluster_id, _ in assignment[self.id] for vector_id in clusters[cluster_id][1]],
-                'peers_clusters': assignment,
-                'meta_hnsw': meta_hnsw.to_serializable_dict()
-            }
-        }
-        self.set_clusters(assignment[self.id])
-        requests.post(f'{self.url}/set_clusters',
-                    json=to_send)
+        print(f"\tsend (gRPC) to peer: {self.id} at {self.grpc_url}")
         
-    def query_peer(self, query: ListOfVectors, topk: int, request_id: int):
-        payload = {
-            'id': request_id,
-            'query': query,
-            'topk': topk
-        }
-        response = requests.post(
-            f'{self.url}/query_peer',
-            json=payload
+        # Convert Python data to Proto objects
+        proto_vectors = [
+            p2p_pb2.VectorPoint(vector=v[0], id=v[1], payload=v[2]) 
+            for v in vectors
+        ]
+        
+        req = p2p_pb2.AddVectorsRequest(
+            req_id=id,
+            content=proto_vectors,
+            type=status
         )
-        return response.json()['results']
+
+        with grpc.insecure_channel(self.grpc_url) as channel:
+            stub = p2p_pb2_grpc.P2PNodeStub(channel)
+            stub.ReceiveVectors(req)
+
+    def notify_clustering(self):
+        with grpc.insecure_channel(self.grpc_url) as channel:
+            stub = p2p_pb2_grpc.P2PNodeStub(channel)
+            stub.NotifyClustering(p2p_pb2.Empty())
+
+    def send_clusters(self, assignment, clusters, meta_hnsw, request_id):
+        # Prepare data as before
+        to_send_dict = {
+            'my_vectors': [vector_id for cluster_id, _ in assignment[self.id] for vector_id in clusters[cluster_id][1]],
+            'peers_clusters': assignment,
+            'meta_hnsw': meta_hnsw.to_serializable_dict()
+        }
+        
+        # Serialize using Pickle for binary transfer over gRPC
+        data_bytes = pickle.dumps(to_send_dict)
+        
+        req = p2p_pb2.SetClustersRequest(req_id=request_id, content_pickle=data_bytes)
+        
+        with grpc.insecure_channel(self.grpc_url) as channel:
+            stub = p2p_pb2_grpc.P2PNodeStub(channel)
+            stub.SetClusters(req)
+
+    def query_peer(self, query: ListOfVectors, topk: int, request_id: int):
+        proto_query = [p2p_pb2.VectorList(values=v) for v in query]
+        req = p2p_pb2.QueryRequest(req_id=request_id, query_vectors=proto_query, topk=topk)
+        
+        with grpc.insecure_channel(self.grpc_url) as channel:
+            stub = p2p_pb2_grpc.P2PNodeStub(channel)
+            response = stub.QueryPeer(req)
+        
+        # Convert Proto response back to Python Dict structure expected by ServerApp.query
+        results = []
+        for sp in response.results:
+            results.append({
+                'id': sp.id,
+                'score': sp.score,
+                'payload': {
+                    'string': sp.payload.payload,
+                    'vector': list(sp.payload.vector)
+                }
+            })
+        return results
 
     def get_count(self):
         return requests.get(
@@ -80,16 +101,16 @@ class Peer:
         ).json()
 
 class ServerApp:
-    def __init__(self, id, url, qdrant_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
+    def __init__(self, id, url, qdrant_url, grpc_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
         self.node_id = id
         self.url = url
         self.qdrant_url = qdrant_url
+        self.grpc_url = grpc_url
         self.coordinator_url = coordinator_url
         self.collection_name = collection_name
         self.dimension = dimension
         self.node_clusters = [] # ListOfVectorsWithId: Tuples of cluster_id, cluster_centroid
         self.status = 'bootstrap'
-        self.num_vectors = 0
         self.replicas = replicas
         self.peers = []
         self.meta_hnsw = None
@@ -116,21 +137,9 @@ class ServerApp:
         else:
             raise("Error: status Undefined")
     
-    def add_peers(self, peers: List[Tuple[str, str]]):
-        '''
-        Add peers to the node.
-        
-        Args:
-            peers: List of Tuple(id, url)
-        '''
-        for id, url in peers:
-            self.peers.append(Peer(id, url))
-    
-    """def add_peers_clusters(self, peers_vectors: Dict[str, ListOfVectorsWithId]):
-        for id, vector_list in peers_vectors.items():
-            for peer in self.peers:
-                if peer.id == id:
-                    peer.add_clusters(vector_list)"""
+    def add_peers(self, peers: List[Tuple[str, str, str]]): # Added 3rd tuple element
+        for id, http_url, grpc_url in peers:
+            self.peers.append(Peer(id, http_url, grpc_url))
     
     def start_clustering_thread(self, request_id):
         print("start clustering")
@@ -138,16 +147,11 @@ class ServerApp:
         for peer in self.peers:
             print(f"notify {peer.id}")
             peer.notify_clustering()
-        print("all peers clustering notified")
         clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{VectorId: Tuple[Vector, List[VectorId]]}
-        print(f"called clustering, got clusters:{len(clusters.keys())}")
         peers_with_me = self.peers[:]
-        peers_with_me.append(Peer(self.node_id, self.url))
-        print(f"type of peers_with_me {type(peers_with_me)}")
+        peers_with_me.append(Peer(self.node_id, self.url, self.grpc_url))
         assignment = clustering_module.get_node_assignment(clusters, peers_with_me, self.replicas) # Dict{str: ListOfVectorsWithId}
-        print(f"called get_node_assignment, got assignment:{len(clusters.keys())}")
         self.meta_hnsw = clustering_module.build_meta_hnsw(clusters, self.dimension)
-        print(f"TYPE META HNSW{type(self.meta_hnsw)}")
         for peer in self.peers:
             peer.send_clusters(assignment, clusters, self.meta_hnsw, request_id)
         my_vectors = []
@@ -157,41 +161,40 @@ class ServerApp:
                 my_vectors.extend(vector_ids)
         self.adjust_after_clustering(my_vectors, request_id)
         with self.additional_buffer_lock:
-            print(f'len of additional_buffer = {len(self.additional_buffer)}')
             self.route_vectors_send(self.additional_buffer, request_id)
             self.additional_buffer = []
         #self.vector_buffer = []
 
     def add_vectors(self, vectors: ListOfVectorsComplete, status_of_sender: str, request_id):
-        print("entering add_vectors function")
-        with self.vector_buffer_lock:
-            print(f"node {self.node_id}: {len(self.vector_buffer)}")
-        if self.status == 'bootstrap':
-            with self.vector_buffer_lock:
-                print("entered first if branch: bootstrap")
-                self.vector_buffer.extend(vectors)
-            if self.i_am_coord() and len(self.vector_buffer) >= self.num_vectors_before_clustering:
-                with self.clustering_lock:
-                    print("--- STARTING CLUSTERING THREAD ---")
-                    if not self.status == 'clustered':
-                        cluster_thread = threading.Thread(
-                            target=self.start_clustering_thread,
-                            args=(request_id,)
-                        )
-                        cluster_thread.start()
-                        return
-        elif self.status == 'clustering':
-            with self.additional_buffer_lock:
-                self.additional_buffer.extend(vectors)
-            if not self.i_am_coord():
-                self.coordinator().send(vectors, self.status, request_id)
-        elif self.status == 'clustered':
-            if self.i_am_coord() and status_of_sender == 'clustering':
-                self.route_vectors_send(vectors, request_id)
+        if status_of_sender == 'clustered':
             qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors)
-            self.num_vectors += len(vectors)
         else:
-            raise("ERROR: status Undefined")
+            if self.status == 'bootstrap':
+                with self.vector_buffer_lock:
+                    self.vector_buffer.extend(vectors)
+                if self.i_am_coord() and len(self.vector_buffer) >= self.num_vectors_before_clustering:
+                    with self.clustering_lock:
+                        if not self.status == 'clustered':
+                            cluster_thread = threading.Thread(
+                                target=self.start_clustering_thread,
+                                args=(request_id,)
+                            )
+                            cluster_thread.start()
+                            return
+            elif self.status == 'clustering':
+                if not self.i_am_coord():
+                    with self.additional_buffer_lock:
+                        self.additional_buffer.extend(vectors)
+                    if status_of_sender == 'bootstrap':
+                        return
+                    self.coordinator().send(vectors, self.status, request_id)
+            elif self.status == 'clustered':
+                if self.i_am_coord() and (status_of_sender == 'clustering' or status_of_sender == 'bootstrap'):
+                    self.route_vectors_send(vectors, request_id)
+                else:
+                    qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors)
+            else:
+                raise("ERROR: status Undefined")
     
     def get_id(self):
         with self.id_lock:
@@ -228,7 +231,7 @@ class ServerApp:
         for peer in self.peers:
             peer.set_clusters(assignment['peers_clusters'][peer.id])
         self.node_clusters = assignment['peers_clusters'][self.node_id]
-        self.meta_hnsw = assignment['meta_hnsw']
+        self.meta_hnsw = clustering_module.MetaHNSW.from_serializable_dict(assignment['meta_hnsw'])
         self.adjust_after_clustering(assignment['my_vectors'], request_id)
 
     """
@@ -314,10 +317,10 @@ class ServerApp:
         for index, peer in enumerate(self.peers):
             response.extend(peer.query_peer(to_query_peer[index], topk, request_id))
         response.extend(self.query_me(to_query_me, topk))
-        res = [j for i in response for j in i]
+        #res = [j for i in response for j in i]
         seen = set()
         unique_response = []
-        for item in res:
+        for item in response:
             item_id = item.get('id')
             if item_id not in seen:
                 seen.add(item_id)

@@ -1,140 +1,127 @@
-import requests
-#import traceback
+from qdrant_client import QdrantClient, models
+import sys
+
+# Helper to create a client instance.
+# Since creating a connection has overhead, it is better to instantiate this once
+# and pass the 'client' object around, but to keep your function signatures 
+# similar to your original code, I will instantiate it inside functions.
+def get_client(url: str) -> QdrantClient:
+    # prefer_grpc=True forces the client to use the gRPC port (usually 6334)
+    return QdrantClient(url=url, grpc_port=(int(url.split(':')[-1])+1), prefer_grpc=True)
 
 def create_collection(url, collection_name, vector_size: int, distance: str = "Cosine"):
+    client = get_client(url)
     try:
-        response = requests.get(
-            f"{url}/collections/{collection_name}",
-            timeout=10
-        )
-        if response.status_code == 200:
+        if client.collection_exists(collection_name):
             return True
-        
-        payload = {
-            "vectors": {
-                "size": vector_size,
-                "distance": distance
-            }
+
+        # Map string distance to Qdrant model
+        dist_map = {
+            "Cosine": models.Distance.COSINE,
+            "Euclid": models.Distance.EUCLID,
+            "Dot": models.Distance.DOT
         }
-        response = requests.put(
-            f"{url}/collections/{collection_name}",
-            json=payload,
-            timeout=10
+
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=models.VectorParams(
+                size=vector_size,
+                distance=dist_map.get(distance, models.Distance.COSINE)
+            )
         )
-        response.raise_for_status()
         return True
-    except requests.exceptions.RequestException as e:
-        print(f"Error creating collection: {e} - {e.response.text if e.response else 'No response'}")
+    except Exception as e:
+        print(f"Error creating collection: {e}")
         return False
 
-"""
-- Prende la tua lista di query (sì, puoi fare più ricerche in un colpo solo!).
-- Per ogni query, chiede i topk risultati più vicini.
-- Invia la richiesta con POST (che significa "ehi, dammi questi dati").
-- Ti restituisce la lista dei risultati trovati.
-"""
 def query_vectors(url, collection, query, topk):
-    """Query vectors from Qdrant collection."""
+    """
+    Query vectors using search_batch (gRPC).
+    Returns a list of lists of ScoredPoint objects.
+    """
+    client = get_client(url)
     try:
-        payload = [{
-            "vector": query_vector,
-            "limit": topk,
-            "with_payload": True,
-            "with_vector": True
-        } for query_vector in query]
-        response = requests.post(
-            f'{url}/collections/{collection}/points/search/batch',
-            json={"searches": payload},
-            timeout=10
+        # Create search requests
+        search_queries = [
+            models.SearchRequest(
+                vector=query_vector,
+                limit=topk,
+                with_payload=True,
+                with_vector=True
+            ) for query_vector in query
+        ]
+
+        # Execute batch search
+        results = client.search_batch(
+            collection_name=collection,
+            requests=search_queries
         )
-                
-        print(f"[Qdrant Query] Status code: {response.status_code}")
 
-        if response.status_code != 200:
-            print(f"[Qdrant Query] ERRORE: {response.text}")
-            return None
-
-        results = response.json()['result']
-        print(f"[Qdrant Query] Successo: trovati {len(results)} risultati")
-        #print(results)
-        return results
-
-    except requests.exceptions.Timeout:
-        print("[Qdrant Query] ERRORE: Timeout della richiesta")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"[Qdrant Query] ERRORE di connessione: {e}")
-        return None
-    except Exception as e:
-        print(f"[Qdrant Query] ERRORE generico: {e}")
-        return None
-
-def insert_vectors_batch(url, collection, vectors):
-    """Insert vectors into Qdrant collection."""
-    try:
-        points = [
+        # Convert ScoredPoint objects to dictionaries
+        results = [
             {
-                "id": vector_id,
-                "vector": vector_content,
-                "payload": {
-                    "string": vector_payload
+                "id": point.id,
+                "score": point.score,
+                'payload':{
+                    "string": point.payload,
+                    "vector": point.vector
                 }
             }
+            for batch in results
+            for point in batch
+        ]
+        
+        print(f"[Qdrant Query] Success: processed {len(results)} query results")
+        return results
+
+    except Exception as e:
+        print(f"[Qdrant Query] ERROR: {e}")
+        return None
+
+def insert_vectors(url, collection, vectors, batch_size=256):
+    """
+    Insert vectors using upload_points.
+    
+    Args:
+        vectors: A list of tuples/lists in the format: 
+                 (vector_content, vector_id, vector_payload)
+    """
+    client = get_client(url)
+    try:
+        # Convert your input list to PointStruct objects
+        points = [
+            models.PointStruct(
+                id=vector_id,
+                vector=vector_content,
+                payload={"string": vector_payload}
+            )
             for vector_content, vector_id, vector_payload in vectors
         ]
-        response = requests.put(
-            f'{url}/collections/{collection}/points',
-            params={"wait": "true"},
-            json={"points": points},
-            timeout=10
+
+        # upload_points automatically handles batching and retries
+        # It is much faster than manual requests loops
+        client.upload_points(
+            collection_name=collection,
+            points=points,
+            batch_size=batch_size, # Client handles the splitting internally
+            wait=True
         )
 
-        print(f"[Qdrant Insert] Status code: {response.status_code}")
+        print(f"[Qdrant Insert] Success: {len(points)} vectors inserted/uploaded")
+        return True
 
-        if response.status_code == 200:
-            print(f"[Qdrant Insert] Successo: {len(points)} vettori inseriti")
-            return True
-        else:
-            print(f"[Qdrant Insert] ERRORE: {response.text}")
-            #traceback.print_stack()
-            return False
-
-    except requests.exceptions.Timeout:
-        print("[Qdrant Insert] ERRORE: Timeout della richiesta")
-        return False
-    except requests.exceptions.RequestException as e:
-        print(f"[Qdrant Insert] ERRORE di connessione: {e}")
-        return False
     except Exception as e:
-        print(f"[Qdrant Insert] ERRORE generico: {e}")
+        print(f"[Qdrant Insert] ERROR: {e}")
         return False
-
-
-"""
-Ogni dato che inserisci è un "punto" e deve avere:
-    - Un ID (un nome unico, es. "documento_abc").
-    - Un vettore (i numeri che ne rappresentano il significato, es. [0.1, 0.2, 0.3]).
-    - Un payload (dati extra che vuoi salvare insieme, es. il testo originale, un titolo, un link).
-La funzione prende la tua lista di dati, la formatta nel modo corretto per Qdrant e la invia con un comando PUT
-"""
-def insert_vectors(url, collection, vectors, batch_size=256):
-    num_batches = len(vectors) // batch_size
-    for batch_id in range(num_batches):
-        insert_vectors_batch(url, collection, vectors[batch_size * batch_id:batch_size * (batch_id+1)])
-    if num_batches < 1 or len(vectors) % num_batches != 0:
-        insert_vectors_batch(url, collection, vectors[batch_size * num_batches:])
 
 def count(url, collection):
+    client = get_client(url)
     try:
-        payload = {"exact": True}
-        response = requests.post(
-            f"{url}/collections/{collection}/points/count",
-            json=payload,
-            timeout=5
+        count_result = client.count(
+            collection_name=collection,
+            exact=True
         )
-        response.raise_for_status()
-        count = response.json().get("result", {}).get("count", 0)
-        return count
-    except requests.exceptions.RequestException as e:
-        print(f"Node {url}: Error counting vectors: {e}")
+        return count_result.count
+    except Exception as e:
+        print(f"Error counting vectors: {e}")
         return -1

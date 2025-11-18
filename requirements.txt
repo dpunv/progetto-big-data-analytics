@@ -5,3 +5,6 @@ numpy
 faiss-cpu
 scikit-learn
 hnswlib
+qdrant-client
+grpcio
+grpcio-tools
