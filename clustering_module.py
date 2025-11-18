@@ -73,8 +73,8 @@ class MetaHNSW:
             
         return new_obj
 
-def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette score
-    k_range = range(2, max_k + 1)
+def find_k_and_run_kmeans(X, max_k=10, random_state=42): # using silhouette score
+    k_range = range(8, max_k + 1)
     
     if X.shape[0] <= max_k:
         print(f"Warning: Number of samples ({X.shape[0]}) is <= max_k ({max_k}).")
@@ -129,11 +129,10 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
     all_combos = list(itertools.combinations(all_nodes, replication_factor))
     
     beam = [(0.0, [], {id: 0.0 for id in all_nodes})] # State: (score, partial_assignment, node_loads)
-    print(f"Total cluster: {len(clusters)}")
+    print(f"Total cluster: {len(clusters)} - Number of combos: {len(all_combos)} - number of nodes: {all_nodes}, replication_factor = {replication_factor}")
     clusters_sorted = sorted(clusters, key=lambda x: x[1], reverse=True)
     for _, cluster_load, _ in clusters_sorted:
         potential_states = []
-        
         for _, current_assignment, current_node_loads in beam:
             for combo in all_combos:
                 new_node_loads = dict(current_node_loads)
@@ -173,8 +172,9 @@ def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId, Tuple[Vector,
 
 def get_node_assignment(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], peers, replication_factor) -> Dict[str, ListOfVectorsWithId]:
     request = [(id, len(v_ids), centroid)for id, (centroid, v_ids) in clusters.items()]
-    return find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
-
+    assignment = find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
+    [print(f'{node_id}: {len(clusters[cluster_id][1])}') for node_id, clusters_ in assignment.items() for cluster_id, _ in clusters_]
+    return assignment
 
 def build_meta_hnsw(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], dimension):
     clusters_adjusted = [(cluster_id, cluster_centroid) for cluster_id, (cluster_centroid, _) in clusters.items()]
@@ -183,4 +183,5 @@ def build_meta_hnsw(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], dim
     return hnsw
 
 def find(hnsw: MetaHNSW, v: Vector, k: int) -> List[VectorId]:
+    #print(type(hnsw), hnsw)
     return [cluster_id for cluster_id, _ in hnsw.find_nearest_nodes(v, k)]

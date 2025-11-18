@@ -82,11 +82,13 @@ def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
     print("All Qdrant nodes are ready.")
     return True
 
-def launch_servers(fast_api_ports, qdrant_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000):
+def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000):
+    print("I'M HERE")
     for i in range(1, len(fast_api_ports) + 1):
         node_id = f"node{i}"
         fastapi_port = fast_api_ports[i-1]
         qdrant_http_port = qdrant_ports[i-1]
+        grpc_port = grpc_ports[i-1]
         
         qdrant_url = f'http://localhost:{qdrant_http_port}'
 
@@ -94,6 +96,7 @@ def launch_servers(fast_api_ports, qdrant_ports, coordinator_url='http://localho
             [sys.executable, "server.py",
                 '--node-name', node_id,
                 '--node-url', f'http://localhost:{fastapi_port}',
+                '--node-grpc-url', f'localhost:{grpc_port}',
                 '--qdrant-url', qdrant_url,
                 '--coordinator-url', coordinator_url,
                 '--replicas', str(replicas),
@@ -168,6 +171,7 @@ def cleaning(N):
 def main():
     N = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     FASTAPI_START_PORT = 8000
+    GRPC_START_PORT = 9000
     QDRANT_START_PORT = 6333
     QDRANT_PORT_STEP = 2
 
@@ -177,11 +181,14 @@ def main():
 
     fast_api_ports = [FASTAPI_START_PORT + i + 1 for i in range(N)]
     qdrant_ports = [QDRANT_START_PORT + (i * QDRANT_PORT_STEP) for i in range(N)]
+    grpc_ports = [GRPC_START_PORT + i + 1 for i in range(N)] # Generate gRPC ports
 
     config = {
-        'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
+        'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'localhost:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 256,
-        'num_vectors': 8192
+        'num_vectors': 65_536,
+        'num_before_clustering': 2_048,
+        'replicas': 2
     }
     # step 1: writing configuration to json file
     write_config(config)
@@ -194,7 +201,7 @@ def main():
         sys.exit(1) # Esce con un codice di errore
 
     # step 4: launch servers
-    launch_servers(fast_api_ports, qdrant_ports)
+    launch_servers(fast_api_ports, qdrant_ports, grpc_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'])
 
     # step 5: check servers health
     if not wait_for_servers(fast_api_ports):
