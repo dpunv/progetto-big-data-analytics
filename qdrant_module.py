@@ -89,9 +89,6 @@ def insert_vectors_batch(url, collection, vectors):
             timeout=10
         )
 
-        print(response)
-        print(response.status_code)
-
         print(f"[Qdrant Insert] Status code: {response.status_code}")
 
         if response.status_code == 200:
@@ -124,7 +121,7 @@ def insert_vectors(url, collection, vectors, batch_size=256):
     num_batches = len(vectors) // batch_size
     for batch_id in range(num_batches):
         insert_vectors_batch(url, collection, vectors[batch_size * batch_id:batch_size * (batch_id+1)])
-    if len(vectors)% num_batches != 0:
+    if num_batches < 1 or len(vectors) % num_batches != 0:
         insert_vectors_batch(url, collection, vectors[batch_size * num_batches:])
 
 def count(url, collection):

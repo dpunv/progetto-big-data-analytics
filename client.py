@@ -1,6 +1,7 @@
 import requests
 import json
 from compound_types import *
+import time
 import utils
 
 request_ids = 0
@@ -79,9 +80,13 @@ def main():
     for i in range(min(len(data), config['num_vectors'] // batch_size_send)):
         batch = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * (batch_size_send)]]
         print(f'{start_color}sending vector batch {i+1} / {min(len(data), config['num_vectors'] // batch_size_send) - 1}: {len(batch)} vectors {end_color}')
+        print(f'{start_color}getting vector counts: {servers[1 if len(servers) > 1 else 0].get_count().json()} - {sum([count for _, count in servers[1 if len(servers) > 1 else 0].get_count().json().items()])} - batch {i+1}{end_color}')
+
         vector_sent += ((i+1) * (batch_size_send)) - (i * batch_size_send)
         servers[i%len(servers)].send_vectors(batch)
     
+    #time.sleep(120)
+
     print(f'{start_color}sending query{end_color}')
 
     query_vector = data[0]['embedding']
@@ -97,7 +102,7 @@ def main():
         print(f"{d} -> {v['text']}")
 
     print(f'{start_color}getting vector counts{end_color}')
-    print(servers[0].get_count().json())
+    print(f'{start_color}getting vector counts: {servers[1 if len(servers) > 1 else 0].get_count().json()} - {sum([count for _, count in servers[1 if len(servers) > 1 else 0].get_count().json().items()])} - end{end_color}')
 
     print(f'{start_color}client application end{end_color}')
 

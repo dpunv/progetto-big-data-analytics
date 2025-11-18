@@ -17,6 +17,7 @@ class AddVectorsRequest(BaseModel):
 class AddVectorsPeerRequest(BaseModel):
     id: int
     content: ListOfVectorsComplete
+    type: str
 
 class QueryVectorsRequest(BaseModel):
     id: int
@@ -92,7 +93,7 @@ async def receive_vectors_peer_endpoint(vectors: AddVectorsPeerRequest):
     print("receive_vectors_peer created")
     if server == None:
         raise "ServerApp not created"
-    server.add_vectors(vectors.content, vectors.id)
+    server.add_vectors(vectors.content, vectors.type, vectors.id)
     print("vector added")
 
 @app.post("/register_peers")
@@ -112,12 +113,15 @@ async def set_clusters_endpoint(data: SetClustersRequest):
 async def notify_clustering_endpoint():
     if server == None:
         raise "ServerApp not created"
+    print(f'node {server.node_id} is receiving clustering notify')
     server.notify_clustering()
+
 @app.get("/count")
 async def count_endpoint():
     if server == None:
         raise "ServerApp not created"
     return server.get_count_client() # Dict[str, int] # id server: count su quel server
+
 @app.get("/count_peer")
 async def count_peer_endpoint():
     if server == None:

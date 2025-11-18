@@ -28,11 +28,12 @@ class Peer:
         else:
             return False
     
-    def send(self, vectors: ListOfVectorsComplete, id):
+    def send(self, vectors: ListOfVectorsComplete, status: str, id):
         print(f"\tsend function start: sending to peer: {self.id} with url {self.url}")
         payload = {
             'id': id,
-            'content': vectors
+            'content': vectors,
+            'type': status
         }
         print("\tpayload created")
         requests.post(
@@ -42,7 +43,7 @@ class Peer:
         print("\trequest sent; return")
     
     def notify_clustering(self):
-        print(f"notifying node {self.id}")
+        print(f"notifying node {self.id} with url = {self.url}")
         requests.get(
             f'{self.url}/notify_clustering'
         )
@@ -72,6 +73,7 @@ class Peer:
             json=payload
         )
         return response.json()['results']
+
     def get_count(self):
         return requests.get(
             f'{self.url}/count_peer'
@@ -96,6 +98,7 @@ class ServerApp:
         self.num_vectors_before_clustering = num_vectors_before_clustering
         self.vector_buffer_lock = threading.RLock()
         self.additional_buffer_lock = threading.Lock()
+        self.clustering_lock = threading.Lock()
         self.id_lock = threading.Lock()
         self.id_count = 0
     
@@ -129,7 +132,37 @@ class ServerApp:
                 if peer.id == id:
                     peer.add_clusters(vector_list)"""
     
-    def add_vectors(self, vectors: ListOfVectorsComplete, request_id):
+    def start_clustering_thread(self, request_id):
+        print("start clustering")
+        self.status = 'clustering'
+        for peer in self.peers:
+            print(f"notify {peer.id}")
+            peer.notify_clustering()
+        print("all peers clustering notified")
+        clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{VectorId: Tuple[Vector, List[VectorId]]}
+        print(f"called clustering, got clusters:{len(clusters.keys())}")
+        peers_with_me = self.peers[:]
+        peers_with_me.append(Peer(self.node_id, self.url))
+        print(f"type of peers_with_me {type(peers_with_me)}")
+        assignment = clustering_module.get_node_assignment(clusters, peers_with_me, self.replicas) # Dict{str: ListOfVectorsWithId}
+        print(f"called get_node_assignment, got assignment:{len(clusters.keys())}")
+        self.meta_hnsw = clustering_module.build_meta_hnsw(clusters, self.dimension)
+        print(f"TYPE META HNSW{type(self.meta_hnsw)}")
+        for peer in self.peers:
+            peer.send_clusters(assignment, clusters, self.meta_hnsw, request_id)
+        my_vectors = []
+        self.node_clusters = assignment[self.node_id]
+        for cluster_id, (centroid, vector_ids) in clusters.items():
+            if (cluster_id, centroid) in self.node_clusters:
+                my_vectors.extend(vector_ids)
+        self.adjust_after_clustering(my_vectors, request_id)
+        with self.additional_buffer_lock:
+            print(f'len of additional_buffer = {len(self.additional_buffer)}')
+            self.route_vectors_send(self.additional_buffer, request_id)
+            self.additional_buffer = []
+        #self.vector_buffer = []
+
+    def add_vectors(self, vectors: ListOfVectorsComplete, status_of_sender: str, request_id):
         print("entering add_vectors function")
         with self.vector_buffer_lock:
             print(f"node {self.node_id}: {len(self.vector_buffer)}")
@@ -137,40 +170,24 @@ class ServerApp:
             with self.vector_buffer_lock:
                 print("entered first if branch: bootstrap")
                 self.vector_buffer.extend(vectors)
-                if self.i_am_coord() and len(self.vector_buffer) >= self.num_vectors_before_clustering:
-                    print("start clustering")
-                    self.status = 'clustering'
-                    for peer in self.peers:
-                        print(f"notify {peer.id}")
-                        peer.notify_clustering()
-                    print("all peers clustering notified")
-                    clusters = clustering_module.get_clusters(self.vector_buffer) # Dict{VectorId: Tuple[Vector, List[VectorId]]}
-                    print(f"called clustering, got clusters:{len(clusters.keys())}")
-                    peers_with_me = self.peers[:]
-                    peers_with_me.append(Peer(self.node_id, self.url))
-                    print(f"type of peers_with_me {type(peers_with_me)}")
-                    assignment = clustering_module.get_node_assignment(clusters, peers_with_me, self.replicas) # Dict{str: ListOfVectorsWithId}
-                    print(f"called get_node_assignment, got assignment:{len(clusters.keys())}")
-                    self.meta_hnsw = clustering_module.build_meta_hnsw(clusters, self.dimension)
-                    print(f"TYPE META HNSW{type(self.meta_hnsw)}")
-                    for peer in self.peers:
-                        peer.send_clusters(assignment, clusters, self.meta_hnsw, request_id)
-                    my_vectors = []
-                    self.node_clusters = assignment[self.node_id]
-                    for cluster_id, (centroid, vector_ids) in clusters.items():
-                        if (cluster_id, centroid) in self.node_clusters:
-                            my_vectors.extend(vector_ids)
-                    self.adjust_after_clustering(my_vectors, request_id)
-                    with self.additional_buffer_lock:
-                        self.route_vectors_send(self.additional_buffer, request_id)
-                        self.additional_buffer = []
-                    #self.vector_buffer = []
+            if self.i_am_coord() and len(self.vector_buffer) >= self.num_vectors_before_clustering:
+                with self.clustering_lock:
+                    print("--- STARTING CLUSTERING THREAD ---")
+                    if not self.status == 'clustered':
+                        cluster_thread = threading.Thread(
+                            target=self.start_clustering_thread,
+                            args=(request_id,)
+                        )
+                        cluster_thread.start()
+                        return
         elif self.status == 'clustering':
             with self.additional_buffer_lock:
                 self.additional_buffer.extend(vectors)
             if not self.i_am_coord():
-                self.coordinator().send(vectors, request_id)
+                self.coordinator().send(vectors, self.status, request_id)
         elif self.status == 'clustered':
+            if self.i_am_coord() and status_of_sender == 'clustering':
+                self.route_vectors_send(vectors, request_id)
             qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors)
             self.num_vectors += len(vectors)
         else:
@@ -193,9 +210,9 @@ class ServerApp:
             print("entered first if branch: bootstrap")
             for peer in self.peers:
                 print(f"sending peer {peer.id} the vectors")
-                peer.send(vectors_with_id, request_id)
+                peer.send(vectors_with_id, self.status, request_id)
             print("vectors sent to all peers")
-            self.add_vectors(vectors_with_id, request_id)
+            self.add_vectors(vectors_with_id, self.status, request_id)
             print("vectors added to buffer")
         elif self.status == 'clustered':
             self.route_vectors_send(vectors_with_id, request_id)
@@ -203,7 +220,7 @@ class ServerApp:
             with self.additional_buffer_lock:
                 self.additional_buffer.extend(vectors_with_id)
             if not self.i_am_coord():
-                self.coordinator().send(vectors_with_id, request_id)
+                self.coordinator().send(vectors_with_id, self.status, request_id)
         else:
             raise("Error: Undefined status")
     
@@ -225,7 +242,7 @@ class ServerApp:
                 if vector[1] in my_vector_ids:
                     to_save.append(vector)
             print(f"len of to_save = {len(to_save)} - len of vector_buffer = {len(self.vector_buffer)} - len of my_vector_ids = {len(my_vector_ids)}")
-            self.add_vectors(to_save, request_id)
+            self.add_vectors(to_save, self.status, request_id)
             self.vector_buffer = []
 
     """
@@ -256,9 +273,9 @@ class ServerApp:
                 to_me.append(vector)
         for index, peer in enumerate(self.peers):
             if len(assigned_vectors[index]) > 0:
-                peer.send(assigned_vectors[index], request_id)
+                peer.send(assigned_vectors[index], self.status, request_id)
         if len(to_me) > 0:
-            self.add_vectors(to_me, request_id)
+            self.add_vectors(to_me, self.status, request_id)
 
     def linear_search(self, query: ListOfVectors, topk: int):
         to_return = []

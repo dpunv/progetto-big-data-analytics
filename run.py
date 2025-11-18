@@ -181,7 +181,9 @@ def main():
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 256,
-        'num_vectors': 8192
+        'num_vectors': 65536,
+        'num_before_clustering': 8_192,
+        'replicas': 4
     }
     # step 1: writing configuration to json file
     write_config(config)
@@ -194,7 +196,7 @@ def main():
         sys.exit(1) # Esce con un codice di errore
 
     # step 4: launch servers
-    launch_servers(fast_api_ports, qdrant_ports)
+    launch_servers(fast_api_ports, qdrant_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'])
 
     # step 5: check servers health
     if not wait_for_servers(fast_api_ports):

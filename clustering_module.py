@@ -173,8 +173,9 @@ def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId, Tuple[Vector,
 
 def get_node_assignment(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], peers, replication_factor) -> Dict[str, ListOfVectorsWithId]:
     request = [(id, len(v_ids), centroid)for id, (centroid, v_ids) in clusters.items()]
-    return find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
-
+    assignment = find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
+    [print(f'{node_id}: {len(clusters[cluster_id][1])}') for node_id, clusters_ in assignment.items() for cluster_id, _ in clusters_]
+    return assignment
 
 def build_meta_hnsw(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], dimension):
     clusters_adjusted = [(cluster_id, cluster_centroid) for cluster_id, (cluster_centroid, _) in clusters.items()]
