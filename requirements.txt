@@ -1,0 +1,7 @@
+requests
+fastapi
+uvicorn
+numpy
+faiss-cpu
+scikit-learn
+hnswlib
