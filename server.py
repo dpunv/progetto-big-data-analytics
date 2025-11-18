@@ -142,8 +142,9 @@ if __name__ == "__main__":
         # Default to stdout if no file provided
         handlers.append(logging.StreamHandler(sys.stdout))
 
+    # Set WARNING level to reduce log noise - only errors, warnings, and critical info
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format='%(asctime)s - %(levelname)s - %(threadName)s - %(name)s - %(message)s',
         handlers=handlers,
         force=True 
@@ -157,7 +158,14 @@ if __name__ == "__main__":
 
     # --- START GRPC SERVER ---
     def serve_grpc(server_app, grpc_port):
-        grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        options = [
+            ('grpc.max_send_message_length', 100 * 1024 * 1024),
+            ('grpc.max_receive_message_length', 100 * 1024 * 1024)
+        ]
+        grpc_server = grpc.server(
+            futures.ThreadPoolExecutor(max_workers=10),
+            options=options
+        )
         p2p_pb2_grpc.add_P2PNodeServicer_to_server(P2PNodeServicer(server_app), grpc_server)
         grpc_server.add_insecure_port(f'[::]:{grpc_port}')
         logger.info(f"gRPC server started on port {grpc_port}")

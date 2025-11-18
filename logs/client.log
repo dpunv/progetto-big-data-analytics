@@ -1,410 +1,205 @@
-2025-11-18 17:30:26,408 - INFO - __main__ - Client application started
-2025-11-18 17:30:45,866 - INFO - __main__ - Data and configuration loaded
-2025-11-18 17:30:45,868 - INFO - __main__ - Sending peers to server node1
-2025-11-18 17:30:45,888 - INFO - __main__ - Sending peers to server node2
-2025-11-18 17:30:45,896 - INFO - __main__ - Sending peers to server node3
-2025-11-18 17:30:45,903 - INFO - __main__ - Sending peers to server node4
-2025-11-18 17:30:45,911 - INFO - __main__ - Sending peers to server node5
-2025-11-18 17:30:45,919 - INFO - __main__ - Sending peers to server node6
-2025-11-18 17:30:45,927 - INFO - __main__ - Sending peers to server node7
-2025-11-18 17:30:45,935 - INFO - __main__ - Sending peers to server node8
-2025-11-18 17:30:45,942 - INFO - __main__ - Peers registered on all servers
-2025-11-18 17:30:45,943 - INFO - __main__ - Sending vector batch 1 / 128: 256 vectors
-2025-11-18 17:30:45,943 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:30:46,022 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,022 - INFO - __main__ - Sending vector batch 2 / 128: 256 vectors
-2025-11-18 17:30:46,022 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:30:46,122 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,122 - INFO - __main__ - Sending vector batch 3 / 128: 256 vectors
-2025-11-18 17:30:46,122 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:30:46,220 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,220 - INFO - __main__ - Sending vector batch 4 / 128: 256 vectors
-2025-11-18 17:30:46,220 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:30:46,317 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,317 - INFO - __main__ - Sending vector batch 5 / 128: 256 vectors
-2025-11-18 17:30:46,317 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:30:46,420 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,420 - INFO - __main__ - Sending vector batch 6 / 128: 256 vectors
-2025-11-18 17:30:46,421 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:30:46,518 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,518 - INFO - __main__ - Sending vector batch 7 / 128: 256 vectors
-2025-11-18 17:30:46,518 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:30:46,614 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,614 - INFO - __main__ - Sending vector batch 8 / 128: 256 vectors
-2025-11-18 17:30:46,614 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:30:46,712 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,712 - INFO - __main__ - Sending vector batch 9 / 128: 256 vectors
-2025-11-18 17:30:46,713 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:30:46,791 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,792 - INFO - __main__ - Sending vector batch 10 / 128: 256 vectors
-2025-11-18 17:30:46,792 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:30:46,880 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,880 - INFO - __main__ - Sending vector batch 11 / 128: 256 vectors
-2025-11-18 17:30:46,880 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:30:46,983 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:46,984 - INFO - __main__ - Sending vector batch 12 / 128: 256 vectors
-2025-11-18 17:30:46,984 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:30:47,115 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,115 - INFO - __main__ - Sending vector batch 13 / 128: 256 vectors
-2025-11-18 17:30:47,115 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:30:47,225 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,225 - INFO - __main__ - Sending vector batch 14 / 128: 256 vectors
-2025-11-18 17:30:47,226 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:30:47,313 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,313 - INFO - __main__ - Sending vector batch 15 / 128: 256 vectors
-2025-11-18 17:30:47,313 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:30:47,400 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,400 - INFO - __main__ - Sending vector batch 16 / 128: 256 vectors
-2025-11-18 17:30:47,400 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:30:47,486 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,486 - INFO - __main__ - Sending vector batch 17 / 128: 256 vectors
-2025-11-18 17:30:47,486 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:30:47,581 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,582 - INFO - __main__ - Sending vector batch 18 / 128: 256 vectors
-2025-11-18 17:30:47,582 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:30:47,667 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,667 - INFO - __main__ - Sending vector batch 19 / 128: 256 vectors
-2025-11-18 17:30:47,667 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:30:47,752 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,752 - INFO - __main__ - Sending vector batch 20 / 128: 256 vectors
-2025-11-18 17:30:47,753 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:30:47,864 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,864 - INFO - __main__ - Sending vector batch 21 / 128: 256 vectors
-2025-11-18 17:30:47,864 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:30:47,949 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:47,950 - INFO - __main__ - Sending vector batch 22 / 128: 256 vectors
-2025-11-18 17:30:47,950 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:30:48,033 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:48,033 - INFO - __main__ - Sending vector batch 23 / 128: 256 vectors
-2025-11-18 17:30:48,033 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:30:48,118 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:48,118 - INFO - __main__ - Sending vector batch 24 / 128: 256 vectors
-2025-11-18 17:30:48,118 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:30:48,203 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:48,203 - INFO - __main__ - Sending vector batch 25 / 128: 256 vectors
-2025-11-18 17:30:48,203 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:30:48,284 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:48,285 - INFO - __main__ - Sending vector batch 26 / 128: 256 vectors
-2025-11-18 17:30:48,285 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:30:49,288 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:49,289 - INFO - __main__ - Sending vector batch 27 / 128: 256 vectors
-2025-11-18 17:30:49,289 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:30:49,996 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:49,996 - INFO - __main__ - Sending vector batch 28 / 128: 256 vectors
-2025-11-18 17:30:49,996 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:30:50,798 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:50,798 - INFO - __main__ - Sending vector batch 29 / 128: 256 vectors
-2025-11-18 17:30:50,799 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:30:51,817 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:51,817 - INFO - __main__ - Sending vector batch 30 / 128: 256 vectors
-2025-11-18 17:30:51,817 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:30:52,649 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:52,650 - INFO - __main__ - Sending vector batch 31 / 128: 256 vectors
-2025-11-18 17:30:52,650 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:30:53,385 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:53,385 - INFO - __main__ - Sending vector batch 32 / 128: 256 vectors
-2025-11-18 17:30:53,386 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:30:54,127 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:54,127 - INFO - __main__ - Sending vector batch 33 / 128: 256 vectors
-2025-11-18 17:30:54,127 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:30:54,840 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:54,840 - INFO - __main__ - Sending vector batch 34 / 128: 256 vectors
-2025-11-18 17:30:54,840 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:30:55,551 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:55,551 - INFO - __main__ - Sending vector batch 35 / 128: 256 vectors
-2025-11-18 17:30:55,551 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:30:56,316 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:56,317 - INFO - __main__ - Sending vector batch 36 / 128: 256 vectors
-2025-11-18 17:30:56,317 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:30:57,022 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:57,022 - INFO - __main__ - Sending vector batch 37 / 128: 256 vectors
-2025-11-18 17:30:57,022 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:30:57,727 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:57,728 - INFO - __main__ - Sending vector batch 38 / 128: 256 vectors
-2025-11-18 17:30:57,728 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:30:58,436 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:58,436 - INFO - __main__ - Sending vector batch 39 / 128: 256 vectors
-2025-11-18 17:30:58,436 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:30:59,154 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:59,154 - INFO - __main__ - Sending vector batch 40 / 128: 256 vectors
-2025-11-18 17:30:59,154 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:30:59,936 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:30:59,936 - INFO - __main__ - Sending vector batch 41 / 128: 256 vectors
-2025-11-18 17:30:59,936 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:00,660 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:00,660 - INFO - __main__ - Sending vector batch 42 / 128: 256 vectors
-2025-11-18 17:31:00,660 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:01,379 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:01,380 - INFO - __main__ - Sending vector batch 43 / 128: 256 vectors
-2025-11-18 17:31:01,380 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:02,124 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:02,124 - INFO - __main__ - Sending vector batch 44 / 128: 256 vectors
-2025-11-18 17:31:02,124 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:02,838 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:02,838 - INFO - __main__ - Sending vector batch 45 / 128: 256 vectors
-2025-11-18 17:31:02,838 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:03,552 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:03,552 - INFO - __main__ - Sending vector batch 46 / 128: 256 vectors
-2025-11-18 17:31:03,552 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:04,259 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:04,259 - INFO - __main__ - Sending vector batch 47 / 128: 256 vectors
-2025-11-18 17:31:04,259 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:04,979 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:04,979 - INFO - __main__ - Sending vector batch 48 / 128: 256 vectors
-2025-11-18 17:31:04,979 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:05,698 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:05,698 - INFO - __main__ - Sending vector batch 49 / 128: 256 vectors
-2025-11-18 17:31:05,698 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:06,425 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:06,425 - INFO - __main__ - Sending vector batch 50 / 128: 256 vectors
-2025-11-18 17:31:06,425 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:07,150 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:07,150 - INFO - __main__ - Sending vector batch 51 / 128: 256 vectors
-2025-11-18 17:31:07,150 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:07,855 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:07,855 - INFO - __main__ - Sending vector batch 52 / 128: 256 vectors
-2025-11-18 17:31:07,855 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:08,573 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:08,573 - INFO - __main__ - Sending vector batch 53 / 128: 256 vectors
-2025-11-18 17:31:08,573 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:09,278 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:09,278 - INFO - __main__ - Sending vector batch 54 / 128: 256 vectors
-2025-11-18 17:31:09,278 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:09,988 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:09,989 - INFO - __main__ - Sending vector batch 55 / 128: 256 vectors
-2025-11-18 17:31:09,989 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:10,699 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:10,700 - INFO - __main__ - Sending vector batch 56 / 128: 256 vectors
-2025-11-18 17:31:10,700 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:11,654 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:11,654 - INFO - __main__ - Sending vector batch 57 / 128: 256 vectors
-2025-11-18 17:31:11,654 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:12,357 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:12,357 - INFO - __main__ - Sending vector batch 58 / 128: 256 vectors
-2025-11-18 17:31:12,357 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:13,066 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:13,066 - INFO - __main__ - Sending vector batch 59 / 128: 256 vectors
-2025-11-18 17:31:13,066 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:13,776 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:13,776 - INFO - __main__ - Sending vector batch 60 / 128: 256 vectors
-2025-11-18 17:31:13,776 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:14,483 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:14,483 - INFO - __main__ - Sending vector batch 61 / 128: 256 vectors
-2025-11-18 17:31:14,483 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:15,187 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:15,187 - INFO - __main__ - Sending vector batch 62 / 128: 256 vectors
-2025-11-18 17:31:15,187 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:15,894 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:15,894 - INFO - __main__ - Sending vector batch 63 / 128: 256 vectors
-2025-11-18 17:31:15,894 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:16,623 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:16,623 - INFO - __main__ - Sending vector batch 64 / 128: 256 vectors
-2025-11-18 17:31:16,623 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:17,348 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:17,348 - INFO - __main__ - Sending vector batch 65 / 128: 256 vectors
-2025-11-18 17:31:17,348 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:18,074 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:18,074 - INFO - __main__ - Sending vector batch 66 / 128: 256 vectors
-2025-11-18 17:31:18,074 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:18,769 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:18,770 - INFO - __main__ - Sending vector batch 67 / 128: 256 vectors
-2025-11-18 17:31:18,770 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:19,471 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:19,471 - INFO - __main__ - Sending vector batch 68 / 128: 256 vectors
-2025-11-18 17:31:19,471 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:20,195 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:20,195 - INFO - __main__ - Sending vector batch 69 / 128: 256 vectors
-2025-11-18 17:31:20,195 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:20,904 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:20,904 - INFO - __main__ - Sending vector batch 70 / 128: 256 vectors
-2025-11-18 17:31:20,904 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:21,615 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:21,615 - INFO - __main__ - Sending vector batch 71 / 128: 256 vectors
-2025-11-18 17:31:21,615 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:22,369 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:22,369 - INFO - __main__ - Sending vector batch 72 / 128: 256 vectors
-2025-11-18 17:31:22,369 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:23,078 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:23,078 - INFO - __main__ - Sending vector batch 73 / 128: 256 vectors
-2025-11-18 17:31:23,078 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:23,785 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:23,785 - INFO - __main__ - Sending vector batch 74 / 128: 256 vectors
-2025-11-18 17:31:23,785 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:24,482 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:24,482 - INFO - __main__ - Sending vector batch 75 / 128: 256 vectors
-2025-11-18 17:31:24,482 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:25,191 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:25,191 - INFO - __main__ - Sending vector batch 76 / 128: 256 vectors
-2025-11-18 17:31:25,191 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:25,899 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:25,900 - INFO - __main__ - Sending vector batch 77 / 128: 256 vectors
-2025-11-18 17:31:25,900 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:26,612 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:26,612 - INFO - __main__ - Sending vector batch 78 / 128: 256 vectors
-2025-11-18 17:31:26,612 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:27,363 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:27,363 - INFO - __main__ - Sending vector batch 79 / 128: 256 vectors
-2025-11-18 17:31:27,363 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:28,356 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:28,357 - INFO - __main__ - Sending vector batch 80 / 128: 256 vectors
-2025-11-18 17:31:28,357 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:29,114 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:29,115 - INFO - __main__ - Sending vector batch 81 / 128: 256 vectors
-2025-11-18 17:31:29,115 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:30,395 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:30,395 - INFO - __main__ - Sending vector batch 82 / 128: 256 vectors
-2025-11-18 17:31:30,395 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:31,105 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:31,105 - INFO - __main__ - Sending vector batch 83 / 128: 256 vectors
-2025-11-18 17:31:31,105 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:31,842 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:31,842 - INFO - __main__ - Sending vector batch 84 / 128: 256 vectors
-2025-11-18 17:31:31,842 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:32,565 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:32,565 - INFO - __main__ - Sending vector batch 85 / 128: 256 vectors
-2025-11-18 17:31:32,565 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:33,281 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:33,281 - INFO - __main__ - Sending vector batch 86 / 128: 256 vectors
-2025-11-18 17:31:33,281 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:33,988 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:33,988 - INFO - __main__ - Sending vector batch 87 / 128: 256 vectors
-2025-11-18 17:31:33,988 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:34,692 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:34,692 - INFO - __main__ - Sending vector batch 88 / 128: 256 vectors
-2025-11-18 17:31:34,692 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:35,433 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:35,433 - INFO - __main__ - Sending vector batch 89 / 128: 256 vectors
-2025-11-18 17:31:35,433 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:36,150 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:36,150 - INFO - __main__ - Sending vector batch 90 / 128: 256 vectors
-2025-11-18 17:31:36,150 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:36,904 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:36,904 - INFO - __main__ - Sending vector batch 91 / 128: 256 vectors
-2025-11-18 17:31:36,904 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:37,676 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:37,676 - INFO - __main__ - Sending vector batch 92 / 128: 256 vectors
-2025-11-18 17:31:37,676 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:38,386 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:38,386 - INFO - __main__ - Sending vector batch 93 / 128: 256 vectors
-2025-11-18 17:31:38,386 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:39,087 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:39,087 - INFO - __main__ - Sending vector batch 94 / 128: 256 vectors
-2025-11-18 17:31:39,088 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:39,795 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:39,795 - INFO - __main__ - Sending vector batch 95 / 128: 256 vectors
-2025-11-18 17:31:39,795 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:40,511 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:40,511 - INFO - __main__ - Sending vector batch 96 / 128: 256 vectors
-2025-11-18 17:31:40,511 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:41,225 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:41,225 - INFO - __main__ - Sending vector batch 97 / 128: 256 vectors
-2025-11-18 17:31:41,225 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:41,966 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:41,967 - INFO - __main__ - Sending vector batch 98 / 128: 256 vectors
-2025-11-18 17:31:41,967 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:42,746 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:42,746 - INFO - __main__ - Sending vector batch 99 / 128: 256 vectors
-2025-11-18 17:31:42,746 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:43,468 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:43,468 - INFO - __main__ - Sending vector batch 100 / 128: 256 vectors
-2025-11-18 17:31:43,468 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:44,187 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:44,187 - INFO - __main__ - Sending vector batch 101 / 128: 256 vectors
-2025-11-18 17:31:44,187 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:44,902 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:44,902 - INFO - __main__ - Sending vector batch 102 / 128: 256 vectors
-2025-11-18 17:31:44,902 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:45,612 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:45,612 - INFO - __main__ - Sending vector batch 103 / 128: 256 vectors
-2025-11-18 17:31:45,612 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:46,326 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:46,326 - INFO - __main__ - Sending vector batch 104 / 128: 256 vectors
-2025-11-18 17:31:46,326 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:47,043 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:47,043 - INFO - __main__ - Sending vector batch 105 / 128: 256 vectors
-2025-11-18 17:31:47,043 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:47,774 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:47,774 - INFO - __main__ - Sending vector batch 106 / 128: 256 vectors
-2025-11-18 17:31:47,774 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:48,488 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:48,489 - INFO - __main__ - Sending vector batch 107 / 128: 256 vectors
-2025-11-18 17:31:48,489 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:49,214 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:49,214 - INFO - __main__ - Sending vector batch 108 / 128: 256 vectors
-2025-11-18 17:31:49,214 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:49,927 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:49,927 - INFO - __main__ - Sending vector batch 109 / 128: 256 vectors
-2025-11-18 17:31:49,927 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:50,703 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:50,703 - INFO - __main__ - Sending vector batch 110 / 128: 256 vectors
-2025-11-18 17:31:50,703 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:51,436 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:51,436 - INFO - __main__ - Sending vector batch 111 / 128: 256 vectors
-2025-11-18 17:31:51,436 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:52,124 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:52,124 - INFO - __main__ - Sending vector batch 112 / 128: 256 vectors
-2025-11-18 17:31:52,124 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:52,874 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:52,874 - INFO - __main__ - Sending vector batch 113 / 128: 256 vectors
-2025-11-18 17:31:52,874 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:53,598 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:53,598 - INFO - __main__ - Sending vector batch 114 / 128: 256 vectors
-2025-11-18 17:31:53,598 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:31:54,313 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:54,313 - INFO - __main__ - Sending vector batch 115 / 128: 256 vectors
-2025-11-18 17:31:54,313 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:31:55,023 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:55,024 - INFO - __main__ - Sending vector batch 116 / 128: 256 vectors
-2025-11-18 17:31:55,024 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:31:55,741 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:55,741 - INFO - __main__ - Sending vector batch 117 / 128: 256 vectors
-2025-11-18 17:31:55,741 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:31:56,459 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:56,459 - INFO - __main__ - Sending vector batch 118 / 128: 256 vectors
-2025-11-18 17:31:56,459 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:31:57,160 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:57,160 - INFO - __main__ - Sending vector batch 119 / 128: 256 vectors
-2025-11-18 17:31:57,160 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:31:57,913 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:57,913 - INFO - __main__ - Sending vector batch 120 / 128: 256 vectors
-2025-11-18 17:31:57,914 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:31:58,625 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:58,625 - INFO - __main__ - Sending vector batch 121 / 128: 256 vectors
-2025-11-18 17:31:58,625 - INFO - __main__ - Sending 256 vectors to node1
-2025-11-18 17:31:59,342 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:31:59,342 - INFO - __main__ - Sending vector batch 122 / 128: 256 vectors
-2025-11-18 17:31:59,342 - INFO - __main__ - Sending 256 vectors to node2
-2025-11-18 17:32:00,055 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:32:00,055 - INFO - __main__ - Sending vector batch 123 / 128: 256 vectors
-2025-11-18 17:32:00,056 - INFO - __main__ - Sending 256 vectors to node3
-2025-11-18 17:32:00,759 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:32:00,759 - INFO - __main__ - Sending vector batch 124 / 128: 256 vectors
-2025-11-18 17:32:00,759 - INFO - __main__ - Sending 256 vectors to node4
-2025-11-18 17:32:01,479 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:32:01,479 - INFO - __main__ - Sending vector batch 125 / 128: 256 vectors
-2025-11-18 17:32:01,479 - INFO - __main__ - Sending 256 vectors to node5
-2025-11-18 17:32:02,194 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:32:02,194 - INFO - __main__ - Sending vector batch 126 / 128: 256 vectors
-2025-11-18 17:32:02,194 - INFO - __main__ - Sending 256 vectors to node6
-2025-11-18 17:32:02,927 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:32:02,928 - INFO - __main__ - Sending vector batch 127 / 128: 256 vectors
-2025-11-18 17:32:02,928 - INFO - __main__ - Sending 256 vectors to node7
-2025-11-18 17:32:03,738 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:32:03,738 - INFO - __main__ - Sending vector batch 128 / 128: 256 vectors
-2025-11-18 17:32:03,739 - INFO - __main__ - Sending 256 vectors to node8
-2025-11-18 17:32:04,456 - INFO - __main__ - Vectors sent successfully
-2025-11-18 17:32:05,461 - INFO - __main__ - Sending query
-2025-11-18 17:32:05,767 - INFO - __main__ - Result: 11: 1.0000001192092896 -> Among the products that use DirectFB are LinuxTV, Ben Nanonote, the unreleased Palm Foleo mobile companion, the webOS operating system, Panasonic Viera Connect TVs and the Philips TVs based on jointSPACE.
-2025-11-18 17:32:05,768 - INFO - __main__ - Result: 19577: 0.5394447445869446 -> Another significant Convergence development is DirectFB, a thin library that provides hardware graphics acceleration and windowing features for GTK+-based and other graphical Linux applications without the use of X.Org Server, and which its developers claim "adds graphical power to embedded systems".
-2025-11-18 17:32:05,768 - INFO - __main__ - Result: 34008: 0.4216153025627136 -> Among others, it provides the underlying OS for Wombat, a version of paravirtualised Linux designed to provide legacy support for embedded systems.
-2025-11-18 17:32:05,768 - INFO - __main__ - Result: 33036: 0.404023140668869 -> Although WebTV allowed not as much functionality as a computer-based web browser, it was a low-cost alternative to a traditional computer connection to the Internet.
-2025-11-18 17:32:05,768 - INFO - __main__ - Result: 39118: 0.4006761908531189 -> Also available this year is Smart Boards as well as the digital projectors.
-2025-11-18 17:32:05,768 - INFO - __main__ - ### FOR CORRESPONDENCE ###
-2025-11-18 17:32:08,270 - INFO - __main__ - Ground Truth: 0.9999999999999998 -> Among the products that use DirectFB are LinuxTV, Ben Nanonote, the unreleased Palm Foleo mobile companion, the webOS operating system, Panasonic Viera Connect TVs and the Philips TVs based on jointSPACE.
-2025-11-18 17:32:08,270 - INFO - __main__ - Ground Truth: 0.5394447113548618 -> Another significant Convergence development is DirectFB, a thin library that provides hardware graphics acceleration and windowing features for GTK+-based and other graphical Linux applications without the use of X.Org Server, and which its developers claim "adds graphical power to embedded systems".
-2025-11-18 17:32:08,270 - INFO - __main__ - Ground Truth: 0.42161529824326754 -> Among others, it provides the underlying OS for Wombat, a version of paravirtualised Linux designed to provide legacy support for embedded systems.
-2025-11-18 17:32:08,270 - INFO - __main__ - Ground Truth: 0.40402310152488424 -> Although WebTV allowed not as much functionality as a computer-based web browser, it was a low-cost alternative to a traditional computer connection to the Internet.
-2025-11-18 17:32:08,270 - INFO - __main__ - Ground Truth: 0.40067617727503957 -> Also available this year is Smart Boards as well as the digital projectors.
-2025-11-18 17:32:08,270 - INFO - __main__ - Getting vector counts...
-2025-11-18 17:32:08,840 - INFO - __main__ - Counts: {'node1': 16232, 'node3': 16536, 'node4': 16536, 'node5': 16536, 'node6': 16232, 'node7': 16232, 'node8': 16232, 'node2': 16536} - Total: 131072
-2025-11-18 17:32:08,841 - INFO - __main__ - Client application end
+2025-11-18 18:06:55,214 - INFO - __main__ - Client application started
+2025-11-18 18:07:24,741 - INFO - __main__ - Data and configuration loaded
+2025-11-18 18:07:24,741 - INFO - __main__ - Sending peers to server node1
+2025-11-18 18:07:26,805 - INFO - __main__ - Sending peers to server node2
+2025-11-18 18:07:28,856 - INFO - __main__ - Sending peers to server node3
+2025-11-18 18:07:30,900 - INFO - __main__ - Sending peers to server node4
+2025-11-18 18:07:32,954 - INFO - __main__ - Sending peers to server node5
+2025-11-18 18:07:34,993 - INFO - __main__ - Peers registered on all servers
+2025-11-18 18:07:34,993 - INFO - __main__ - ============================================================
+2025-11-18 18:07:34,993 - INFO - __main__ - INITIAL VECTOR STATISTICS
+2025-11-18 18:07:34,993 - INFO - __main__ - Unique vectors to send: 15000
+2025-11-18 18:07:34,993 - INFO - __main__ - Replication factor: 3
+2025-11-18 18:07:34,994 - INFO - __main__ - Expected total vectors (with replicas): 45000
+2025-11-18 18:07:34,994 - INFO - __main__ - ============================================================
+2025-11-18 18:07:34,994 - INFO - __main__ - Sending vector batch 1 / 58: 256 vectors
+2025-11-18 18:07:34,994 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:07:37,216 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:37,217 - INFO - __main__ - Sending vector batch 2 / 58: 256 vectors
+2025-11-18 18:07:37,217 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:07:39,423 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:39,424 - INFO - __main__ - Sending vector batch 3 / 58: 256 vectors
+2025-11-18 18:07:39,424 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:07:41,564 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:41,564 - INFO - __main__ - Sending vector batch 4 / 58: 256 vectors
+2025-11-18 18:07:41,564 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:07:43,694 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:43,694 - INFO - __main__ - Sending vector batch 5 / 58: 256 vectors
+2025-11-18 18:07:43,694 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:07:45,822 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:45,822 - INFO - __main__ - Sending vector batch 6 / 58: 256 vectors
+2025-11-18 18:07:45,822 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:07:47,963 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:47,964 - INFO - __main__ - Sending vector batch 7 / 58: 256 vectors
+2025-11-18 18:07:47,964 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:07:50,110 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:50,110 - INFO - __main__ - Sending vector batch 8 / 58: 256 vectors
+2025-11-18 18:07:50,110 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:07:52,229 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:52,229 - INFO - __main__ - Sending vector batch 9 / 58: 256 vectors
+2025-11-18 18:07:52,229 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:07:54,365 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:54,366 - INFO - __main__ - Sending vector batch 10 / 58: 256 vectors
+2025-11-18 18:07:54,366 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:07:56,478 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:56,478 - INFO - __main__ - Sending vector batch 11 / 58: 256 vectors
+2025-11-18 18:07:56,478 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:07:58,584 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:07:58,584 - INFO - __main__ - Sending vector batch 12 / 58: 256 vectors
+2025-11-18 18:07:58,584 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:08:00,701 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:00,701 - INFO - __main__ - Sending vector batch 13 / 58: 256 vectors
+2025-11-18 18:08:00,702 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:08:02,837 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:02,838 - INFO - __main__ - Sending vector batch 14 / 58: 256 vectors
+2025-11-18 18:08:02,838 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:08:04,972 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:04,972 - INFO - __main__ - Sending vector batch 15 / 58: 256 vectors
+2025-11-18 18:08:04,972 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:08:07,111 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:07,112 - INFO - __main__ - Sending vector batch 16 / 58: 256 vectors
+2025-11-18 18:08:07,112 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:08:09,258 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:09,259 - INFO - __main__ - Sending vector batch 17 / 58: 256 vectors
+2025-11-18 18:08:09,259 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:08:11,417 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:11,417 - INFO - __main__ - Sending vector batch 18 / 58: 256 vectors
+2025-11-18 18:08:11,417 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:08:13,546 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:13,546 - INFO - __main__ - Sending vector batch 19 / 58: 256 vectors
+2025-11-18 18:08:13,546 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:08:15,667 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:15,667 - INFO - __main__ - Sending vector batch 20 / 58: 256 vectors
+2025-11-18 18:08:15,667 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:08:17,863 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:17,863 - INFO - __main__ - Sending vector batch 21 / 58: 256 vectors
+2025-11-18 18:08:17,863 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:08:20,021 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:20,021 - INFO - __main__ - Sending vector batch 22 / 58: 256 vectors
+2025-11-18 18:08:20,021 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:08:27,027 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:27,027 - INFO - __main__ - Sending vector batch 23 / 58: 256 vectors
+2025-11-18 18:08:27,027 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:08:32,991 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:32,991 - INFO - __main__ - Sending vector batch 24 / 58: 256 vectors
+2025-11-18 18:08:32,991 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:08:38,275 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:38,275 - INFO - __main__ - Sending vector batch 25 / 58: 256 vectors
+2025-11-18 18:08:38,275 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:08:43,659 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:43,659 - INFO - __main__ - Sending vector batch 26 / 58: 256 vectors
+2025-11-18 18:08:43,659 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:08:49,067 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:49,067 - INFO - __main__ - Sending vector batch 27 / 58: 256 vectors
+2025-11-18 18:08:49,068 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:08:54,264 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:54,264 - INFO - __main__ - Sending vector batch 28 / 58: 256 vectors
+2025-11-18 18:08:54,265 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:08:59,421 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:08:59,421 - INFO - __main__ - Sending vector batch 29 / 58: 256 vectors
+2025-11-18 18:08:59,421 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:09:04,407 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:04,407 - INFO - __main__ - Sending vector batch 30 / 58: 256 vectors
+2025-11-18 18:09:04,407 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:09:09,690 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:09,690 - INFO - __main__ - Sending vector batch 31 / 58: 256 vectors
+2025-11-18 18:09:09,690 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:09:14,691 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:14,692 - INFO - __main__ - Sending vector batch 32 / 58: 256 vectors
+2025-11-18 18:09:14,692 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:09:20,113 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:20,113 - INFO - __main__ - Sending vector batch 33 / 58: 256 vectors
+2025-11-18 18:09:20,113 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:09:25,272 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:25,272 - INFO - __main__ - Sending vector batch 34 / 58: 256 vectors
+2025-11-18 18:09:25,272 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:09:30,362 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:30,362 - INFO - __main__ - Sending vector batch 35 / 58: 256 vectors
+2025-11-18 18:09:30,362 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:09:35,535 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:35,535 - INFO - __main__ - Sending vector batch 36 / 58: 256 vectors
+2025-11-18 18:09:35,535 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:09:40,591 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:40,591 - INFO - __main__ - Sending vector batch 37 / 58: 256 vectors
+2025-11-18 18:09:40,591 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:09:45,785 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:45,785 - INFO - __main__ - Sending vector batch 38 / 58: 256 vectors
+2025-11-18 18:09:45,785 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:09:50,892 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:50,893 - INFO - __main__ - Sending vector batch 39 / 58: 256 vectors
+2025-11-18 18:09:50,893 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:09:56,082 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:09:56,082 - INFO - __main__ - Sending vector batch 40 / 58: 256 vectors
+2025-11-18 18:09:56,082 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:10:01,316 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:01,317 - INFO - __main__ - Sending vector batch 41 / 58: 256 vectors
+2025-11-18 18:10:01,317 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:10:06,862 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:06,863 - INFO - __main__ - Sending vector batch 42 / 58: 256 vectors
+2025-11-18 18:10:06,863 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:10:12,208 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:12,208 - INFO - __main__ - Sending vector batch 43 / 58: 256 vectors
+2025-11-18 18:10:12,208 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:10:17,581 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:17,581 - INFO - __main__ - Sending vector batch 44 / 58: 256 vectors
+2025-11-18 18:10:17,581 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:10:22,979 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:22,979 - INFO - __main__ - Sending vector batch 45 / 58: 256 vectors
+2025-11-18 18:10:22,979 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:10:28,335 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:28,335 - INFO - __main__ - Sending vector batch 46 / 58: 256 vectors
+2025-11-18 18:10:28,335 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:10:33,814 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:33,814 - INFO - __main__ - Sending vector batch 47 / 58: 256 vectors
+2025-11-18 18:10:33,814 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:10:39,215 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:39,215 - INFO - __main__ - Sending vector batch 48 / 58: 256 vectors
+2025-11-18 18:10:39,215 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:10:44,527 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:44,527 - INFO - __main__ - Sending vector batch 49 / 58: 256 vectors
+2025-11-18 18:10:44,527 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:10:49,902 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:49,902 - INFO - __main__ - Sending vector batch 50 / 58: 256 vectors
+2025-11-18 18:10:49,902 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:10:55,371 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:10:55,371 - INFO - __main__ - Sending vector batch 51 / 58: 256 vectors
+2025-11-18 18:10:55,371 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:11:00,751 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:00,751 - INFO - __main__ - Sending vector batch 52 / 58: 256 vectors
+2025-11-18 18:11:00,751 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:11:06,411 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:06,411 - INFO - __main__ - Sending vector batch 53 / 58: 256 vectors
+2025-11-18 18:11:06,412 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:11:11,987 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:11,987 - INFO - __main__ - Sending vector batch 54 / 58: 256 vectors
+2025-11-18 18:11:11,987 - INFO - __main__ - Sending 256 vectors to node4
+2025-11-18 18:11:17,376 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:17,377 - INFO - __main__ - Sending vector batch 55 / 58: 256 vectors
+2025-11-18 18:11:17,377 - INFO - __main__ - Sending 256 vectors to node5
+2025-11-18 18:11:22,854 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:22,854 - INFO - __main__ - Sending vector batch 56 / 58: 256 vectors
+2025-11-18 18:11:22,854 - INFO - __main__ - Sending 256 vectors to node1
+2025-11-18 18:11:28,232 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:28,233 - INFO - __main__ - Sending vector batch 57 / 58: 256 vectors
+2025-11-18 18:11:28,233 - INFO - __main__ - Sending 256 vectors to node2
+2025-11-18 18:11:33,678 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:33,678 - INFO - __main__ - Sending vector batch 58 / 58: 256 vectors
+2025-11-18 18:11:33,678 - INFO - __main__ - Sending 256 vectors to node3
+2025-11-18 18:11:39,662 - INFO - __main__ - Vectors sent successfully
+2025-11-18 18:11:40,663 - INFO - __main__ - Sending query
+2025-11-18 18:11:45,695 - INFO - __main__ - ### FOR CORRESPONDENCE ###
+2025-11-18 18:11:46,177 - INFO - __main__ - Ground Truth: 1.0 -> Among the products that use DirectFB are LinuxTV, Ben Nanonote, the unreleased Palm Foleo mobile companion, the webOS operating system, Panasonic Viera Connect TVs and the Philips TVs based on jointSPACE.
+2025-11-18 18:11:46,178 - INFO - __main__ - Ground Truth: 0.3772801544818286 -> A mechanical television receiver is also called a televisor in some countries.
+2025-11-18 18:11:46,178 - INFO - __main__ - Ground Truth: 0.36669504217677806 -> A search of the YouTube website can reveal a number of ideas for these devices mostly built by people at home.
+2025-11-18 18:11:46,178 - INFO - __main__ - Ground Truth: 0.36668022382553667 -> A handheld TV game or just TV game or a plug and play game is an interactive entertainment device designed for use on a television set that integrates the video game console with the game controller.
+2025-11-18 18:11:46,178 - INFO - __main__ - Ground Truth: 0.3560725766829374 -> All versions have Wi-Fi.
+2025-11-18 18:11:46,178 - INFO - __main__ - Getting vector counts...
+2025-11-18 18:11:59,396 - INFO - __main__ - Counts: {'node1': 9138, 'node3': 8999, 'node4': 8999, 'node5': 8252, 'node2': 9156} - Total: 44544
+2025-11-18 18:11:59,396 - INFO - __main__ - ============================================================
+2025-11-18 18:11:59,396 - INFO - __main__ - FINAL VECTOR STATISTICS
+2025-11-18 18:11:59,396 - INFO - __main__ - Unique vectors sent: 14848
+2025-11-18 18:11:59,396 - INFO - __main__ - Expected total with replicas: 44544
+2025-11-18 18:11:59,396 - INFO - __main__ - Actual total stored: 44544
+2025-11-18 18:11:59,396 - INFO - __main__ - Perfect match: all expected replicas are stored!
+2025-11-18 18:11:59,396 - INFO - __main__ - ============================================================
+2025-11-18 18:11:59,396 - INFO - __main__ - Client application end

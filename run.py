@@ -80,7 +80,7 @@ def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
                 
                 if response.status_code == 200:
                     ready_nodes.add(port)
-                    logger.info(f"  ✓ Qdrant node on port {port} is ready. ({len(ready_nodes)}/{len(qdrant_ports)})")
+                    logger.info(f"  [OK] Qdrant node on port {port} is ready. ({len(ready_nodes)}/{len(qdrant_ports)})")
             except requests.exceptions.RequestException:
                 pass
         if len(ready_nodes) < len(qdrant_ports):
@@ -140,7 +140,7 @@ def wait_for_servers(fast_api_ports, timeout=60):
                 response = requests.get(f"http://localhost:{port}/", timeout=2)
                 if response.status_code == 200:
                     ready_nodes.append(i)
-                    logger.info(f"  ✓ Server on port {port} is ready ({len(ready_nodes)}/{len(fast_api_ports)})")
+                    logger.info(f"  [OK] Server on port {port} is ready ({len(ready_nodes)}/{len(fast_api_ports)})")
             except (requests.exceptions.RequestException, requests.exceptions.ConnectionError):
                 pass
         
@@ -198,9 +198,9 @@ def main():
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'localhost:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 256,
-        'num_vectors': 32_768,
-        'num_before_clustering': 2_048,
-        'replicas': 4
+        'num_vectors': 15000,
+        'num_before_clustering': 5000,
+        'replicas': 3
     }
 
     write_config(config)

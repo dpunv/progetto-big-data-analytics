@@ -112,6 +112,16 @@ def main():
     vector_sent = 0
     total_batches = min(len(data), config['num_vectors']) // batch_size_send
     
+    # Log initial statistics
+    unique_vectors_to_send = min(len(data), config['num_vectors'])
+    expected_total_with_replicas = unique_vectors_to_send * config['replicas']
+    logger.info("=" * 60)
+    logger.info("INITIAL VECTOR STATISTICS")
+    logger.info(f"Unique vectors to send: {unique_vectors_to_send}")
+    logger.info(f"Replication factor: {config['replicas']}")
+    logger.info(f"Expected total vectors (with replicas): {expected_total_with_replicas}")
+    logger.info("=" * 60)
+    
     for i in range(min(len(data), config['num_vectors'] // batch_size_send)):
         batch = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * (batch_size_send)]]
         logger.info(f'Sending vector batch {i+1} / {total_batches}: {len(batch)} vectors')
@@ -143,6 +153,24 @@ def main():
         counts = count_res.json()
         total = sum([count for _, count in counts.items()])
         logger.info(f'Counts: {counts} - Total: {total}')
+        
+        # Final statistics
+        logger.info("=" * 60)
+        logger.info("FINAL VECTOR STATISTICS")
+        logger.info(f"Unique vectors sent: {vector_sent}")
+        logger.info(f"Expected total with replicas: {vector_sent * config['replicas']}")
+        logger.info(f"Actual total stored: {total}")
+        
+        if total < vector_sent * config['replicas']:
+            missing = (vector_sent * config['replicas']) - total
+            logger.warning(f"Missing vectors: {missing} ({missing/(vector_sent * config['replicas'])*100:.2f}%)")
+        elif total > vector_sent * config['replicas']:
+            extra = total - (vector_sent * config['replicas'])
+            logger.info(f"Extra vectors: {extra} ({extra/(vector_sent * config['replicas'])*100:.2f}%)")
+        else:
+            logger.info("Perfect match: all expected replicas are stored!")
+        
+        logger.info("=" * 60)
 
     logger.info('Client application end')
 
