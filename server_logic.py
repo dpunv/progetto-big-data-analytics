@@ -10,6 +10,8 @@ import p2p_pb2
 import p2p_pb2_grpc
 import pickle
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,8 @@ class ServerApp:
         self.clustering_lock = threading.Lock()
         self.id_lock = threading.Lock()
         self.id_count = 0
+        # Thread pool for parallel peer communication
+        self.peer_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='PeerComm')
         logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
     
     def i_am_coord(self):
@@ -179,8 +183,33 @@ class ServerApp:
         [logger.info(f"Clusters and vectors count per node: {node_id}: Clusters: {len(clusters_in_node)} - Vectors: {sum([len(clusters[cluster[0]][1]) for cluster in clusters_in_node])}") for node_id, clusters_in_node in assignment.items()]
 
         logger.info("Clustering: Broadcasting assignments to peers...")
+        
+        # Parallel broadcasting of cluster assignments
+        def broadcast_to_peer(peer):
+            try:
+                peer.send_clusters(assignment, clusters, self.meta_hnsw, request_id)
+                return (peer.id, True)
+            except Exception as e:
+                logger.error(f"[Clustering] Failed to broadcast to {peer.id}: {e}")
+                return (peer.id, False)
+        
+        # Submit all broadcast tasks
+        futures = []
         for peer in self.peers:
-            peer.send_clusters(assignment, clusters, self.meta_hnsw, request_id)
+            future = self.peer_executor.submit(broadcast_to_peer, peer)
+            futures.append(future)
+        
+        # Wait for all broadcasts to complete
+        failed_broadcasts = []
+        for future in as_completed(futures):
+            peer_id, success = future.result()
+            if not success:
+                failed_broadcasts.append(peer_id)
+        
+        if failed_broadcasts:
+            logger.error(f"[Clustering] Failed to broadcast clusters to: {failed_broadcasts}")
+        else:
+            logger.info("[Clustering] All cluster assignments broadcasted successfully")
         
         self.node_clusters = assignment[self.node_id]
         
@@ -318,10 +347,33 @@ class ServerApp:
         summary.append(f"Me ({self.node_id}): {len(to_me)}")
         logger.debug(f"[Router] Distribution: {', '.join(summary)}")
 
+        # Parallel sending to peers
+        def send_to_peer(index, peer, vectors):
+            try:
+                peer.send(vectors, self.status, request_id)
+                return (peer.id, True, len(vectors))
+            except Exception as e:
+                logger.error(f"[Router] Failed to send to {peer.id}: {e}")
+                return (peer.id, False, len(vectors))
+        
+        # Submit tasks for peers with vectors
+        futures = []
         for index, peer in enumerate(self.peers):
             if len(assigned_vectors[index]) > 0:
-                peer.send(assigned_vectors[index], self.status, request_id)
+                future = self.peer_executor.submit(send_to_peer, index, peer, assigned_vectors[index])
+                futures.append(future)
         
+        # Wait for all sends to complete and check results
+        failed_sends = []
+        for future in as_completed(futures):
+            peer_id, success, count = future.result()
+            if not success:
+                failed_sends.append(peer_id)
+        
+        if failed_sends:
+            logger.warning(f"[Router] Failed to send vectors to peers: {failed_sends}")
+        
+        # Send to self (local insert)
         if len(to_me) > 0:
             self.add_vectors(to_me, self.status, request_id)
 

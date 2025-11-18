@@ -6,6 +6,9 @@ import utils
 import argparse
 import logging
 import sys
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +38,15 @@ class Server:
             logger.error(f"Failed to register peers on {self.id}: {e}")
     
     def send_vectors(self, vectors_list: ListOfVectorsWithPayload):
-        logger.info(f'Sending {len(vectors_list)} vectors to {self.id}')
         payload = {
             'id': get_id(),
             'content': vectors_list
         }
         try:
             requests.post(f'{self.url}/add', json=payload)
-            logger.info('Vectors sent successfully')
         except Exception as e:
             logger.error(f"Failed to send vectors to {self.id}: {e}")
+            raise
         
     
     def query_vectors(self, vectors_list: ListOfVectors):
@@ -122,12 +124,48 @@ def main():
     logger.info(f"Expected total vectors (with replicas): {expected_total_with_replicas}")
     logger.info("=" * 60)
     
-    for i in range(min(len(data), config['num_vectors'] // batch_size_send)):
-        batch = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * (batch_size_send)]]
-        logger.info(f'Sending vector batch {i+1} / {total_batches}: {len(batch)} vectors')
-
-        vector_sent += ((i+1) * (batch_size_send)) - (i * batch_size_send)
-        servers[i%len(servers)].send_vectors(batch)
+    # Prepare all batches with their target servers (round-robin assignment)
+    batches_with_servers = []
+    for i in range(total_batches):
+        batch_data = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * batch_size_send]]
+        target_server = servers[i % len(servers)]
+        batches_with_servers.append((batch_data, target_server, i + 1))
+        vector_sent += len(batch_data)
+    
+    # Calculate number of threads: min(num_servers, cpu_count * 2)
+    num_threads = min(len(servers), os.cpu_count() * 2)
+    logger.info(f"Starting parallel batch sending with {num_threads} threads for {total_batches} batches across {len(servers)} servers")
+    
+    # Worker function for thread pool
+    def send_batch_worker(args):
+        batch_data, server, batch_num = args
+        thread_name = threading.current_thread().name
+        logger.info(f'[{thread_name}] Sending batch {batch_num}/{total_batches} ({len(batch_data)} vectors) to {server.id}')
+        try:
+            server.send_vectors(batch_data)
+            logger.info(f'[{thread_name}] Batch {batch_num} sent successfully to {server.id}')
+            return (batch_num, True, None)
+        except Exception as e:
+            logger.error(f'[{thread_name}] Batch {batch_num} FAILED to {server.id}: {e}')
+            return (batch_num, False, str(e))
+    
+    # Execute parallel sending
+    start_time = time.time()
+    failed_batches = []
+    
+    with ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix='BatchSender') as executor:
+        results = executor.map(send_batch_worker, batches_with_servers)
+        for batch_num, success, error in results:
+            if not success:
+                failed_batches.append((batch_num, error))
+    
+    elapsed_time = time.time() - start_time
+    logger.info(f"Parallel sending completed in {elapsed_time:.2f}s")
+    
+    if failed_batches:
+        logger.error(f"Failed to send {len(failed_batches)} batches: {failed_batches}")
+    else:
+        logger.info("All batches sent successfully!")
     
     time.sleep(1)
 

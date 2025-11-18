@@ -1,1 +1,1 @@
-2025-11-18 18:11:45,195 - ERROR - ThreadPoolExecutor-0_0 - qdrant_module - [Qdrant] QUERY ERROR on http://localhost:6341: 'QdrantClient' object has no attribute 'search_batch'
+2025-11-18 18:36:46,712 - ERROR - ThreadPoolExecutor-0_2 - qdrant_module - [Qdrant] QUERY ERROR on http://localhost:6341: 'QdrantClient' object has no attribute 'search_batch'

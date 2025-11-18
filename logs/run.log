@@ -1,36 +1,36 @@
-2025-11-18 18:06:32,359 - INFO - Config file written.
-2025-11-18 18:06:32,360 - INFO - Generating compose.yml for 5 nodes...
-2025-11-18 18:06:32,360 - INFO - compose.yml generated successfully.
-2025-11-18 18:06:32,360 - INFO - Starting 5 Qdrant databases with Docker Compose...
-2025-11-18 18:06:34,433 - INFO - Waiting for Qdrant nodes to be ready (checking /readyz)...
-2025-11-18 18:06:36,503 - INFO -   [OK] Qdrant node on port 6333 is ready. (1/5)
-2025-11-18 18:06:36,525 - INFO -   [OK] Qdrant node on port 6335 is ready. (2/5)
-2025-11-18 18:06:36,534 - INFO -   [OK] Qdrant node on port 6337 is ready. (3/5)
-2025-11-18 18:06:36,539 - INFO -   [OK] Qdrant node on port 6339 is ready. (4/5)
-2025-11-18 18:06:36,563 - INFO -   [OK] Qdrant node on port 6341 is ready. (5/5)
-2025-11-18 18:06:36,564 - INFO - All Qdrant nodes are ready.
-2025-11-18 18:06:37,412 - INFO - HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
-2025-11-18 18:06:38,145 - INFO - Collection 'vectors' created successfully on http://localhost:6333
-2025-11-18 18:06:38,147 - INFO - Started server 'node1' on port 8001 (Qdrant: 6333, PID: 21944). Log: logs/node1.log
-2025-11-18 18:06:38,913 - INFO - HTTP Request: GET http://localhost:6335 "HTTP/1.1 200 OK"
-2025-11-18 18:06:39,612 - INFO - Collection 'vectors' created successfully on http://localhost:6335
-2025-11-18 18:06:39,615 - INFO - Started server 'node2' on port 8002 (Qdrant: 6335, PID: 9260). Log: logs/node2.log
-2025-11-18 18:06:40,526 - INFO - HTTP Request: GET http://localhost:6337 "HTTP/1.1 200 OK"
-2025-11-18 18:06:41,237 - INFO - Collection 'vectors' created successfully on http://localhost:6337
-2025-11-18 18:06:41,239 - INFO - Started server 'node3' on port 8003 (Qdrant: 6337, PID: 3972). Log: logs/node3.log
-2025-11-18 18:06:42,070 - INFO - HTTP Request: GET http://localhost:6339 "HTTP/1.1 200 OK"
-2025-11-18 18:06:42,808 - INFO - Collection 'vectors' created successfully on http://localhost:6339
-2025-11-18 18:06:42,811 - INFO - Started server 'node4' on port 8004 (Qdrant: 6339, PID: 6660). Log: logs/node4.log
-2025-11-18 18:06:43,634 - INFO - HTTP Request: GET http://localhost:6341 "HTTP/1.1 200 OK"
-2025-11-18 18:06:44,800 - INFO - Collection 'vectors' created successfully on http://localhost:6341
-2025-11-18 18:06:44,805 - INFO - Started server 'node5' on port 8005 (Qdrant: 6341, PID: 22200). Log: logs/node5.log
-2025-11-18 18:06:46,813 - INFO -   [OK] Server on port 8001 is ready (1/5)
-2025-11-18 18:06:48,824 - INFO -   [OK] Server on port 8002 is ready (2/5)
-2025-11-18 18:06:50,833 - INFO -   [OK] Server on port 8003 is ready (3/5)
-2025-11-18 18:06:52,865 - INFO -   [OK] Server on port 8004 is ready (4/5)
-2025-11-18 18:06:54,876 - INFO -   [OK] Server on port 8005 is ready (5/5)
-2025-11-18 18:06:54,876 - INFO - Launching Client...
-2025-11-18 18:12:00,362 - INFO - Shutting down...
-2025-11-18 18:12:00,363 - INFO - Stopping 5 Python servers...
-2025-11-18 18:12:00,497 - INFO - Stopping Docker containers...
-2025-11-18 18:12:04,024 - INFO - Cleanup complete.
+2025-11-18 18:34:31,942 - INFO - Config file written.
+2025-11-18 18:34:31,943 - INFO - Generating compose.yml for 5 nodes...
+2025-11-18 18:34:31,943 - INFO - compose.yml generated successfully.
+2025-11-18 18:34:31,944 - INFO - Starting 5 Qdrant databases with Docker Compose...
+2025-11-18 18:34:33,827 - INFO - Waiting for Qdrant nodes to be ready (checking /readyz)...
+2025-11-18 18:34:35,893 - INFO -   [OK] Qdrant node on port 6333 is ready. (1/5)
+2025-11-18 18:34:35,900 - INFO -   [OK] Qdrant node on port 6335 is ready. (2/5)
+2025-11-18 18:34:35,921 - INFO -   [OK] Qdrant node on port 6337 is ready. (3/5)
+2025-11-18 18:34:35,941 - INFO -   [OK] Qdrant node on port 6339 is ready. (4/5)
+2025-11-18 18:34:35,958 - INFO -   [OK] Qdrant node on port 6341 is ready. (5/5)
+2025-11-18 18:34:35,959 - INFO - All Qdrant nodes are ready.
+2025-11-18 18:34:36,759 - INFO - HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+2025-11-18 18:34:37,865 - INFO - Collection 'vectors' created successfully on http://localhost:6333
+2025-11-18 18:34:37,868 - INFO - Started server 'node1' on port 8001 (Qdrant: 6333, PID: 16816). Log: logs/node1.log
+2025-11-18 18:34:38,792 - INFO - HTTP Request: GET http://localhost:6335 "HTTP/1.1 200 OK"
+2025-11-18 18:34:39,696 - INFO - Collection 'vectors' created successfully on http://localhost:6335
+2025-11-18 18:34:39,698 - INFO - Started server 'node2' on port 8002 (Qdrant: 6335, PID: 29488). Log: logs/node2.log
+2025-11-18 18:34:40,582 - INFO - HTTP Request: GET http://localhost:6337 "HTTP/1.1 200 OK"
+2025-11-18 18:34:41,634 - INFO - Collection 'vectors' created successfully on http://localhost:6337
+2025-11-18 18:34:41,637 - INFO - Started server 'node3' on port 8003 (Qdrant: 6337, PID: 9696). Log: logs/node3.log
+2025-11-18 18:34:42,452 - INFO - HTTP Request: GET http://localhost:6339 "HTTP/1.1 200 OK"
+2025-11-18 18:34:43,175 - INFO - Collection 'vectors' created successfully on http://localhost:6339
+2025-11-18 18:34:43,178 - INFO - Started server 'node4' on port 8004 (Qdrant: 6339, PID: 23584). Log: logs/node4.log
+2025-11-18 18:34:44,013 - INFO - HTTP Request: GET http://localhost:6341 "HTTP/1.1 200 OK"
+2025-11-18 18:34:44,881 - INFO - Collection 'vectors' created successfully on http://localhost:6341
+2025-11-18 18:34:44,884 - INFO - Started server 'node5' on port 8005 (Qdrant: 6341, PID: 7868). Log: logs/node5.log
+2025-11-18 18:34:46,907 - INFO -   [OK] Server on port 8001 is ready (1/5)
+2025-11-18 18:34:48,947 - INFO -   [OK] Server on port 8002 is ready (2/5)
+2025-11-18 18:34:50,961 - INFO -   [OK] Server on port 8003 is ready (3/5)
+2025-11-18 18:34:52,965 - INFO -   [OK] Server on port 8004 is ready (4/5)
+2025-11-18 18:34:54,972 - INFO -   [OK] Server on port 8005 is ready (5/5)
+2025-11-18 18:34:54,973 - INFO - Launching Client...
+2025-11-18 18:37:02,274 - INFO - Shutting down...
+2025-11-18 18:37:02,274 - INFO - Stopping 5 Python servers...
+2025-11-18 18:37:02,529 - INFO - Stopping Docker containers...
+2025-11-18 18:37:05,842 - INFO - Cleanup complete.
