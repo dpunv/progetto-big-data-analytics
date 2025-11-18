@@ -1,10 +1,10 @@
 from qdrant_client import QdrantClient, models
 import sys
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Helper to create a client instance.
-# Since creating a connection has overhead, it is better to instantiate this once
-# and pass the 'client' object around, but to keep your function signatures 
-# similar to your original code, I will instantiate it inside functions.
 def get_client(url: str) -> QdrantClient:
     # prefer_grpc=True forces the client to use the gRPC port (usually 6334)
     return QdrantClient(url=url, grpc_port=(int(url.split(':')[-1])+1), prefer_grpc=True)
@@ -13,6 +13,7 @@ def create_collection(url, collection_name, vector_size: int, distance: str = "C
     client = get_client(url)
     try:
         if client.collection_exists(collection_name):
+            logger.info(f"Collection '{collection_name}' already exists on {url}")
             return True
 
         # Map string distance to Qdrant model
@@ -29,9 +30,10 @@ def create_collection(url, collection_name, vector_size: int, distance: str = "C
                 distance=dist_map.get(distance, models.Distance.COSINE)
             )
         )
+        logger.info(f"Collection '{collection_name}' created successfully on {url}")
         return True
     except Exception as e:
-        print(f"Error creating collection: {e}")
+        logger.error(f"Error creating collection on {url}: {e}")
         return False
 
 def query_vectors(url, collection, query, topk):
@@ -40,6 +42,7 @@ def query_vectors(url, collection, query, topk):
     Returns a list of lists of ScoredPoint objects.
     """
     client = get_client(url)
+    logger.info(f"[Qdrant] Executing batch search for {len(query)} vectors on {url}...")
     try:
         # Create search requests
         search_queries = [
@@ -63,7 +66,7 @@ def query_vectors(url, collection, query, topk):
                 "id": point.id,
                 "score": point.score,
                 'payload':{
-                    "string": point.payload,
+                    "string": point.payload.get("string"),
                     "vector": point.vector
                 }
             }
@@ -71,12 +74,12 @@ def query_vectors(url, collection, query, topk):
             for point in batch
         ]
         
-        print(f"[Qdrant Query] Success: processed {len(results)} query results")
+        logger.info(f"[Qdrant] Success: found {len(results)} results")
         return results
 
     except Exception as e:
-        print(f"[Qdrant Query] ERROR: {e}")
-        return None
+        logger.error(f"[Qdrant] QUERY ERROR on {url}: {e}")
+        return []
 
 def insert_vectors(url, collection, vectors, batch_size=256):
     """
@@ -87,6 +90,7 @@ def insert_vectors(url, collection, vectors, batch_size=256):
                  (vector_content, vector_id, vector_payload)
     """
     client = get_client(url)
+    logger.info(f"[Qdrant] Attempting to insert {len(vectors)} vectors into {collection} on {url}...")
     try:
         # Convert your input list to PointStruct objects
         points = [
@@ -99,19 +103,18 @@ def insert_vectors(url, collection, vectors, batch_size=256):
         ]
 
         # upload_points automatically handles batching and retries
-        # It is much faster than manual requests loops
         client.upload_points(
             collection_name=collection,
             points=points,
-            batch_size=batch_size, # Client handles the splitting internally
+            batch_size=batch_size, 
             wait=True
         )
 
-        print(f"[Qdrant Insert] Success: {len(points)} vectors inserted/uploaded")
+        logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors.")
         return True
 
     except Exception as e:
-        print(f"[Qdrant Insert] ERROR: {e}")
+        logger.error(f"[Qdrant] INSERT ERROR on {url}: {e}")
         return False
 
 def count(url, collection):
@@ -123,5 +126,5 @@ def count(url, collection):
         )
         return count_result.count
     except Exception as e:
-        print(f"Error counting vectors: {e}")
+        logger.error(f"Error counting vectors on {url}: {e}")
         return -1

@@ -7,7 +7,6 @@ service P2PNode {
     rpc QueryPeer (QueryRequest) returns (QueryResponse);
     rpc RegisterPeers (RegisterPeersRequest) returns (Empty);
     rpc SetClusters (SetClustersRequest) returns (Empty);
-    rpc NotifyClustering (Empty) returns (Empty);
 }
 
 message Empty {}

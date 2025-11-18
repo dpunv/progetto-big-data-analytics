@@ -3,6 +3,11 @@ import json
 from compound_types import *
 import time
 import utils
+import argparse
+import logging
+import sys
+
+logger = logging.getLogger(__name__)
 
 request_ids = 0
 def get_id():
@@ -24,21 +29,22 @@ class Server:
             'id': get_id(),
             'peers': self.peers
         }
-        requests.post(f'{self.url}/register_peers', json=payload)
+        try:
+            requests.post(f'{self.url}/register_peers', json=payload)
+        except Exception as e:
+            logger.error(f"Failed to register peers on {self.id}: {e}")
     
     def send_vectors(self, vectors_list: ListOfVectorsWithPayload):
-        start_color = '\033[33m'
-        end_color = '\033[0m'
-        print(f'{start_color}send vectors start{end_color}')
+        logger.info(f'Sending {len(vectors_list)} vectors to {self.id}')
         payload = {
             'id': get_id(),
             'content': vectors_list
         }
-        print(f'{start_color}payload object created{end_color}')
-
-        requests.post(f'{self.url}/add', json=payload)
-
-        print(f'{start_color}end vector send{end_color}')
+        try:
+            requests.post(f'{self.url}/add', json=payload)
+            logger.info('Vectors sent successfully')
+        except Exception as e:
+            logger.error(f"Failed to send vectors to {self.id}: {e}")
         
     
     def query_vectors(self, vectors_list: ListOfVectors):
@@ -47,65 +53,98 @@ class Server:
             'query': vectors_list,
             'topk': 5
         }
-        return requests.post(f'{self.url}/query', json=payload)
+        try:
+            return requests.post(f'{self.url}/query', json=payload)
+        except Exception as e:
+            logger.error(f"Query failed on {self.id}: {e}")
+            return None
+
     def get_count(self):
-        return requests.get(f'{self.url}/count')
+        try:
+            return requests.get(f'{self.url}/count')
+        except Exception as e:
+            logger.error(f"Count failed on {self.id}: {e}")
+            return None
 
 def main():
-    start_color = '\033[33m'
-    end_color = '\033[0m'
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--log-file", type=str, default="logs/client.log", help="Path to log file")
+    args = parser.parse_args()
+
+    # Setup Logging
+    handlers = []
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file, mode='w'))
+    else:
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+        handlers=handlers
+    )
     
-    print(f'{start_color}client started{end_color}')
+    logger.info('Client application started')
     
     config = []
-    with open('config.json', 'r') as f:
-        config = json.load(f)
-    data = []
-    with open('embeddings.json') as f:
-        data = json.load(f)
-        
-    print(f'{start_color}data and configuration loaded{end_color}')
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+        data = []
+        with open('embeddings.json') as f:
+            data = json.load(f)
+        logger.info('Data and configuration loaded')
+    except Exception as e:
+        logger.critical(f"Failed to load config/data: {e}")
+        sys.exit(1)
 
     servers = []
     for server in config['servers']:
         servers.append(Server(server['id'], server['url'], server['grpc_url'], server['is_coordinator']))
     
     for server in servers:
-        print(f'{start_color}sending peers to server {server.id}{end_color}')
+        logger.info(f'Sending peers to server {server.id}')
         server.register_peers([(s.id, s.url, s.grpc_url) for s in servers if s.id != server.id])
     
-    print(f'{start_color}peers registered{end_color}')
+    logger.info('Peers registered on all servers')
 
     batch_size_send = config['batch_size']
     vector_sent = 0
+    total_batches = min(len(data), config['num_vectors']) // batch_size_send
+    
     for i in range(min(len(data), config['num_vectors'] // batch_size_send)):
         batch = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * (batch_size_send)]]
-        print(f'{start_color}sending vector batch {i+1} / {min(len(data), config['num_vectors'] // batch_size_send) - 1}: {len(batch)} vectors {end_color}')
-        #print(f'{start_color}getting vector counts: {servers[1 if len(servers) > 1 else 0].get_count().json()} - {sum([count for _, count in servers[1 if len(servers) > 1 else 0].get_count().json().items()])} - batch {i+1}{end_color}')
+        logger.info(f'Sending vector batch {i+1} / {total_batches}: {len(batch)} vectors')
 
         vector_sent += ((i+1) * (batch_size_send)) - (i * batch_size_send)
         servers[i%len(servers)].send_vectors(batch)
     
-    #time.sleep(120)
+    time.sleep(1)
 
-    print(f'{start_color}sending query{end_color}')
+    logger.info('Sending query')
 
     query_vector = data[0]['embedding']
-    res = servers[0].query_vectors([query_vector]).json()['results']
-    for result in res:
-        print(f"{result['id']}: {result['score']} -> {result['payload']['string']}")
+    res_obj = servers[0].query_vectors([query_vector])
+    if res_obj:
+        res = res_obj.json()['results']
+        for result in res:
+            logger.info(f"Result: {result['id']}: {result['score']} -> {result['payload']['string']}")
 
-    print("### FOR CORRESPONDENCE")
+    logger.info("### FOR CORRESPONDENCE ###")
 
     distances_calcs = [(vector, utils.cosine_similarity(vector['embedding'], query_vector)) for vector in data[:vector_sent]]
     distances_calcs.sort(key=lambda x: x[1], reverse=True)
     for v, d in distances_calcs[:5]:
-        print(f"{d} -> {v['text']}")
+        logger.info(f"Ground Truth: {d} -> {v['text']}")
 
-    print(f'{start_color}getting vector counts{end_color}')
-    print(f'{start_color}getting vector counts: {servers[1 if len(servers) > 1 else 0].get_count().json()} - {sum([count for _, count in servers[1 if len(servers) > 1 else 0].get_count().json().items()])} - end{end_color}')
+    logger.info('Getting vector counts...')
+    count_res = servers[1 if len(servers) > 1 else 0].get_count()
+    if count_res:
+        counts = count_res.json()
+        total = sum([count for _, count in counts.items()])
+        logger.info(f'Counts: {counts} - Total: {total}')
 
-    print(f'{start_color}client application end{end_color}')
+    logger.info('Client application end')
 
 if __name__ == '__main__':
     main()
