@@ -416,15 +416,43 @@ class ServerApp:
         q_summary.append(f"Me: {len(to_query_me)}")
         logger.debug(f"[Global Query] Routing: {', '.join(q_summary)}")
 
-        # Executing queries
+        # Parallel execution of queries
+        def query_peer_task(index, peer, queries):
+            try:
+                results = peer.query_peer(queries, topk, request_id)
+                return (peer.id, True, results)
+            except Exception as e:
+                logger.error(f"[Global Query] Failed to query {peer.id}: {e}")
+                return (peer.id, False, [])
+        
+        # Submit query tasks to thread pool
+        futures = []
+        peer_indices = []
+        
         for index, peer in enumerate(self.peers):
             if to_query_peer[index]:
-                res = peer.query_peer(to_query_peer[index], topk, request_id)
-                response.extend(res)
+                future = self.peer_executor.submit(query_peer_task, index, peer, to_query_peer[index])
+                futures.append(future)
+                peer_indices.append(index)
         
+        # Also query self in parallel if needed
         if to_query_me:
-            res_me = self.query_me(to_query_me, topk)
-            response.extend(res_me)
+            self_future = self.peer_executor.submit(lambda: (self.node_id, True, self.query_me(to_query_me, topk)))
+            futures.append(self_future)
+        
+        # Collect all results as they complete
+        response = []
+        failed_queries = []
+        
+        for future in as_completed(futures):
+            node_id, success, results = future.result()
+            if success:
+                response.extend(results)
+            else:
+                failed_queries.append(node_id)
+        
+        if failed_queries:
+            logger.warning(f"[Global Query] Failed to query nodes: {failed_queries}")
         
         logger.debug(f"[Global Query] Aggregating {len(response)} raw results...")
 
