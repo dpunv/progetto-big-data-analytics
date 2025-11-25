@@ -11,7 +11,6 @@ import p2p_pb2
 import p2p_pb2_grpc
 import pickle
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
@@ -126,7 +125,7 @@ class Peer:
             return {}
 
 class ServerApp:
-    def __init__(self, id, url, qdrant_url, grpc_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384):
+    def __init__(self, id, url, qdrant_url, grpc_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384, batch_size=256, batch_size_retry=64):
         self.node_id = id
         self.url = url
         self.qdrant_url = qdrant_url
@@ -148,6 +147,8 @@ class ServerApp:
         self.clustering_lock = threading.Lock()
         self.id_lock = threading.Lock()
         self.id_count = 0
+        self.batch_size = batch_size
+        self.batch_size_retry = batch_size_retry
         # Thread pool for parallel peer communication
         self.peer_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='PeerComm')
         logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
@@ -238,7 +239,7 @@ class ServerApp:
             
             if status_of_sender == 'clustered':
                 logger.debug(f"[Add Vectors] Direct Insert: Storing {len(vectors)} vectors in local Qdrant (Sender is clustered).")
-                qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors)
+                qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors, self.batch_size_retry, self.batch_size)
             else:
                 if not self.i_am_coord():
                     logger.error("Error: Received bootstrap/clustering vectors but I am not coordinator.")

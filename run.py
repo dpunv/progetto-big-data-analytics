@@ -90,7 +90,7 @@ def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
     logger.info("All Qdrant nodes are ready.")
     return True
 
-def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000):
+def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000, batch_size=256, batch_size_retry=64):
     for i in range(1, len(fast_api_ports) + 1):
         node_id = f"node{i}"
         fastapi_port = fast_api_ports[i-1]
@@ -111,7 +111,9 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coor
                 '--replicas', str(replicas),
                 '--metrics-port', str(metrics_port),
                 '--num-before-clustering', str(num_before_clustering),
-                '--log-file', log_file
+                '--log-file', log_file,
+                '--batch-size', str(batch_size),
+                '--batch-size-retry', str(batch_size_retry)
             ],
             # We do NOT redirect stdout/stderr here so that the server process
             # can write to its own log file cleanly via logging module,
@@ -264,7 +266,7 @@ def main():
         'batch_size_retry': 500,
         'num_vectors': 131072,
         'num_before_clustering': 16384,
-        'replicas': 4
+        'replicas': 2
     }
 
     write_config(config)
@@ -275,7 +277,7 @@ def main():
         logger.error("Failed to start Qdrant servers. Exiting.")
         sys.exit(1)
 
-    launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'])
+    launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'], batch_size=config['batch_size'], batch_size_retry=config['batch_size_retry'])
 
     if not wait_for_servers(fast_api_ports):
         sys.exit()

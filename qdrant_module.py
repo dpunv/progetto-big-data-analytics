@@ -91,7 +91,7 @@ def query_vectors(url, collection, query, topk):
         logger.error(f"[Qdrant] QUERY ERROR on {url}: {e}")
         return []
 
-def insert_vectors(url, collection, vectors, batch_size=256):
+def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
     """
     Insert vectors using upload_points.
     
@@ -101,49 +101,50 @@ def insert_vectors(url, collection, vectors, batch_size=256):
     """
     client = get_client(url)
     logger.info(f"[Qdrant] Attempting to insert {len(vectors)} vectors into {collection} on {url}...")
-    
-    # Convert your input list to PointStruct objects
-    points = [
-        models.PointStruct(
-            id=vector_id,
-            vector=vector_content,
-            payload={"string": vector_payload}
-        )
-        for vector_content, vector_id, vector_payload in vectors
-    ]
-    # Se batch_size non è specificato (o se vogliamo ottimizzare), 
-    # diciamo a Qdrant di inviare tutto in una volta sola.
-    # Se vectors contiene 1800 elementi, effective_batch_size sarà 1800.
-    if batch_size is None or batch_size > len(vectors):
-        effective_batch_size = len(vectors) # Invia tutto in un colpo solo (massima velocità)
-    else:
-        effective_batch_size = batch_size
-    try:
-        # Try with larger batch size first
-        logger.info(f"[Qdrant] Trying upload with batch_size= {batch_size}")
-        client.upload_points(
-            collection_name=collection,
-            points=points,
-            batch_size=effective_batch_size, 
-            wait=True
-        )
-        logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}.")
-        return True
-
-    except Exception as e:
-        logger.warning(f"[Qdrant] Upload with batch_size={batch_size} failed: {e}. Retrying with batch_size={batch_size_retry}...")
+    with metrics.DB_LATENCY.labels(operation='upload_points').time(): 
+        # Convert your input list to PointStruct objects
+        points = [
+            models.PointStruct(
+                id=vector_id,
+                vector=vector_content,
+                payload={"string": vector_payload}
+            )
+            for vector_content, vector_id, vector_payload in vectors
+        ]
+        # Se batch_size non è specificato (o se vogliamo ottimizzare), 
+        # diciamo a Qdrant di inviare tutto in una volta sola.
+        # Se vectors contiene 1800 elementi, effective_batch_size sarà 1800.
+        if batch_size is None or batch_size > len(vectors):
+            effective_batch_size = len(vectors) # Invia tutto in un colpo solo (massima velocità)
+        else:
+            effective_batch_size = batch_size
+            
         try:
+            # Try with larger batch size first
+            logger.info(f"[Qdrant] Trying upload with batch_size= {batch_size}")
             client.upload_points(
                 collection_name=collection,
                 points=points,
-                batch_size=batch_size_retry, 
+                batch_size=effective_batch_size, 
                 wait=True
             )
-            logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size_retry}.")
+            logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}.")
             return True
-        except Exception as e2:
-            logger.error(f"[Qdrant] INSERT ERROR on {url} (fallback failed): {e2}")
-            return False
+
+        except Exception as e:
+            logger.warning(f"[Qdrant] Upload with batch_size={batch_size} failed: {e}. Retrying with batch_size={batch_size_retry}...")
+            try:
+                client.upload_points(
+                    collection_name=collection,
+                    points=points,
+                    batch_size=batch_size_retry, 
+                    wait=True
+                )
+                logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size_retry}.")
+                return True
+            except Exception as e2:
+                logger.error(f"[Qdrant] INSERT ERROR on {url} (fallback failed): {e2}")
+                return False
 
 def count(url, collection):
     client = get_client(url)
