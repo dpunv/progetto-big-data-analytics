@@ -111,6 +111,8 @@ def main():
     logger.info('Peers registered on all servers')
 
     batch_size_send = config['batch_size']
+    batch_size_send_retry = config['batch_size_retry']
+
     vector_sent = 0
     total_batches = min(len(data), config['num_vectors']) // batch_size_send
     
@@ -141,13 +143,37 @@ def main():
         batch_data, server, batch_num = args
         thread_name = threading.current_thread().name
         logger.info(f'[{thread_name}] Sending batch {batch_num}/{total_batches} ({len(batch_data)} vectors) to {server.id}')
+        
         try:
+            # First attempt: Send full batch (likely 1024)
             server.send_vectors(batch_data)
             logger.info(f'[{thread_name}] Batch {batch_num} sent successfully to {server.id}')
             return (batch_num, True, None)
+            
         except Exception as e:
-            logger.error(f'[{thread_name}] Batch {batch_num} FAILED to {server.id}: {e}')
-            return (batch_num, False, str(e))
+            # Fallback logic: If batch is large, split into smaller chunks (batch_size_retry)
+            if len(batch_data) > batch_size_send_retry:
+                logger.warning(f'[{thread_name}] Batch {batch_num} FAILED to {server.id} with size {len(batch_data)}. Retrying with batch_size={batch_size_send_retry}... Error: {e}')
+                
+                fallback_batch_size = batch_size_send_retry
+                total_sub_batches = (len(batch_data) + fallback_batch_size - 1) // fallback_batch_size
+                
+                try:
+                    for i in range(total_sub_batches):
+                        sub_batch = batch_data[i * fallback_batch_size : (i + 1) * fallback_batch_size]
+                        logger.info(f'[{thread_name}] Sending sub-batch {i+1}/{total_sub_batches} of batch {batch_num} to {server.id}')
+                        server.send_vectors(sub_batch)
+                    
+                    logger.info(f'[{thread_name}] Batch {batch_num} sent successfully (via fallback) to {server.id}')
+                    return (batch_num, True, None)
+                    
+                except Exception as e2:
+                    logger.error(f'[{thread_name}] Batch {batch_num} FAILED during fallback to {server.id}: {e2}')
+                    return (batch_num, False, str(e2))
+            else:
+                # If batch is already small, just fail
+                logger.error(f'[{thread_name}] Batch {batch_num} FAILED to {server.id}: {e}')
+                return (batch_num, False, str(e))
     
     # Execute parallel sending
     start_time = time.time()
