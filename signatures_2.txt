@@ -1,0 +1,21 @@
+
+--- Signature of query_batch_points ---
+(collection_name: str, requests: Sequence[qdrant_client.http.models.models.QueryRequest], consistency: Union[Annotated[int, Strict(strict=True)], qdrant_client.http.models.models.ReadConsistencyType, NoneType] = None, timeout: Optional[int] = None, **kwargs: Any) -> list[qdrant_client.http.models.models.QueryResponse]
+Perform any search, recommend, discovery, context search operations in batch, and mitigate network overhead
+
+Args:
+    collection_name: Name of the collection
+    requests: List of query requests
+    consistency:
+        Read consistency of the search. Defines how many replicas should be queried before returning the result. Values:
+
+        - int - number of replicas to query, values should present in all queried replicas
+        - 'majority' - query all replicas, but return values present in the majority of replicas
+        - 'quorum' - query the majority of replicas, return values present in all of them
+        - 'all' - query all replicas, and return values present in all replicas
+    timeout:
+        Overrides global timeout for this search. Unit is seconds.
+
+Returns:
+    List of query responses
+
