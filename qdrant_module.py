@@ -39,7 +39,7 @@ def create_collection(url, collection_name, vector_size: int, distance: str = "C
 
 def query_vectors(url, collection, query, topk):
     """
-    Query vectors using search_batch (gRPC).
+    Query vectors using query_batch_points (gRPC).
     Returns a list of lists of ScoredPoint objects.
     """
     client = get_client(url)
@@ -47,37 +47,40 @@ def query_vectors(url, collection, query, topk):
     try:
         with metrics.DB_LATENCY.labels(operation='search_batch').time():
         # Create search requests
-            search_queries = [
-                models.SearchRequest(
-                    vector=query_vector,
-                    limit=topk,
-                    with_payload=True,
-                    with_vector=True
-                ) for query_vector in query
-            ]
+        search_queries = [
+            models.QueryRequest(
+                query=query_vector,
+                limit=topk,
+                with_payload=True,
+                with_vector=True
+            ) for query_vector in query
+        ]
 
-            # Execute batch search
-            results = client.search_batch(
-                collection_name=collection,
-                requests=search_queries
-            )
+        # Execute batch search
+        results = client.query_batch_points(
+            collection_name=collection,
+            requests=search_queries
+        )
 
-            # Convert ScoredPoint objects to dictionaries
-            results = [
-                {
+        # Convert ScoredPoint objects to dictionaries
+        # query_batch_points returns a list of QueryResponse objects
+        # Each QueryResponse has a 'points' attribute which is a list of ScoredPoint
+        final_results = []
+        for response in results:
+             # response.points is the list of ScoredPoint for that query
+             for point in response.points:
+                 final_results.append({
                     "id": point.id,
                     "score": point.score,
                     'payload':{
                         "string": point.payload.get("string"),
                         "vector": point.vector
                     }
-                }
-                for batch in results
-                for point in batch
-            ]
-            
-            logger.info(f"[Qdrant] Success: found {len(results)} results")
-            return results
+                })
+        
+        logger.info(f"[Qdrant] Success: found {len(final_results)} results")
+        return final_results
+
     except Exception as e:
         logger.error(f"[Qdrant] QUERY ERROR on {url}: {e}")
         return []
