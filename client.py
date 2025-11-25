@@ -9,6 +9,7 @@ import sys
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def main():
     batch_size_send_retry = config['batch_size_retry']
 
     vector_sent = 0
-    total_batches = min(len(data), config['num_vectors']) // batch_size_send
+    total_batches = math.ceil(min(len(data), config['num_vectors']) / batch_size_send)
     
     # Log initial statistics
     unique_vectors_to_send = min(len(data), config['num_vectors'])
@@ -129,7 +130,9 @@ def main():
     # Prepare all batches with their target servers (round-robin assignment)
     batches_with_servers = []
     for i in range(total_batches):
-        batch_data = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * batch_size_send]]
+        start_idx = i * batch_size_send
+        end_idx = min((i + 1) * batch_size_send, unique_vectors_to_send)
+        batch_data = [(el['embedding'], el['text']) for el in data[start_idx: end_idx]]
         target_server = servers[i % len(servers)]
         batches_with_servers.append((batch_data, target_server, i + 1))
         vector_sent += len(batch_data)
