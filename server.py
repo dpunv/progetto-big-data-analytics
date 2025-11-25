@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
+import metrics
 import uvicorn
 from typing import List, Tuple, Dict, TypedDict
 from server_logic import ServerApp
@@ -182,6 +183,7 @@ if __name__ == "__main__":
     # --- START FASTAPI (Main Thread) ---
     http_port = int(args.node_url.split(":")[-1])
     logger.info(f"Starting Uvicorn HTTP server on port {http_port}")
+    metrics.start_metrics_server(8000)
     
     # CRITICAL FIX: log_config=None prevents Uvicorn from resetting our logging configuration
     uvicorn.run(app, host="0.0.0.0", port=http_port, log_config=None)

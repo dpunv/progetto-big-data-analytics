@@ -1,3 +1,4 @@
+import metrics
 from qdrant_client import QdrantClient, models
 import sys
 import logging
@@ -44,39 +45,39 @@ def query_vectors(url, collection, query, topk):
     client = get_client(url)
     logger.info(f"[Qdrant] Executing batch search for {len(query)} vectors on {url}...")
     try:
+        with metrics.DB_LATENCY.labels(operation='search_batch').time():
         # Create search requests
-        search_queries = [
-            models.SearchRequest(
-                vector=query_vector,
-                limit=topk,
-                with_payload=True,
-                with_vector=True
-            ) for query_vector in query
-        ]
+            search_queries = [
+                models.SearchRequest(
+                    vector=query_vector,
+                    limit=topk,
+                    with_payload=True,
+                    with_vector=True
+                ) for query_vector in query
+            ]
 
-        # Execute batch search
-        results = client.search_batch(
-            collection_name=collection,
-            requests=search_queries
-        )
+            # Execute batch search
+            results = client.search_batch(
+                collection_name=collection,
+                requests=search_queries
+            )
 
-        # Convert ScoredPoint objects to dictionaries
-        results = [
-            {
-                "id": point.id,
-                "score": point.score,
-                'payload':{
-                    "string": point.payload.get("string"),
-                    "vector": point.vector
+            # Convert ScoredPoint objects to dictionaries
+            results = [
+                {
+                    "id": point.id,
+                    "score": point.score,
+                    'payload':{
+                        "string": point.payload.get("string"),
+                        "vector": point.vector
+                    }
                 }
-            }
-            for batch in results
-            for point in batch
-        ]
-        
-        logger.info(f"[Qdrant] Success: found {len(results)} results")
-        return results
-
+                for batch in results
+                for point in batch
+            ]
+            
+            logger.info(f"[Qdrant] Success: found {len(results)} results")
+            return results
     except Exception as e:
         logger.error(f"[Qdrant] QUERY ERROR on {url}: {e}")
         return []
@@ -92,27 +93,27 @@ def insert_vectors(url, collection, vectors, batch_size=256):
     client = get_client(url)
     logger.info(f"[Qdrant] Attempting to insert {len(vectors)} vectors into {collection} on {url}...")
     try:
+        with metrics.DB_LATENCY.labels(operation='upload_points').time():
         # Convert your input list to PointStruct objects
-        points = [
-            models.PointStruct(
-                id=vector_id,
-                vector=vector_content,
-                payload={"string": vector_payload}
+            points = [
+                models.PointStruct(
+                    id=vector_id,
+                    vector=vector_content,
+                    payload={"string": vector_payload}
+                )
+                for vector_content, vector_id, vector_payload in vectors
+            ]
+
+            # upload_points automatically handles batching and retries
+            client.upload_points(
+                collection_name=collection,
+                points=points,
+                batch_size=batch_size, 
+                wait=True
             )
-            for vector_content, vector_id, vector_payload in vectors
-        ]
 
-        # upload_points automatically handles batching and retries
-        client.upload_points(
-            collection_name=collection,
-            points=points,
-            batch_size=batch_size, 
-            wait=True
-        )
-
-        logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors.")
-        return True
-
+            logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors.")
+            return True
     except Exception as e:
         logger.error(f"[Qdrant] INSERT ERROR on {url}: {e}")
         return False
