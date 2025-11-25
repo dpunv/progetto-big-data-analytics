@@ -260,10 +260,11 @@ def main():
     metrics_ports = [METRICS_START_PORT + i + 1 for i in range(N)] 
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'localhost:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
-        'batch_size': 256,
-        'num_vectors': 20000,
-        'num_before_clustering': 2000,
-        'replicas': 3
+        'batch_size': 1800,
+        'batch_size_retry': 500,
+        'num_vectors': 131072,
+        'num_before_clustering': 16384,
+        'replicas': 4
     }
 
     write_config(config)

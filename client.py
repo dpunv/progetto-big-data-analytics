@@ -11,6 +11,7 @@ import sys
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +140,10 @@ def main():
     logger.info('Peers registered on all servers')
 
     batch_size_send = config['batch_size']
+    batch_size_send_retry = config['batch_size_retry']
+
     vector_sent = 0
-    total_batches = min(len(data), config['num_vectors']) // batch_size_send
+    total_batches = math.ceil(min(len(data), config['num_vectors']) / batch_size_send)
     
     # Log initial statistics
     unique_vectors_to_send = min(len(data), config['num_vectors'])
@@ -155,7 +158,9 @@ def main():
     # Prepare all batches with their target servers (round-robin assignment)
     batches_with_servers = []
     for i in range(total_batches):
-        batch_data = [(el['embedding'], el['text']) for el in data[i * batch_size_send: (i+1) * batch_size_send]]
+        start_idx = i * batch_size_send
+        end_idx = min((i + 1) * batch_size_send, unique_vectors_to_send)
+        batch_data = [(el['embedding'], el['text']) for el in data[start_idx: end_idx]]
         target_server = servers[i % len(servers)]
         batches_with_servers.append((batch_data, target_server, i + 1))
         vector_sent += len(batch_data)
@@ -169,13 +174,37 @@ def main():
         batch_data, server, batch_num = args
         thread_name = threading.current_thread().name
         logger.info(f'[{thread_name}] Sending batch {batch_num}/{total_batches} ({len(batch_data)} vectors) to {server.id}')
+        
         try:
+            # First attempt: Send full batch (likely 1024)
             server.send_vectors(batch_data)
             logger.info(f'[{thread_name}] Batch {batch_num} sent successfully to {server.id}')
             return (batch_num, True, None)
+            
         except Exception as e:
-            logger.error(f'[{thread_name}] Batch {batch_num} FAILED to {server.id}: {e}')
-            return (batch_num, False, str(e))
+            # Fallback logic: If batch is large, split into smaller chunks (batch_size_retry)
+            if len(batch_data) > batch_size_send_retry:
+                logger.warning(f'[{thread_name}] Batch {batch_num} FAILED to {server.id} with size {len(batch_data)}. Retrying with batch_size={batch_size_send_retry}... Error: {e}')
+                
+                fallback_batch_size = batch_size_send_retry
+                total_sub_batches = (len(batch_data) + fallback_batch_size - 1) // fallback_batch_size
+                
+                try:
+                    for i in range(total_sub_batches):
+                        sub_batch = batch_data[i * fallback_batch_size : (i + 1) * fallback_batch_size]
+                        logger.info(f'[{thread_name}] Sending sub-batch {i+1}/{total_sub_batches} of batch {batch_num} to {server.id}')
+                        server.send_vectors(sub_batch)
+                    
+                    logger.info(f'[{thread_name}] Batch {batch_num} sent successfully (via fallback) to {server.id}')
+                    return (batch_num, True, None)
+                    
+                except Exception as e2:
+                    logger.error(f'[{thread_name}] Batch {batch_num} FAILED during fallback to {server.id}: {e2}')
+                    return (batch_num, False, str(e2))
+            else:
+                # If batch is already small, just fail
+                logger.error(f'[{thread_name}] Batch {batch_num} FAILED to {server.id}: {e}')
+                return (batch_num, False, str(e))
     
     # Execute parallel sending
     start_time = time.time()
@@ -214,30 +243,38 @@ def main():
     for v, d in distances_calcs[:5]:
         logger.info(f"Ground Truth: {d} -> {v['text']}")
 
-    logger.info('Getting vector counts...')
-    count_res = servers[1 if len(servers) > 1 else 0].get_count()
-    if count_res:
-        counts = count_res.json()
-        total = sum([count for _, count in counts.items()])
-        logger.info(f'Counts: {counts} - Total: {total}')
+    logger.info('Getting vector counts (polling for consistency)...')
+    expected_total = vector_sent * config['replicas']
+    max_retries = 30
+    for i in range(max_retries):
+        count_res = servers[1 if len(servers) > 1 else 0].get_count()
+        if count_res:
+            counts = count_res.json()
+            total = sum([count for _, count in counts.items()])
+            logger.info(f'Counts: {counts} - Total: {total}/{expected_total}')
+            
+            if total >= expected_total:
+                break
+        time.sleep(2)
         
-        # Final statistics
-        logger.info("=" * 60)
-        logger.info("FINAL VECTOR STATISTICS")
-        logger.info(f"Unique vectors sent: {vector_sent}")
-        logger.info(f"Expected total with replicas: {vector_sent * config['replicas']}")
-        logger.info(f"Actual total stored: {total}")
-        
-        if total < vector_sent * config['replicas']:
-            missing = (vector_sent * config['replicas']) - total
-            logger.warning(f"Missing vectors: {missing} ({missing/(vector_sent * config['replicas'])*100:.2f}%)")
-        elif total > vector_sent * config['replicas']:
-            extra = total - (vector_sent * config['replicas'])
-            logger.info(f"Extra vectors: {extra} ({extra/(vector_sent * config['replicas'])*100:.2f}%)")
-        else:
-            logger.info("Perfect match: all expected replicas are stored!")
-        
-        logger.info("=" * 60)
+    
+    # Final statistics
+    logger.info("=" * 60)
+    logger.info("FINAL VECTOR STATISTICS")
+    logger.info(f"Unique vectors sent: {vector_sent}")
+    logger.info(f"Expected total with replicas: {vector_sent * config['replicas']}")
+    logger.info(f"Actual total stored: {total}")
+    
+    if total < vector_sent * config['replicas']:
+        missing = (vector_sent * config['replicas']) - total
+        logger.warning(f"Missing vectors: {missing} ({missing/(vector_sent * config['replicas'])*100:.2f}%)")
+    elif total > vector_sent * config['replicas']:
+        extra = total - (vector_sent * config['replicas'])
+        logger.info(f"Extra vectors: {extra} ({extra/(vector_sent * config['replicas'])*100:.2f}%)")
+    else:
+        logger.info("Perfect match: all expected replicas are stored!")
+    
+    logger.info("=" * 60)
 
     logger.info('Client application end')
 

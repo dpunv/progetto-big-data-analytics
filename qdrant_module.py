@@ -7,7 +7,15 @@ logger = logging.getLogger(__name__)
 # Helper to create a client instance.
 def get_client(url: str) -> QdrantClient:
     # prefer_grpc=True forces the client to use the gRPC port (usually 6334)
-    return QdrantClient(url=url, grpc_port=(int(url.split(':')[-1])+1), prefer_grpc=True)
+    return QdrantClient(
+        url=url, 
+        grpc_port=(int(url.split(':')[-1])+1), 
+        prefer_grpc=True,
+        grpc_options={
+            'grpc.max_send_message_length': 100 * 1024 * 1024,
+            'grpc.max_receive_message_length': 100 * 1024 * 1024
+        }
+    )
 
 def create_collection(url, collection_name, vector_size: int, distance: str = "Cosine"):
     client = get_client(url)
@@ -93,31 +101,49 @@ def insert_vectors(url, collection, vectors, batch_size=256):
     """
     client = get_client(url)
     logger.info(f"[Qdrant] Attempting to insert {len(vectors)} vectors into {collection} on {url}...")
+    
+    # Convert your input list to PointStruct objects
+    points = [
+        models.PointStruct(
+            id=vector_id,
+            vector=vector_content,
+            payload={"string": vector_payload}
+        )
+        for vector_content, vector_id, vector_payload in vectors
+    ]
+    # Se batch_size non è specificato (o se vogliamo ottimizzare), 
+    # diciamo a Qdrant di inviare tutto in una volta sola.
+    # Se vectors contiene 1800 elementi, effective_batch_size sarà 1800.
+    if batch_size is None or batch_size > len(vectors):
+        effective_batch_size = len(vectors) # Invia tutto in un colpo solo (massima velocità)
+    else:
+        effective_batch_size = batch_size
     try:
-        with metrics.DB_LATENCY.labels(operation='upload_points').time():
-        # Convert your input list to PointStruct objects
-            points = [
-                models.PointStruct(
-                    id=vector_id,
-                    vector=vector_content,
-                    payload={"string": vector_payload}
-                )
-                for vector_content, vector_id, vector_payload in vectors
-            ]
+        # Try with larger batch size first
+        logger.info(f"[Qdrant] Trying upload with batch_size= {batch_size}")
+        client.upload_points(
+            collection_name=collection,
+            points=points,
+            batch_size=effective_batch_size, 
+            wait=True
+        )
+        logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}.")
+        return True
 
-            # upload_points automatically handles batching and retries
+    except Exception as e:
+        logger.warning(f"[Qdrant] Upload with batch_size={batch_size} failed: {e}. Retrying with batch_size={batch_size_retry}...")
+        try:
             client.upload_points(
                 collection_name=collection,
                 points=points,
-                batch_size=batch_size, 
+                batch_size=batch_size_retry, 
                 wait=True
             )
-
-            logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors.")
+            logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size_retry}.")
             return True
-    except Exception as e:
-        logger.error(f"[Qdrant] INSERT ERROR on {url}: {e}")
-        return False
+        except Exception as e2:
+            logger.error(f"[Qdrant] INSERT ERROR on {url} (fallback failed): {e2}")
+            return False
 
 def count(url, collection):
     client = get_client(url)
