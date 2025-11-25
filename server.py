@@ -131,7 +131,7 @@ if __name__ == "__main__":
     parser.add_argument("--replicas", type=int, default=1, help="Number of replicas")
     parser.add_argument("--num-before-clustering", type=int, default=10000, help="Number of vectors before triggering clustering")
     parser.add_argument("--log-file", type=str, default=None, help="Path to log file")
-    
+    parser.add_argument('--metrics-port', type=int, default=8000, help='Port for Prometheus metrics')
     args = parser.parse_args()
 
     # Setup Logging
@@ -183,7 +183,7 @@ if __name__ == "__main__":
     # --- START FASTAPI (Main Thread) ---
     http_port = int(args.node_url.split(":")[-1])
     logger.info(f"Starting Uvicorn HTTP server on port {http_port}")
-    metrics.start_metrics_server(8000)
+    metrics.start_metrics_server(args.metrics_port)
     
     # CRITICAL FIX: log_config=None prevents Uvicorn from resetting our logging configuration
     uvicorn.run(app, host="0.0.0.0", port=http_port, log_config=None)

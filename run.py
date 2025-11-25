@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import subprocess
 import sys
@@ -89,12 +90,13 @@ def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
     logger.info("All Qdrant nodes are ready.")
     return True
 
-def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000):
+def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000):
     for i in range(1, len(fast_api_ports) + 1):
         node_id = f"node{i}"
         fastapi_port = fast_api_ports[i-1]
         qdrant_http_port = qdrant_ports[i-1]
         grpc_port = grpc_ports[i-1]
+        metrics_port = metrics_ports[i-1]
         
         qdrant_url = f'http://localhost:{qdrant_http_port}'
         log_file = f'logs/{node_id}.log'
@@ -107,6 +109,7 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, coordinator_url='ht
                 '--qdrant-url', qdrant_url,
                 '--coordinator-url', coordinator_url,
                 '--replicas', str(replicas),
+                '--metrics-port', str(metrics_port),
                 '--num-before-clustering', str(num_before_clustering),
                 '--log-file', log_file
             ],
@@ -122,7 +125,7 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, coordinator_url='ht
         
         qdrant_module.create_collection(qdrant_url, 'vectors', 384)
         
-        logger.info(f"Started server '{node_id}' on port {fastapi_port} (Qdrant: {qdrant_http_port}, PID: {proc.pid}). Log: {log_file}")
+        logger.info(f"Started server '{node_id}' on port {fastapi_port}, Metrics={metrics_port}, (Qdrant: {qdrant_http_port}, PID: {proc.pid}). Log: {log_file}")
 
     return server_processes
 
@@ -180,12 +183,72 @@ def cleaning(N):
 
     logger.info("Cleanup complete.")
 
+def collect_prometheus_metrics(start_port=10001, num_nodes=3):
+    print(f"\n{'='*60}")
+    print(f" REPORT METRICHE CLUSTER ({num_nodes} NODI)")
+    print(f"{'='*60}")
+    histograms = {} 
+    counters = {}
+
+    for i in range(num_nodes):
+        port = start_port + i
+        url = f"http://localhost:{port}/metrics"
+        
+        try:
+            response = requests.get(url, timeout=2)
+            if response.status_code != 200: continue
+            
+            lines = response.text.split('\n')
+            
+            for line in lines:
+                if line.startswith('#') or not line: continue
+                if '_created' in line: continue
+                if '_bucket' in line: continue
+                match_op = re.search(r'operation="([^"]+)"', line)
+                if match_op:
+                    op_name = match_op.group(1)
+                else:
+                    op_name = line.split('{')[0] if '{' in line else line.split(' ')[0]
+                try:
+                    value = float(line.split(' ')[-1])
+                except ValueError:
+                    continue
+
+                if '_latency_seconds_count' in line or '_latency_seconds_sum' in line:
+                    if op_name not in histograms: histograms[op_name] = {'count': 0, 'sum': 0}
+                    
+                    if '_count' in line:
+                        histograms[op_name]['count'] += value
+                    elif '_sum' in line:
+                        histograms[op_name]['sum'] += value
+
+                elif '_total' in line:
+                    if 'python_' in line or 'process_' in line: continue
+                    
+                    if op_name not in counters: counters[op_name] = 0
+                    counters[op_name] += value
+
+        except Exception as e:
+            pass
+
+    print(f"{'OPERAZIONE (Tempo)':<30} | {'REQ':<10} | {'AVG (s)':<15}")
+    print("-" * 60)
+    for op, data in sorted(histograms.items()):
+        count = data['count']
+        if count > 0:
+            avg = data['sum'] / count
+            print(f"{op:<30} | {int(count):<10} | {avg:.5f}")
+    print("-" * 60)
+
+    print("=" * 60 + "\n")
+
 def main():
     N = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     FASTAPI_START_PORT = 8000
     GRPC_START_PORT = 9000
     QDRANT_START_PORT = 6333
     QDRANT_PORT_STEP = 2
+    METRICS_START_PORT = 10000
 
     atexit.register(cleaning, N)
     signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
@@ -194,12 +257,12 @@ def main():
     fast_api_ports = [FASTAPI_START_PORT + i + 1 for i in range(N)]
     qdrant_ports = [QDRANT_START_PORT + (i * QDRANT_PORT_STEP) for i in range(N)]
     grpc_ports = [GRPC_START_PORT + i + 1 for i in range(N)] 
-
+    metrics_ports = [METRICS_START_PORT + i + 1 for i in range(N)] 
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'localhost:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 256,
-        'num_vectors': 15000,
-        'num_before_clustering': 5000,
+        'num_vectors': 20000,
+        'num_before_clustering': 2000,
         'replicas': 3
     }
 
@@ -211,7 +274,7 @@ def main():
         logger.error("Failed to start Qdrant servers. Exiting.")
         sys.exit(1)
 
-    launch_servers(fast_api_ports, qdrant_ports, grpc_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'])
+    launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'])
 
     if not wait_for_servers(fast_api_ports):
         sys.exit()
@@ -219,6 +282,8 @@ def main():
     logger.info("Launching Client...")
     result = subprocess.run([sys.executable, "client.py", "--log-file", "logs/client.log"])
 
+    collect_prometheus_metrics(start_port=metrics_ports[0], num_nodes=N)
+    
     sys.exit(result.returncode)
 
 if __name__ == '__main__':

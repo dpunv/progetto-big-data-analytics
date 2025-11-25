@@ -1,7 +1,9 @@
+import numpy as np
 import requests
 import json
 from compound_types import *
 import time
+import metrics
 import utils
 import argparse
 import logging
@@ -68,6 +70,32 @@ class Server:
             logger.error(f"Count failed on {self.id}: {e}")
             return None
 
+def run_client(server, queries, topk=5):   
+    logger.info(f"Starting queries to {server.url}...")
+    start_time = time.time()
+    response=server.query_vectors(queries)
+    elapsed = time.time() - start_time
+    if elapsed > 0:
+        avg_lat = elapsed / len(queries)
+        logger.info(f"Completed {len(queries)} queries in {elapsed:.2f}s (Avg Latency: {avg_lat:.4f}s)")
+        
+        print("\n" + "="*40)
+        print(" CLIENT SIDE METRICS REPORT")
+        print("="*40)
+        print(f" Total Queries:   {len(queries)}")
+        print(f" Total Time:      {elapsed:.2f} s")
+        print(f" Avg Latency:     {avg_lat:.4f} s")
+        print("="*40 + "\n")
+    
+        with open("logs/client_metrics.txt", "w") as f:
+            f.write(f"CLIENT_AVG_LATENCY={avg_lat}\n")
+            f.write(f"CLIENT_TOTAL_REQ={len(queries)}\n")
+    else:
+        logger.warning("No successful queries recorded.")
+
+    return response
+
+        
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--log-file", type=str, default="logs/client.log", help="Path to log file")
@@ -172,7 +200,8 @@ def main():
     logger.info('Sending query')
 
     query_vector = data[0]['embedding']
-    res_obj = servers[0].query_vectors([query_vector])
+    res_obj = run_client(servers[0], [[query_vector]])
+    #res_obj = servers[0].query_vectors([query_vector])
     if res_obj:
         res = res_obj.json()['results']
         for result in res:
