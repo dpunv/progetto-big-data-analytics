@@ -148,29 +148,9 @@ class ServerApp:
         self.id_count = 0
         self.batch_size = batch_size
         self.batch_size_retry = batch_size_retry
-        self.cluster_peer_map = {} # Nuova struttura: {cluster_id: [peer_index1, peer_index2, ...]}
         # Thread pool for parallel peer communication
         self.peer_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='PeerComm')
         logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
-
-    def _update_cluster_map(self):
-        """Ricostruisce la mappa inversa per lookup veloci O(1)"""
-        self.cluster_peer_map = {}
-        # Mappa i peer remoti
-        for idx, peer in enumerate(self.peers):
-            for cluster_id in peer.cluster_ids_set:
-                if cluster_id not in self.cluster_peer_map:
-                    self.cluster_peer_map[cluster_id] = []
-                self.cluster_peer_map[cluster_id].append(idx)
-        
-        # Mappa me stesso (per i vettori locali)
-        my_cluster_ids = {c[0] for c in self.node_clusters}
-        for cluster_id in my_cluster_ids:
-             if cluster_id not in self.cluster_peer_map:
-                self.cluster_peer_map[cluster_id] = []
-             # Usiamo un indice speciale o gestiamo 'to_me' separatamente, 
-             # ma sapere che il cluster è mio è utile.
-             self.cluster_peer_map[cluster_id].append(-1) # -1 indica "me stesso"
 
     def _run_parallel_tasks(self, tasks):
         """
@@ -202,7 +182,6 @@ class ServerApp:
             logger.info(f"[Add Peers] Adding {len(peers)} peers: {peers}")
             for id, http_url, grpc_url in peers:
                 self.peers.append(Peer(id, http_url, grpc_url))
-            self._update_cluster_map()
     
     def start_clustering_thread(self, request_id):
         with metrics.REQUEST_LATENCY.labels(operation='clustering').time():
@@ -356,7 +335,6 @@ class ServerApp:
             logger.info(f"[Set Clusters] Storing {len(my_vecs)} assigned vectors locally.")
             self.add_vectors(my_vecs, self.status, request_id)
             logger.debug(f"[Set Clusters] Complete. My Total Count: {self.get_count()}")
-            self._update_cluster_map()
 
     def route_vector(self, vector: Vector, k: int):
         with metrics.REQUEST_LATENCY.labels(operation='route_vector').time():
