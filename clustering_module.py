@@ -104,12 +104,14 @@ class MetaHNSW:
             
         return new_obj
 
-def find_k_and_run_kmeans(X, max_k=10, random_state=42): # using silhouette score
-    k_range = range(8, max_k + 1)
+def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette score
+    k_range = range(2, max_k + 1)
     
     if X.shape[0] <= max_k:
         logger.warning(f"Number of samples ({X.shape[0]}) is <= max_k ({max_k}). Adjusting range.")
         k_range = range(2, X.shape[0])
+    
+    logger.info(f"clustering with k in range 2 to {max_k}")
 
     X_faiss = X.astype(np.float32) # Convert to float32 for FAISS
     n, d = X_faiss.shape
@@ -140,6 +142,7 @@ def find_k_and_run_kmeans(X, max_k=10, random_state=42): # using silhouette scor
             score = silhouette_score(X, labels)
         except Exception:
             score = -1
+        logger.debug(f"Silhouette score for k={k}: {score}")
 
         if score > max_score:
             logger.debug(f"New best silhouette score: {score} for k={k}")
