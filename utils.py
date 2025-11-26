@@ -31,8 +31,8 @@ def load_vectors(filename, max_vectors):
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     """Calculates cosine similarity between two vectors."""
-    a = np.array(v1)
-    b = np.array(v2)
+    a = np.asarray(v1)
+    b = np.asarray(v2)
     
     dot_product = np.dot(a, b)
     norm_a = np.linalg.norm(a)

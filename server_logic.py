@@ -15,6 +15,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
+GRPC_OPTIONS = [
+    ('grpc.max_send_message_length', 100 * 1024 * 1024),
+    ('grpc.max_receive_message_length', 100 * 1024 * 1024)
+]
+
 class Peer:
     def __init__(self, id, url, grpc_url):
         self.id = id
@@ -22,18 +27,25 @@ class Peer:
         self.grpc_url = grpc_url
         self.status = 'active'
         self.clusters = []
+        self.cluster_ids_set = set()
+        
+        # Initialize gRPC channel and stub once
+        self.channel = grpc.insecure_channel(self.grpc_url, options=GRPC_OPTIONS)
+        self.stub = p2p_pb2_grpc.P2PNodeStub(self.channel)
 
     def set_status(self, status):
         self.status = status
 
     def set_clusters(self, clusters: ListOfVectorsWithId):
         self.clusters = clusters
+        self.cluster_ids_set = {c[0] for c in clusters}
         
     def add_clusters(self, clusters: ListOfVectorsWithId):
         self.clusters.extend(clusters)
+        self.cluster_ids_set.update(c[0] for c in clusters)
     
     def contains(self, cluster: VectorWithId):
-        return cluster in [c[0] for c in self.clusters]
+        return cluster in self.cluster_ids_set
     
     def send(self, vectors: ListOfVectorsComplete, status: str, id):
         logger.debug(f"--> [Peer Send] Sending {len(vectors)} vectors to Peer {self.id} ({self.grpc_url}) | Status: {status}")
@@ -50,13 +62,7 @@ class Peer:
         )
 
         try:
-            options = [
-                ('grpc.max_send_message_length', 100 * 1024 * 1024),
-                ('grpc.max_receive_message_length', 100 * 1024 * 1024)
-            ]
-            with grpc.insecure_channel(self.grpc_url, options=options) as channel:
-                stub = p2p_pb2_grpc.P2PNodeStub(channel)
-                stub.ReceiveVectors(req)
+            self.stub.ReceiveVectors(req)
             logger.debug(f"--> [Peer Send] Success: Sent vectors to {self.id}")
         except grpc.RpcError as e:
             logger.error(f"--> [Peer Send] FAILED to {self.id}: {e}")
@@ -76,13 +82,7 @@ class Peer:
         req = p2p_pb2.SetClustersRequest(req_id=request_id, content_pickle=data_bytes)
         
         try:
-            options = [
-                ('grpc.max_send_message_length', 100 * 1024 * 1024),
-                ('grpc.max_receive_message_length', 100 * 1024 * 1024)
-            ]
-            with grpc.insecure_channel(self.grpc_url, options=options) as channel:
-                stub = p2p_pb2_grpc.P2PNodeStub(channel)
-                stub.SetClusters(req)
+            self.stub.SetClusters(req)
             logger.debug(f"--> [Peer SendClusters] Success: Sent clusters to {self.id}")
         except grpc.RpcError as e:
             logger.error(f"--> [Peer SendClusters] FAILED to {self.id}: {e}")
@@ -93,13 +93,7 @@ class Peer:
         req = p2p_pb2.QueryRequest(req_id=request_id, query_vectors=proto_query, topk=topk)
         
         try:
-            options = [
-                ('grpc.max_send_message_length', 100 * 1024 * 1024),
-                ('grpc.max_receive_message_length', 100 * 1024 * 1024)
-            ]
-            with grpc.insecure_channel(self.grpc_url, options=options) as channel:
-                stub = p2p_pb2_grpc.P2PNodeStub(channel)
-                response = stub.QueryPeer(req)
+            response = self.stub.QueryPeer(req)
             
             results = []
             for sp in response.results:
@@ -123,6 +117,11 @@ class Peer:
         except Exception as e:
             logger.error(f"Error getting count from {self.id}: {e}")
             return {}
+            
+    def close(self):
+        """Close the gRPC channel."""
+        if self.channel:
+            self.channel.close()
 
 class ServerApp:
     def __init__(self, id, url, qdrant_url, grpc_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384, batch_size=256, batch_size_retry=64):
@@ -152,6 +151,21 @@ class ServerApp:
         # Thread pool for parallel peer communication
         self.peer_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='PeerComm')
         logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
+
+    def _run_parallel_tasks(self, tasks):
+        """
+        Executes a list of tasks in parallel using the peer executor.
+        tasks: List of tuples (function, *args)
+        Returns: List of results from the functions.
+        """
+        if not tasks:
+            return []
+        
+        futures = [self.peer_executor.submit(func, *args) for func, args in tasks]
+        results = []
+        for future in as_completed(futures):
+            results.append(future.result())
+        return results
     
     def i_am_coord(self):
         return self.coordinator_url == self.url
@@ -198,17 +212,11 @@ class ServerApp:
                     return (peer.id, False)
             
             # Submit all broadcast tasks
-            futures = []
-            for peer in self.peers:
-                future = self.peer_executor.submit(broadcast_to_peer, peer)
-                futures.append(future)
+            tasks = [(broadcast_to_peer, (peer,)) for peer in self.peers]
+            results = self._run_parallel_tasks(tasks)
             
-            # Wait for all broadcasts to complete
-            failed_broadcasts = []
-            for future in as_completed(futures):
-                peer_id, success = future.result()
-                if not success:
-                    failed_broadcasts.append(peer_id)
+            # Check results
+            failed_broadcasts = [peer_id for peer_id, success in results if not success]
             
             if failed_broadcasts:
                 logger.error(f"[Clustering] Failed to broadcast clusters to: {failed_broadcasts}")
@@ -366,18 +374,15 @@ class ServerApp:
                     return (peer.id, False, len(vectors))
             
             # Submit tasks for peers with vectors
-            futures = []
+            tasks = []
             for index, peer in enumerate(self.peers):
                 if len(assigned_vectors[index]) > 0:
-                    future = self.peer_executor.submit(send_to_peer, index, peer, assigned_vectors[index])
-                    futures.append(future)
+                    tasks.append((send_to_peer, (index, peer, assigned_vectors[index])))
             
-            # Wait for all sends to complete and check results
-            failed_sends = []
-            for future in as_completed(futures):
-                peer_id, success, count = future.result()
-                if not success:
-                    failed_sends.append(peer_id)
+            results = self._run_parallel_tasks(tasks)
+            
+            # Check results
+            failed_sends = [peer_id for peer_id, success, count in results if not success]
             
             if failed_sends:
                 logger.warning(f"[Router] Failed to send vectors to peers: {failed_sends}")
@@ -438,26 +443,22 @@ class ServerApp:
                     return (peer.id, False, [])
             
             # Submit query tasks to thread pool
-            futures = []
-            peer_indices = []
-            
+            tasks = []
             for index, peer in enumerate(self.peers):
                 if to_query_peer[index]:
-                    future = self.peer_executor.submit(query_peer_task, index, peer, to_query_peer[index])
-                    futures.append(future)
-                    peer_indices.append(index)
+                    tasks.append((query_peer_task, (index, peer, to_query_peer[index])))
             
             # Also query self in parallel if needed
             if to_query_me:
-                self_future = self.peer_executor.submit(lambda: (self.node_id, True, self.query_me(to_query_me, topk)))
-                futures.append(self_future)
+                tasks.append((lambda: (self.node_id, True, self.query_me(to_query_me, topk)), ()))
             
-            # Collect all results as they complete
+            results_list = self._run_parallel_tasks(tasks)
+            
+            # Collect all results
             response = []
             failed_queries = []
             
-            for future in as_completed(futures):
-                node_id, success, results = future.result()
+            for node_id, success, results in results_list:
                 if success:
                     response.extend(results)
                 else:

@@ -8,3 +8,4 @@ hnswlib
 qdrant-client
 grpcio
 grpcio-tools
+prometheus_client

@@ -5,9 +5,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Helper to create a client instance.
+_client_cache = {}
+
 def get_client(url: str) -> QdrantClient:
+    if url in _client_cache:
+        return _client_cache[url]
+        
     # prefer_grpc=True forces the client to use the gRPC port (usually 6334)
-    return QdrantClient(
+    client = QdrantClient(
         url=url, 
         grpc_port=(int(url.split(':')[-1])+1), 
         prefer_grpc=True,
@@ -16,6 +21,8 @@ def get_client(url: str) -> QdrantClient:
             'grpc.max_receive_message_length': 100 * 1024 * 1024
         }
     )
+    _client_cache[url] = client
+    return client
 
 def create_collection(url, collection_name, vector_size: int, distance: str = "Cosine"):
     client = get_client(url)

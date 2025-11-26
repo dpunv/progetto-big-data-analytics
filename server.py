@@ -44,7 +44,7 @@ class SetClustersRequest(BaseModel):
 
 
 @app.get("/")
-async def healh_check_endpoint():
+async def health_check_endpoint():
     return {
         "status": "healthy",
         "node_id": server.node_id,
@@ -55,7 +55,7 @@ async def healh_check_endpoint():
 @app.post("/query")
 async def query_endpoint(query: QueryVectorsRequest):
     logger.info(f"API: /query called (ReqID: {query.id})")
-    if server == None:
+    if server is None:
         logger.error("ServerApp not created")
         raise Exception("ServerApp not created")
     results = server.query(query.query, query.topk, query.id)
@@ -68,7 +68,7 @@ async def query_endpoint(query: QueryVectorsRequest):
 @app.post("/query_peer")
 async def query_peer_endpoint(query: QueryVectorsRequest):
     logger.info(f"API: /query_peer called")
-    if server == None:
+    if server is None:
         raise Exception("ServerApp not created")
     results = server.query_me(query.query, query.topk)
     logger.debug(f"Query peer results count: {len(results) if results else 0}")
@@ -81,7 +81,7 @@ async def query_peer_endpoint(query: QueryVectorsRequest):
 @app.post("/add")
 async def add_vectors_endpoint(vectors: AddVectorsRequest):
     logger.info(f"API: /add called. ReqID: {vectors.id}, Vectors: {len(vectors.content)}")
-    if server == None:
+    if server is None:
         raise Exception("ServerApp not created")
     server.add_vectors_client(vectors.content, vectors.id)
     logger.info("API: /add completed")
@@ -89,34 +89,34 @@ async def add_vectors_endpoint(vectors: AddVectorsRequest):
 @app.post("/receive_vectors_peer")
 async def receive_vectors_peer_endpoint(vectors: AddVectorsPeerRequest):
     logger.info("API: /receive_vectors_peer called")
-    if server == None:
+    if server is None:
         raise Exception("ServerApp not created")
     server.add_vectors(vectors.content, vectors.type, vectors.id)
     logger.info("vector added via peer endpoint")
 
 @app.post("/register_peers")
 async def register_peers_endpoint(peers: AddPeersRequest):
-    if server == None:
+    if server is None:
         raise Exception("ServerApp not created")
     server.add_peers(peers.peers)
 
 @app.post("/set_clusters")
 async def set_clusters_endpoint(data: SetClustersRequest):
     logger.info(f"API: /set_clusters called")
-    if server == None:
+    if server is None:
         raise Exception("ServerApp not created")
     data.content["meta_hnsw"] = MetaHNSW.from_serializable_dict(data.content["meta_hnsw"])
     server.set_clusters(data.content, data.id)
 
 @app.get("/count")
 async def count_endpoint():
-    if server == None:
+    if server is None:
         raise Exception("ServerApp not created")
     return server.get_count_client()
 
 @app.get("/count_peer")
 async def count_peer_endpoint():
-    if server == None:
+    if server is None:
         raise Exception("ServerApp not created")
     return server.get_count()
 
