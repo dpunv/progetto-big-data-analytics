@@ -12,11 +12,23 @@ import hnswlib
 import pickle
 import base64
 import logging
+import os
+import sys
 
 SILHOUETTE_SUBSAMPLE_SIZE = 2000  # Max sample size for silhouette score
 KMEANS_N_ITER = 150  # Reduced n_iter for KMeans
 
-logger = logging.getLogger(__name__)
+# Setup logging for clustering_module
+
+# Logger locale per clustering_module, sempre su INFO e logs/clustering.log
+os.makedirs("logs", exist_ok=True)
+logger = logging.getLogger("ClusteringModule")
+logger.propagate = False
+if not logger.hasHandlers():
+    file_handler = logging.FileHandler("logs/clustering.log", mode='a')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+logger.setLevel(logging.INFO)
 
 # --- PYTORCH KMEANS IMPLEMENTATION ---
 def kmeans_torch(X_tensor, num_clusters, niter=15, tol=1e-4, device='cpu'):
@@ -131,14 +143,30 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
     """
     Versione ottimizzata con PyTorch per supportare GPU NVIDIA, MPS (Mac), e CPU.
     """
+    logger.info("="*60)
+    logger.info("STARTING CLUSTERING PROCESS")
+    logger.info(f"Input data shape: {X.shape}")
+    logger.info(f"Max k to evaluate: {max_k}")
+    
     k_range = range(2, max_k + 1)
     if X.shape[0] <= max_k:
-        logger.warning(f"Samples ({X.shape[0]}) <= max_k ({max_k}). Adjusting.")
+        logger.warning(f"Samples ({X.shape[0]}) <= max_k ({max_k}). Adjusting k_range.")
         k_range = range(2, X.shape[0])
 
     # 1. Rilevamento Device (NVIDIA vs Mac MPS vs CPU)
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    logger.info(f"Running Clustering on DEVICE: {device}")
+    
+    # Log detailed device information
+    if device.type == "cuda":
+        logger.info(f"✓ GPU ACCELERATION ENABLED: CUDA")
+        logger.info(f"  GPU Device: {torch.cuda.get_device_name(0)}")
+        logger.info(f"  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    elif device.type == "mps":
+        logger.info(f"✓ GPU ACCELERATION ENABLED: Apple MPS")
+    else:
+        logger.info(f"⚠ Running on CPU (no GPU acceleration)")
+    
+    logger.info(f"Device: {device}")
 
     # 2. Spostamento dati su GPU una volta sola
     X_tensor = torch.from_numpy(X).float().to(device)
@@ -150,13 +178,17 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
     best_labels = None
 
     logger.info("Starting KMeans optimization (PyTorch Accelerated)...")
+    logger.info(f"K-range to evaluate: {list(k_range)[0]} to {list(k_range)[-1]}")
+    logger.info(f"KMeans iterations per k: {KMEANS_N_ITER}")
     
     # Per il calcolo della Silhouette (che sklearn fa su CPU), usiamo un subset se necessario
     if n > SILHOUETTE_SUBSAMPLE_SIZE:
         idx = np.random.choice(n, SILHOUETTE_SUBSAMPLE_SIZE, replace=False)
         X_cpu_sample = X[idx] # Numpy array su CPU
+        logger.info(f"Using subsampling for silhouette score: {SILHOUETTE_SUBSAMPLE_SIZE}/{n} samples")
     else:
         X_cpu_sample = X # Numpy array su CPU
+        logger.info(f"Using all {n} samples for silhouette score")
 
     for k in k_range:
         # Esegue training su GPU
@@ -174,10 +206,11 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
 
         try:
             score = silhouette_score(X_cpu_sample, labels_cpu_sample)
-        except Exception:
+        except Exception as e:
             score = -1
+            logger.warning(f"Failed to compute silhouette score for k={k}: {e}")
             
-        logger.debug(f"Silhouette score for k={k}: {score}")
+        logger.info(f"  k={k:2d} | Silhouette Score: {score:+.4f}")
 
         if score > max_score:
             max_score = score
@@ -189,19 +222,37 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
     # Pulizia memoria GPU
     if device.type != 'cpu':
         del X_tensor
-        torch.cuda.empty_cache() if device.type == 'cuda' else torch.mps.empty_cache()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            logger.info("GPU memory cache cleared (CUDA)")
+        else:
+            torch.mps.empty_cache()
+            logger.info("GPU memory cache cleared (MPS)")
 
     if best_centroids is not None:
         try:
             with open('centroids.json', 'w') as f:
                 json.dump(best_centroids.tolist(), f, indent=2)
-        except:
-            pass
+            logger.info("Centroids saved to centroids.json")
+        except Exception as e:
+            logger.warning(f"Failed to save centroids: {e}")
     else:
-        logger.warning("Clustering failed. Fallback.")
+        logger.warning("Clustering failed. Using fallback: single cluster with mean centroid.")
         return 1, np.mean(X, axis=0, keepdims=True), np.zeros(n)
 
-    logger.info(f"KMeans finished. Best k={best_k}, Max Score={max_score}")
+    logger.info("="*60)
+    logger.info("CLUSTERING COMPLETED SUCCESSFULLY")
+    logger.info(f"  Best k: {best_k}")
+    logger.info(f"  Best Silhouette Score: {max_score:.4f}")
+    logger.info(f"  Number of centroids: {len(best_centroids)}")
+    
+    # Log cluster sizes
+    unique, counts = np.unique(best_labels, return_counts=True)
+    logger.info(f"  Cluster sizes:")
+    for cluster_id, count in zip(unique, counts):
+        logger.info(f"    Cluster {cluster_id}: {count} vectors")
+    logger.info("="*60)
+    
     return best_k, best_centroids, best_labels
 
 def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, replication_factor, beam_width) -> Dict[str, ListOfVectorsWithId]:
@@ -260,8 +311,11 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
     return assignment
 
 def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId, Tuple[Vector, ListOfVectorsComplete]]:
+    logger.info(f"get_clusters() called with {len(vectors)} vectors")
+    
     # Extract only vectors for clustering
     data_matrix = np.array([v[0] for v in vectors])
+    logger.info(f"Extracted data matrix of shape: {data_matrix.shape}")
     
     _, best_centroids, labels = find_k_and_run_kmeans(data_matrix)
     
@@ -270,23 +324,37 @@ def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId, Tuple[Vector,
     
     # Grouping by label
     # Optimization: Use numpy for indexing instead of list comprehension loop
+    logger.info("Grouping vectors by cluster labels...")
     for i in range(len(best_c)):
         indices = np.where(labels == i)[0]
         # Retrieve original objects
         cluster_vectors = [vectors[j] for j in indices]
         result[i] = (best_c[i], cluster_vectors)
-        
+    
+    logger.info(f"Created {len(result)} clusters from vectors")
     return result
 
 def get_node_assignment(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], peers, replication_factor) -> Dict[str, ListOfVectorsWithId]:
+    logger.info(f"Computing node assignment for {len(clusters)} clusters across {len(peers)} peers")
+    logger.info(f"Replication factor: {replication_factor}")
+    
     request = [(id, len(v_ids), centroid) for id, (centroid, v_ids) in clusters.items()]
     assignment = find_assignment(request, [peer.id for peer in peers], replication_factor, 50)
+    
+    # Log assignment summary
+    for node_id, assigned_clusters in assignment.items():
+        logger.info(f"  {node_id}: {len(assigned_clusters)} clusters assigned")
+    
     return assignment
 
 def build_meta_hnsw(clusters: Dict[VectorId, Tuple[Vector, List[VectorId]]], dimension):
+    logger.info(f"Building MetaHNSW index for {len(clusters)} clusters (dimension={dimension})")
+    
     clusters_adjusted = [(cluster_id, cluster_centroid) for cluster_id, (cluster_centroid, _) in clusters.items()]
     hnsw = MetaHNSW(dimension)
     hnsw.build(clusters_adjusted)
+    
+    logger.info("MetaHNSW index built successfully")
     return hnsw
 
 def find(hnsw: MetaHNSW, v: Vector, k: int) -> List[VectorId]:
