@@ -16,8 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 GRPC_OPTIONS = [
-    ('grpc.max_send_message_length', 100 * 1024 * 1024),
-    ('grpc.max_receive_message_length', 100 * 1024 * 1024)
+    ('grpc.max_send_message_length', 512 * 1024 * 1024),
+    ('grpc.max_receive_message_length', 512 * 1024 * 1024)
 ]
 
 class Peer:
@@ -387,8 +387,21 @@ class ServerApp:
             # 4. Invio Parallelo (Invariato)
             def send_to_peer(index, peer, vectors_chunk):
                 try:
-                    peer.send(vectors_chunk, self.status, request_id)
-                    return (peer.id, True, len(vectors_chunk))
+                    # CHUNKING LOGIC
+                    CHUNK_SIZE = 5000 # Safe size to stay under 100MB/512MB limit
+                    total_sent = 0
+                    
+                    if len(vectors_chunk) > CHUNK_SIZE:
+                        logger.debug(f"[Router] Chunking {len(vectors_chunk)} vectors for {peer.id} into blocks of {CHUNK_SIZE}")
+                        for i in range(0, len(vectors_chunk), CHUNK_SIZE):
+                            sub_chunk = vectors_chunk[i : i + CHUNK_SIZE]
+                            peer.send(sub_chunk, self.status, request_id)
+                            total_sent += len(sub_chunk)
+                    else:
+                        peer.send(vectors_chunk, self.status, request_id)
+                        total_sent = len(vectors_chunk)
+                        
+                    return (peer.id, True, total_sent)
                 except Exception as e:
                     logger.error(f"[Router] Failed to send to {peer.id}: {e}")
                     return (peer.id, False, len(vectors_chunk))
