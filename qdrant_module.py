@@ -133,7 +133,7 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
                 collection_name=collection,
                 points=points,
                 batch_size=effective_batch_size, 
-                wait=True
+                wait=False #CAMBIATO QUESTOOO
             )
             logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}.")
             return True

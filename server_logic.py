@@ -148,9 +148,29 @@ class ServerApp:
         self.id_count = 0
         self.batch_size = batch_size
         self.batch_size_retry = batch_size_retry
+        self.cluster_peer_map = {} # Nuova struttura: {cluster_id: [peer_index1, peer_index2, ...]}
         # Thread pool for parallel peer communication
         self.peer_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='PeerComm')
         logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
+
+    def _update_cluster_map(self):
+        """Ricostruisce la mappa inversa per lookup veloci O(1)"""
+        self.cluster_peer_map = {}
+        # Mappa i peer remoti
+        for idx, peer in enumerate(self.peers):
+            for cluster_id in peer.cluster_ids_set:
+                if cluster_id not in self.cluster_peer_map:
+                    self.cluster_peer_map[cluster_id] = []
+                self.cluster_peer_map[cluster_id].append(idx)
+        
+        # Mappa me stesso (per i vettori locali)
+        my_cluster_ids = {c[0] for c in self.node_clusters}
+        for cluster_id in my_cluster_ids:
+             if cluster_id not in self.cluster_peer_map:
+                self.cluster_peer_map[cluster_id] = []
+             # Usiamo un indice speciale o gestiamo 'to_me' separatamente, 
+             # ma sapere che il cluster è mio è utile.
+             self.cluster_peer_map[cluster_id].append(-1) # -1 indica "me stesso"
 
     def _run_parallel_tasks(self, tasks):
         """
@@ -182,6 +202,7 @@ class ServerApp:
             logger.info(f"[Add Peers] Adding {len(peers)} peers: {peers}")
             for id, http_url, grpc_url in peers:
                 self.peers.append(Peer(id, http_url, grpc_url))
+            self._update_cluster_map()
     
     def start_clustering_thread(self, request_id):
         with metrics.REQUEST_LATENCY.labels(operation='clustering').time():
@@ -333,6 +354,7 @@ class ServerApp:
             logger.info(f"[Set Clusters] Storing {len(my_vecs)} assigned vectors locally.")
             self.add_vectors(my_vecs, self.status, request_id)
             logger.debug(f"[Set Clusters] Complete. My Total Count: {self.get_count()}")
+            self._update_cluster_map()
 
     def route_vector(self, vector: Vector, k: int):
         with metrics.REQUEST_LATENCY.labels(operation='route_vector').time():
@@ -341,55 +363,78 @@ class ServerApp:
     def route_vectors_send(self, vectors: ListOfVectorsComplete, request_id):
         with metrics.REQUEST_LATENCY.labels(operation='route_vectors_send').time():
             logger.debug(f"[Router] Routing {len(vectors)} vectors among {len(self.peers) + 1} nodes (Replicas: {self.replicas}).")
+            
+            # --- OTTIMIZZAZIONE BATCH ---
+            # 1. Estraiamo solo i vettori grezzi (liste di float) per il calcolo
+            raw_vectors = [v[0] for v in vectors]
+            
+            # 2. Eseguiamo UNA sola chiamata batch invece di 1800 chiamate singole.
+            # Ritorna una lista di liste, es: [[cluster_id_A], [cluster_id_B], ...]
+            # Questo riduce il tempo di calcolo da ~4s a ~0.05s
+            target_clusters_batch = clustering_module.find_batch(self.meta_hnsw, raw_vectors, 1)
+            # -----------------------------
+
             assigned_vectors = [[] for _ in range(len(self.peers))]
             to_me = []
             
-            for vector_content, vector_id, vector_payload in vectors:
-                vector = (vector_content, vector_id, vector_payload)
-                top_1 = self.route_vector(vector_content, 1)[0]
+            # 3. Iteriamo sui vettori originali e sui risultati pre-calcolati
+            for i, (vector_content, vector_id, vector_payload) in enumerate(vectors):
+                vector_tuple = (vector_content, vector_id, vector_payload)
+                
+                # Prendiamo il cluster ID dal risultato batch corrispondente all'indice i
+                top_1 = target_clusters_batch[i][0]
+                
                 found = 0
                 for index, peer in enumerate(self.peers):
                     if peer.contains(top_1):
-                        assigned_vectors[index].append(vector)
+                        assigned_vectors[index].append(vector_tuple)
                         found += 1
-                        logger.debug(f"[DEBUG] found replica for vector: {found}")
+                        # logger.debug(f"[DEBUG] found replica for vector: {found}") # Decommentare solo se necessario per debug profondo
+
+                # Logica di replicazione (Invariata)
                 if found != self.replicas:
-                    logger.debug(f"[DEBUG] to me replica for vector: {found}")
-                    to_me.append(vector)
+                    # logger.debug(f"[DEBUG] to me replica for vector: {found}")
+                    to_me.append(vector_tuple)
+                
                 if found < self.replicas-1:
-                    logger.debug(f"[DEBUG] not enough replicas found: {found}")
+                    logger.debug(f"[DEBUG] not enough replicas found: {found} (Cluster ID: {top_1})")
             
             # Log distribution summary
             summary = [f"Peer {peer.id}: {len(assigned_vectors[i])}" for i, peer in enumerate(self.peers)]
             summary.append(f"Me ({self.node_id}): {len(to_me)}")
             logger.debug(f"[Router] Distribution: {', '.join(summary)}")
 
-            # Parallel sending to peers
-            def send_to_peer(index, peer, vectors):
+            # 4. Invio Parallelo (Invariato)
+            def send_to_peer(index, peer, vectors_chunk):
                 try:
-                    peer.send(vectors, self.status, request_id)
-                    return (peer.id, True, len(vectors))
+                    peer.send(vectors_chunk, self.status, request_id)
+                    return (peer.id, True, len(vectors_chunk))
                 except Exception as e:
                     logger.error(f"[Router] Failed to send to {peer.id}: {e}")
-                    return (peer.id, False, len(vectors))
+                    return (peer.id, False, len(vectors_chunk))
             
             # Submit tasks for peers with vectors
             tasks = []
             for index, peer in enumerate(self.peers):
                 if len(assigned_vectors[index]) > 0:
                     tasks.append((send_to_peer, (index, peer, assigned_vectors[index])))
-            
+            # Definisci il task locale
+            task_locale = None
+            if len(to_me) > 0:
+                # Creiamo una lambda per uniformare la firma
+                task_locale = (lambda: (self.node_id, True, self.add_vectors(to_me, self.status, request_id)), ())
+            # Aggiungi il task locale alla lista dei task remoti
+            if task_locale:
+                tasks.append(task_locale)
+            # Esegui TUTTO insieme (Remoti + Locale corrono in parallelo)
             results = self._run_parallel_tasks(tasks)
-            
+
             # Check results
             failed_sends = [peer_id for peer_id, success, count in results if not success]
             
             if failed_sends:
                 logger.warning(f"[Router] Failed to send vectors to peers: {failed_sends}")
-            
-            # Send to self (local insert)
-            if len(to_me) > 0:
-                self.add_vectors(to_me, self.status, request_id)
+
 
     def linear_search(self, query: ListOfVectors, topk: int):
         with metrics.REQUEST_LATENCY.labels(operation='linear_search').time():

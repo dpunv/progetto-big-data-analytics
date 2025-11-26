@@ -14,6 +14,7 @@ import p2p_pb2_grpc
 from grpc_handler import P2PNodeServicer
 import logging
 import sys
+import utils
 
 app = FastAPI()
 server = None
@@ -138,7 +139,11 @@ if __name__ == "__main__":
 
     # Setup Logging
     handlers = []
-    if args.log_file:
+    log_level = logging.WARNING
+
+    if not utils.LOGGING_ENABLED:
+        log_level = logging.CRITICAL
+    elif args.log_file:
         # If log file is specified, ONLY write to file (keep terminal clean)
         handlers.append(logging.FileHandler(args.log_file, mode='w'))
     else:
@@ -147,7 +152,7 @@ if __name__ == "__main__":
 
     # Set WARNING level to reduce log noise - only errors, warnings, and critical info
     logging.basicConfig(
-        level=logging.WARNING,
+        level=log_level,
         format='%(asctime)s - %(levelname)s - %(threadName)s - %(name)s - %(message)s',
         handlers=handlers,
         force=True 

@@ -104,13 +104,17 @@ def main():
 
     # Setup Logging
     handlers = []
-    if args.log_file:
+    log_level = logging.INFO
+
+    if not utils.LOGGING_ENABLED:
+        log_level = logging.CRITICAL
+    elif args.log_file:
         handlers.append(logging.FileHandler(args.log_file, mode='w'))
     else:
         handlers.append(logging.StreamHandler(sys.stdout))
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
         handlers=handlers
     )

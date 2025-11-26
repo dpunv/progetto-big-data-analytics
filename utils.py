@@ -8,6 +8,9 @@ import logging
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
+# Centralized logging toggle
+LOGGING_ENABLED = True
+
 def load_vectors(filename, max_vectors):
     if not os.path.exists(filename):
         logger.error(f"Error: File not found at '{filename}'")
