@@ -155,9 +155,7 @@ class ServerApp:
 
     def _update_cluster_map(self):
         """Ricostruisce la mappa inversa per lookup veloci O(1)"""
-        self.cluster_peer_map = {}  # {cluster_id: [peer_index1, peer_index2, ...]}
-        self.my_cluster_ids = set()  # Set di cluster_id che appartengono a me
-        
+        self.cluster_peer_map = {}
         # Mappa i peer remoti
         for idx, peer in enumerate(self.peers):
             for cluster_id in peer.cluster_ids_set:
@@ -165,11 +163,14 @@ class ServerApp:
                     self.cluster_peer_map[cluster_id] = []
                 self.cluster_peer_map[cluster_id].append(idx)
         
-        # Mappa me stesso - usa un set separato per maggiore chiarezza
-        self.my_cluster_ids = {c[0] for c in self.node_clusters}
-        
-        # Opzionale: aggiungi anche alla mappa principale se vuoi gestire tutto insieme
-        # Ma con un set separato è più chiaro e veloce per i check "is mine"
+        # Mappa me stesso (per i vettori locali)
+        my_cluster_ids = {c[0] for c in self.node_clusters}
+        for cluster_id in my_cluster_ids:
+             if cluster_id not in self.cluster_peer_map:
+                self.cluster_peer_map[cluster_id] = []
+             # Usiamo un indice speciale o gestiamo 'to_me' separatamente, 
+             # ma sapere che il cluster è mio è utile.
+             self.cluster_peer_map[cluster_id].append(-1) # -1 indica "me stesso"
 
     def _run_parallel_tasks(self, tasks):
         """
@@ -378,24 +379,26 @@ class ServerApp:
             assigned_vectors = [[] for _ in range(len(self.peers))]
             to_me = []
             
+            # 3. Iteriamo sui vettori originali e sui risultati pre-calcolati
             for i, (vector_content, vector_id, vector_payload) in enumerate(vectors):
                 vector_tuple = (vector_content, vector_id, vector_payload)
+                
+                # Prendiamo il cluster ID dal risultato batch corrispondente all'indice i
                 top_1 = target_clusters_batch[i][0]
                 
                 found = 0
-                
-                # Check se è mio (più leggibile)
-                if top_1 in self.my_cluster_ids:
+                for index, peer in enumerate(self.peers):
+                    if peer.contains(top_1):
+                        assigned_vectors[index].append(vector_tuple)
+                        found += 1
+                        # logger.debug(f"[DEBUG] found replica for vector: {found}") # Decommentare solo se necessario per debug profondo
+
+                # Logica di replicazione (Invariata)
+                if found != self.replicas:
+                    # logger.debug(f"[DEBUG] to me replica for vector: {found}")
                     to_me.append(vector_tuple)
-                    found += 1
                 
-                # Check peer remoti
-                peer_indices = self.cluster_peer_map.get(top_1, [])
-                for idx in peer_indices:
-                    assigned_vectors[idx].append(vector_tuple)
-                    found += 1
-                
-                if found < self.replicas - 1:
+                if found < self.replicas-1:
                     logger.debug(f"[DEBUG] not enough replicas found: {found} (Cluster ID: {top_1})")
             
             # Log distribution summary
@@ -485,20 +488,16 @@ class ServerApp:
             to_query_peer = [[] for _ in range(len(self.peers))]
             to_query_me = []
             
-            # Routing queries - versione più chiara
+            # Routing queries
             for vector in query:
                 top_3 = self.route_vector(vector, 3)
-                for cluster_id in top_3:
-                    # Check se è mio
-                    if cluster_id in self.my_cluster_ids:
-                        if vector not in to_query_me:
-                            to_query_me.append(vector)
-                    
-                    # Check peer remoti
-                    peer_indices = self.cluster_peer_map.get(cluster_id, [])
-                    for idx in peer_indices:
-                        if vector not in to_query_peer[idx]:
-                            to_query_peer[idx].append(vector)
+                for index, peer in enumerate(self.peers):
+                    for result in top_3:
+                        if peer.contains(result):
+                            to_query_peer[index].append(vector)
+                for result in top_3:
+                    if result in [c[0] for c in self.node_clusters]:
+                        to_query_me.append(vector)
             
             # Log Routing
             q_summary = [f"Peer {peer.id}: {len(to_query_peer[i])}" for i, peer in enumerate(self.peers)]
