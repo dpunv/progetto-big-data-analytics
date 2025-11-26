@@ -3,6 +3,7 @@ import json
 import faiss
 from sklearn.metrics import silhouette_score
 import time
+import torch
 import itertools
 from typing import List, Tuple, Dict, Union
 import heapq
@@ -12,7 +13,61 @@ import pickle
 import base64
 import logging
 
+SILHOUETTE_SUBSAMPLE_SIZE = 2000  # Max sample size for silhouette score
+KMEANS_N_ITER = 150  # Reduced n_iter for KMeans
+
 logger = logging.getLogger(__name__)
+
+# --- PYTORCH KMEANS IMPLEMENTATION ---
+def kmeans_torch(X_tensor, num_clusters, niter=15, tol=1e-4, device='cpu'):
+    """
+    Esegue KMeans usando PyTorch su GPU (MPS, CUDA) o CPU.
+    """
+    n_samples, n_features = X_tensor.shape
+    
+    # 1. Inizializzazione casuale dei centroidi
+    random_indices = torch.randperm(n_samples)[:num_clusters]
+    centroids = X_tensor[random_indices].clone()
+    
+    for i in range(niter):
+        previous_centroids = centroids.clone()
+        
+        # 2. Calcolo distanze (Broadcasting)
+        # (N, 1, D) - (1, K, D) -> (N, K, D) norm -> (N, K)
+        distances = torch.cdist(X_tensor, centroids)
+        
+        # 3. Assegnazione cluster
+        labels = torch.argmin(distances, dim=1)
+        
+        # 4. Aggiornamento centroidi
+        # Questo ciclo può essere vettorizzato ma per K piccolo è veloce anche così
+        new_centroids = torch.zeros_like(centroids)
+        counts = torch.zeros(num_clusters, device=device).unsqueeze(1)
+        
+        # Scatter add è molto veloce su GPU per sommare in base agli indici
+        # One-hot encoding implicito per sommare
+        # Per semplicità e stabilità usiamo un approccio masked semplice o scatter_add_
+        
+        # Metodo veloce PyTorch per ricalcolo media:
+        for k in range(num_clusters):
+            mask = (labels == k)
+            if mask.sum() > 0:
+                new_centroids[k] = X_tensor[mask].mean(dim=0)
+            else:
+                # Gestione cluster vuoti: riassegna a un punto random
+                random_idx = torch.randint(0, n_samples, (1,)).item()
+                new_centroids[k] = X_tensor[random_idx]
+        
+        centroids = new_centroids
+        
+        # Check convergenza
+        center_shift = torch.sum((centroids - previous_centroids) ** 2)
+        if center_shift < tol:
+            break
+            
+    return centroids, labels
+
+# -------------------------------------
 
 class MetaHNSW:
     def __init__(self, dimension: int, max_clusters: int = 500, ef_construction: int = 200, M: int = 16):
@@ -35,132 +90,115 @@ class MetaHNSW:
         indices = [cluster[0] for cluster in clusters]
         centroids = [cluster[1] for cluster in clusters]
         
-        # Batch insert is natively supported and fast
         self.hnsw_index.add_items(np.array(centroids, dtype=np.float32), np.array(indices))
         logger.info(f"MetaHNSW index built with {len(indices)} items.")
 
     def find_nearest_nodes(self, query_vector: Vector, k: int = 1) -> List[Tuple[str, float]]:
-        """
-        Legacy method for single vector search.
-        """
         if self.hnsw_index is None:
             logger.error("Error: hnsw still unbuilt")
             raise Exception("Error: hnsw still unbuilt")
-        
-        # Hnswlib expects a list of vectors even for a single query if we want consistent output
-        # But for single items, knn_query handles 1D arrays fine
         query = np.array(query_vector, dtype=np.float32)
         cluster_ids, distances = self.hnsw_index.knn_query(query, k=k)
-        
-        # Output handling for single vector
         return sorted([(cluster_id, dist) for cluster_id, dist in zip(cluster_ids[0], distances[0])], key=lambda x: x[1])
 
     def search_batch(self, query_vectors: np.ndarray, k: int = 1) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Optimized batch search.
-        Args:
-            query_vectors: np.ndarray of shape (num_vectors, dimension)
-            k: int
-        Returns:
-            labels: (num_vectors, k) matrix of IDs
-            distances: (num_vectors, k) matrix of distances
-        """
         if self.hnsw_index is None:
             raise Exception("Error: hnsw still unbuilt")
-            
-        # knn_query is heavily optimized for batches in C++
         labels, distances = self.hnsw_index.knn_query(query_vectors, k=k)
         return labels, distances
 
     def to_serializable_dict(self):
-        """Serializes the entire object, including the binary index."""
         index_base64 = None
         if self.hnsw_index:
             index_binary = pickle.dumps(self.hnsw_index)
             index_base64 = base64.b64encode(index_binary).decode('utf-8')
-
         return {
-            'dimension': self.dimension,
-            'max_clusters': self.max_clusters,
-            'ef_construction': self.ef_construction,
-            'M': self.M,
-            'index_data': index_base64
+            'dimension': self.dimension, 'max_clusters': self.max_clusters,
+            'ef_construction': self.ef_construction, 'M': self.M, 'index_data': index_base64
         }
 
     @classmethod
     def from_serializable_dict(cls, data: dict):
-        """Reconstructs the object from a serialized dictionary."""
-        new_obj = cls(
-            dimension=data['dimension'],
-            max_clusters=data['max_clusters'],
-            ef_construction=data['ef_construction'],
-            M=data['M']
-        )
-        
+        new_obj = cls(dimension=data['dimension'], max_clusters=data['max_clusters'], ef_construction=data['ef_construction'], M=data['M'])
         index_base64 = data.get('index_data')
         if index_base64:
             index_binary = base64.b64decode(index_base64)
             new_obj.hnsw_index = pickle.loads(index_binary)
-            
         return new_obj
 
-def find_k_and_run_kmeans(X, max_k=30, random_state=42): # using silhouette score
-    k_range = range(2, max_k + 1)
-    
-    if X.shape[0] <= max_k:
-        logger.warning(f"Number of samples ({X.shape[0]}) is <= max_k ({max_k}). Adjusting range.")
-        k_range = range(2, X.shape[0])
-    
-    logger.info(f"clustering with k in range 2 to {max_k}")
 
-    X_faiss = X.astype(np.float32) # Convert to float32 for FAISS
-    n, d = X_faiss.shape
+def find_k_and_run_kmeans(X, max_k=30, random_state=42):
+    """
+    Versione ottimizzata con PyTorch per supportare GPU NVIDIA, MPS (Mac), e CPU.
+    """
+    k_range = range(2, max_k + 1)
+    if X.shape[0] <= max_k:
+        logger.warning(f"Samples ({X.shape[0]}) <= max_k ({max_k}). Adjusting.")
+        k_range = range(2, X.shape[0])
+
+    # 1. Rilevamento Device (NVIDIA vs Mac MPS vs CPU)
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    logger.info(f"Running Clustering on DEVICE: {device}")
+
+    # 2. Spostamento dati su GPU una volta sola
+    X_tensor = torch.from_numpy(X).float().to(device)
+    n = X.shape[0]
+
     max_score = -2
     best_centroids = None
     best_k = -1
     best_labels = None
 
-    logger.info("Starting KMeans optimization (Silhouette Score)...")
+    logger.info("Starting KMeans optimization (PyTorch Accelerated)...")
+    
+    # Per il calcolo della Silhouette (che sklearn fa su CPU), usiamo un subset se necessario
+    if n > SILHOUETTE_SUBSAMPLE_SIZE:
+        idx = np.random.choice(n, SILHOUETTE_SUBSAMPLE_SIZE, replace=False)
+        X_cpu_sample = X[idx] # Numpy array su CPU
+    else:
+        X_cpu_sample = X # Numpy array su CPU
+
     for k in k_range:
-        kmeans = faiss.Kmeans(
-            d=d,
-            k=k,
-            niter=300,
-            nredo=1,
-            verbose=False,
-            seed=random_state,
-            gpu=False
-        )
-        kmeans.train(X_faiss)
+        # Esegue training su GPU
+        centroids_gpu, labels_gpu = kmeans_torch(X_tensor, num_clusters=k, niter=KMEANS_N_ITER, device=device)
         
-        _, labels = kmeans.index.search(X_faiss, 1)
-        labels = labels.flatten()
-        
-        # Silhouette score can be heavy for large N, but for 10k it's acceptable-ish.
-        # Can be optimized by sampling if needed.
+        # Sposta SOLO le etichette necessarie su CPU per calcolare lo score
+        # Nota: silhouette_score richiede CPU numpy array.
+        # Se abbiamo fatto subsampling, dobbiamo prendere le label corrispondenti agli indici
+        if n > SILHOUETTE_SUBSAMPLE_SIZE:
+            # Dobbiamo ricalcolare le label per il subset o prenderle dal tensore completo
+            # Prendiamo dal tensore completo e tagliamo
+            labels_cpu_sample = labels_gpu[idx].cpu().numpy()
+        else:
+            labels_cpu_sample = labels_gpu.cpu().numpy()
+
         try:
-            score = silhouette_score(X, labels)
+            score = silhouette_score(X_cpu_sample, labels_cpu_sample)
         except Exception:
             score = -1
+            
         logger.debug(f"Silhouette score for k={k}: {score}")
 
         if score > max_score:
-            logger.debug(f"New best silhouette score: {score} for k={k}")
             max_score = score
-            best_centroids = kmeans.centroids
-            best_labels = labels
+            # Teniamo i centroidi su CPU per salvarli/ritornarli alla fine
+            best_centroids = centroids_gpu.cpu().numpy()
+            best_labels = labels_gpu.cpu().numpy()
             best_k = k
 
+    # Pulizia memoria GPU
+    if device.type != 'cpu':
+        del X_tensor
+        torch.cuda.empty_cache() if device.type == 'cuda' else torch.mps.empty_cache()
+
     if best_centroids is not None:
-        centroids_list = best_centroids.tolist()
         try:
             with open('centroids.json', 'w') as f:
-                json.dump(centroids_list, f, indent=2)
+                json.dump(best_centroids.tolist(), f, indent=2)
         except:
             pass
     else:
-        # Fallback if clustering failed (e.g., too few points)
-        logger.warning("Clustering failed to find valid K. Returning inputs as clusters.")
+        logger.warning("Clustering failed. Fallback.")
         return 1, np.mean(X, axis=0, keepdims=True), np.zeros(n)
 
     logger.info(f"KMeans finished. Best k={best_k}, Max Score={max_score}")

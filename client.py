@@ -228,7 +228,7 @@ def main():
     else:
         logger.info("All batches sent successfully!")
     
-    time.sleep(1)
+    time.sleep(5)
 
     logger.info('Sending query')
 
