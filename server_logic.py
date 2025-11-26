@@ -188,13 +188,14 @@ class ServerApp:
             logger.info(f"*** START CLUSTERING THREAD (ReqID: {request_id}) ***")
             with self.vector_buffer_lock:
                 logger.info(f"Clustering: Converting buffer of {len(self.vector_buffer)} vectors.")
-                clusters = clustering_module.get_clusters(self.vector_buffer)
-                self.vector_buffer = []
+                vectors_to_cluster = self.vector_buffer[:]
+                # self.vector_buffer = [] # Do not clear buffer yet, wait for status change
             
             peers_with_me = self.peers[:]
             peers_with_me.append(Peer(self.node_id, self.url, self.grpc_url))
             
             logger.info("Clustering: Calculating node assignments...")
+            clusters = clustering_module.get_clusters(vectors_to_cluster)
             assignment = clustering_module.get_node_assignment(clusters, peers_with_me, self.replicas)
             self.meta_hnsw = clustering_module.build_meta_hnsw(clusters, self.dimension)
             
@@ -228,6 +229,7 @@ class ServerApp:
             with self.vector_buffer_lock:
                 with self.status_lock:
                     self.status = 'clustered'
+                self.vector_buffer = []
                 logger.info(f"*** Status changed to 'clustered'. Processing local assignment ({len(assignment[self.node_id])} clusters)...")
                 
                 local_vectors = [vector_complete for cluster_id, _ in assignment[self.node_id] for vector_complete in clusters[cluster_id][1]]
@@ -393,26 +395,50 @@ class ServerApp:
 
     def linear_search(self, query: ListOfVectors, topk: int):
         with metrics.REQUEST_LATENCY.labels(operation='linear_search').time():
-            logger.debug(f"[Linear Search] Searching buffer ({len(self.vector_buffer)} vectors) for {len(query)} queries.")
+            with self.vector_buffer_lock:
+                current_buffer = self.vector_buffer[:]
+            with self.additional_buffer_lock:
+                current_additional = self.additional_buffer[:]
+            
+            total_vectors = current_buffer + current_additional
+            logger.debug(f"[Linear Search] Searching buffer ({len(total_vectors)} vectors) for {len(query)} queries.")
+            
             to_return = []
             for qv in query:
-                distances_calcs = [(vector, utils.cosine_similarity(vector[0], qv)) for vector in self.vector_buffer]
+                distances_calcs = [(vector, utils.cosine_similarity(vector[0], qv)) for vector in total_vectors]
                 distances_calcs.sort(key=lambda x: x[1], reverse=True)
                 to_return.extend([{'id': v[1], 'score': d, 'payload': {'string': v[2], 'vector': v[0]}} for v, d in distances_calcs[:topk]])
+            for i, res in enumerate(to_return):
+                logger.info(f"[Linear Search] Result {i+1}: ID={res.get('id')}, Score={res.get('score')}")
             return to_return
 
     def query_me(self, query: ListOfVectors, topk: int):
         with metrics.REQUEST_LATENCY.labels(operation='local_query').time():
+            if (self.status == 'bootstrap' or self.status == 'clustering') and self.i_am_coord():
+                logger.debug(f"[Local Query] Bootstrap/Clustering mode: performing linear search on buffer.")
+                return self.linear_search(query, topk)
             logger.debug(f"[Local Query] Querying local Qdrant for {len(query)} vectors.")
-            return qdrant_module.query_vectors(self.qdrant_url, self.collection_name, query, topk)
+            results = qdrant_module.query_vectors(self.qdrant_url, self.collection_name, query, topk)
+            for i, res in enumerate(results):
+                logger.info(f"[Local Qdrant Query] Result {i+1}: ID={res.get('id')}, Score={res.get('score')}")
+            return results
     
     def query(self, query: ListOfVectors, topk: int, request_id: int):
         with metrics.REQUEST_LATENCY.labels(operation='global_query').time():
             logger.info(f"[Global Query] Processing query (ReqID: {request_id}). Queries: {len(query)}, TopK: {topk}")
             response = []
-            if(self.meta_hnsw is None):
-                logger.warning("MetaHNSW not built. Falling back to Linear Search.")
-                return self.linear_search(query, topk)    
+            if self.meta_hnsw is None or self.status == 'clustering':
+                if self.i_am_coord():
+                    logger.warning("MetaHNSW not built or Clustering in progress. Coordinator falling back to Linear Search.")
+                    return self.linear_search(query, topk)
+                else:
+                    logger.warning("MetaHNSW not built. Forwarding query to Coordinator.")
+                    coord = self.coordinator()
+                    if coord:
+                        return coord.query_peer(query, topk, request_id)
+                    else:
+                        logger.error("Coordinator not found during bootstrap query.")
+                        return []
             
             to_query_peer = [[] for _ in range(len(self.peers))]
             to_query_me = []
@@ -480,6 +506,8 @@ class ServerApp:
             # Sorting
             unique_response = sorted(unique_response, key=lambda x: x['score'], reverse=True) 
             logger.info(f"[Global Query] Final unique results: {len(unique_response)}")
+            for i, res in enumerate(unique_response):
+                logger.info(f"[Global Query] Result {i+1}: ID={res.get('id')}, Score={res.get('score')}")
             return unique_response
     
     def get_count(self):

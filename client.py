@@ -229,7 +229,7 @@ def main():
     logger.info('Sending query')
 
     query_vector = data[0]['embedding']
-    res_obj = run_client(servers[0], [[query_vector]])
+    res_obj = run_client(servers[0], [query_vector])
     #res_obj = servers[0].query_vectors([query_vector])
     if res_obj:
         res = res_obj.json()['results']
@@ -245,35 +245,36 @@ def main():
 
     logger.info('Getting vector counts (polling for consistency)...')
     expected_total = vector_sent * config['replicas']
-    max_retries = 30
-    for i in range(max_retries):
-        count_res = servers[1 if len(servers) > 1 else 0].get_count()
-        if count_res:
-            counts = count_res.json()
-            total = sum([count for _, count in counts.items()])
-            logger.info(f'Counts: {counts} - Total: {total}/{expected_total}')
+    if int(config['num_before_clustering']) <= vector_sent:
+        max_retries = 30
+        for i in range(max_retries):
+            count_res = servers[1 if len(servers) > 1 else 0].get_count()
+            if count_res:
+                counts = count_res.json()
+                total = sum([count for _, count in counts.items()])
+                logger.info(f'Counts: {counts} - Total: {total}/{expected_total}')
+                
+                if total >= expected_total:
+                    break
+            time.sleep(2)
             
-            if total >= expected_total:
-                break
-        time.sleep(2)
         
-    
-    # Final statistics
-    logger.info("=" * 60)
-    logger.info("FINAL VECTOR STATISTICS")
-    logger.info(f"Unique vectors sent: {vector_sent}")
-    logger.info(f"Expected total with replicas: {vector_sent * config['replicas']}")
-    logger.info(f"Actual total stored: {total}")
-    
-    if total < vector_sent * config['replicas']:
-        missing = (vector_sent * config['replicas']) - total
-        logger.warning(f"Missing vectors: {missing} ({missing/(vector_sent * config['replicas'])*100:.2f}%)")
-    elif total > vector_sent * config['replicas']:
-        extra = total - (vector_sent * config['replicas'])
-        logger.info(f"Extra vectors: {extra} ({extra/(vector_sent * config['replicas'])*100:.2f}%)")
-    else:
-        logger.info("Perfect match: all expected replicas are stored!")
-    
+        # Final statistics
+        logger.info("=" * 60)
+        logger.info("FINAL VECTOR STATISTICS")
+        logger.info(f"Unique vectors sent: {vector_sent}")
+        logger.info(f"Expected total with replicas: {vector_sent * config['replicas']}")
+        logger.info(f"Actual total stored: {total}")
+        
+        if total < vector_sent * config['replicas']:
+            missing = (vector_sent * config['replicas']) - total
+            logger.warning(f"Missing vectors: {missing} ({missing/(vector_sent * config['replicas'])*100:.2f}%)")
+        elif total > vector_sent * config['replicas']:
+            extra = total - (vector_sent * config['replicas'])
+            logger.info(f"Extra vectors: {extra} ({extra/(vector_sent * config['replicas'])*100:.2f}%)")
+        else:
+            logger.info("Perfect match: all expected replicas are stored!")
+        
     logger.info("=" * 60)
 
     logger.info('Client application end')

@@ -147,7 +147,7 @@ if __name__ == "__main__":
 
     # Set WARNING level to reduce log noise - only errors, warnings, and critical info
     logging.basicConfig(
-        level=logging.WARNING,
+        level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(threadName)s - %(name)s - %(message)s',
         handlers=handlers,
         force=True 
