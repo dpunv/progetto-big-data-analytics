@@ -14,11 +14,11 @@ REQUEST_LATENCY = Histogram(
     buckets=LATENCY_BUCKETS
 )
 
-# Per-query latency tracking
+
 QUERY_LATENCY = Histogram(
     'app_query_latency_seconds',
     'Latency for individual queries',
-    ['query_type'],  # 'global', 'local', 'peer'
+    ['query_type'],
     buckets=LATENCY_BUCKETS
 )
 
@@ -32,38 +32,35 @@ PEER_LATENCY = Histogram(
 DB_LATENCY = Histogram(
     'app_db_latency_seconds',
     'Time spent waiting for local Qdrant operations',
-    ['operation'], # e.g., 'search_batch', 'upload_points'
+    ['operation'],
     buckets=LATENCY_BUCKETS
 )
 
 REQUEST_COUNT = Counter(
     'app_requests_total',
     'Total number of requests processed',
-    ['operation', 'status'] # e.g. 'global_query', 'success'
+    ['operation', 'status']
 )
 
-# Query distribution counter
+
 QUERY_RECEIVED = Counter(
     'app_queries_received_total',
     'Total number of queries received by this node',
-    ['query_type', 'source']  # query_type: 'global'/'local'/'peer', source: 'client'/'peer'
+    ['query_type', 'source']
 )
 
-# Query routing counter
 QUERY_ROUTED = Counter(
     'app_queries_routed_total',
     'Total number of queries routed to other nodes',
     ['target_node']
 )
 
-# Vectors routed (more granular than queries)
 VECTORS_ROUTED = Counter(
     'app_vectors_routed_total',
     'Total number of individual vectors routed to nodes',
     ['target_node']
 )
 
-# Cluster hit rate
 CLUSTER_HITS = Counter(
     'app_cluster_hits_total',
     'Number of times a cluster was selected for routing',
@@ -76,11 +73,10 @@ PEER_FAILURES = Counter(
     ['peer_id', 'operation']
 )
 
-# Rebalancing metrics
 REBALANCING_EVENTS = Counter(
     'app_rebalancing_events_total',
     'Total number of rebalancing events',
-    ['event_type']  # 'triggered', 'completed', 'failed'
+    ['event_type']
 )
 
 def start_metrics_server(port):
