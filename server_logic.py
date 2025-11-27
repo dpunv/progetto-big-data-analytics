@@ -150,6 +150,8 @@ class ServerApp:
         self.batch_size_retry = batch_size_retry
         # Thread pool for parallel peer communication
         self.peer_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='PeerComm')
+        # NEW: Mapping cluster_id -> collection_name for multi-collection support
+        self.cluster_collections = {}  # {cluster_id: "collection_name"}
         logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
 
     def _run_parallel_tasks(self, tasks):
@@ -225,6 +227,11 @@ class ServerApp:
                 logger.info("[Clustering] All cluster assignments broadcasted successfully")
             
             self.node_clusters = assignment[self.node_id]
+            for cluster_id, _ in assignment[self.node_id]:
+                collection_name = f"{self.collection_name}_cluster_{cluster_id}"
+                self.cluster_collections[cluster_id] = collection_name
+                logger.info(f"Creating collection '{collection_name}' for cluster {cluster_id}")
+                qdrant_module.create_collection(self.qdrant_url, collection_name, self.dimension)
             
             with self.vector_buffer_lock:
                 with self.status_lock:
@@ -249,7 +256,34 @@ class ServerApp:
             
             if status_of_sender == 'clustered':
                 logger.debug(f"[Add Vectors] Direct Insert: Storing {len(vectors)} vectors in local Qdrant (Sender is clustered).")
-                qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors, self.batch_size_retry, self.batch_size)
+                
+                # Raggruppa vettori per cluster_id
+                vectors_by_cluster = {}
+                for vector_content, vector_id, vector_payload in vectors:
+                    if "|cluster_id:" in vector_payload:
+                        parts = vector_payload.rsplit("|cluster_id:", 1)
+                        original_payload = parts[0]
+                        cluster_id = int(parts[1])
+            
+                        if cluster_id not in vectors_by_cluster:
+                            vectors_by_cluster[cluster_id] = []
+                            vectors_by_cluster[cluster_id].append((vector_content, vector_id, original_payload))
+                    else:
+                        # Fallback per vettori senza cluster_id
+                        if 'default' not in vectors_by_cluster:
+                            vectors_by_cluster['default'] = []
+                            vectors_by_cluster['default'].append((vector_content, vector_id, vector_payload))
+    
+                # Inserisci ogni gruppo nella sua collection
+                for cluster_id, cluster_vectors in vectors_by_cluster.items():
+                    if cluster_id == 'default':
+                        collection_name = self.collection_name
+                    else:
+                        collection_name = self.cluster_collections.get(cluster_id, f"{self.collection_name}_cluster_{cluster_id}")
+        
+                    logger.debug(f"[Add Vectors] Inserting {len(cluster_vectors)} vectors into '{collection_name}' (cluster {cluster_id})")
+                    qdrant_module.insert_vectors(self.qdrant_url, collection_name, cluster_vectors, self.batch_size_retry, self.batch_size)
+
             else:
                 if not self.i_am_coord():
                     logger.error("Error: Received bootstrap/clustering vectors but I am not coordinator.")
@@ -359,10 +393,10 @@ class ServerApp:
             
             # 3. Iteriamo sui vettori originali e sui risultati pre-calcolati
             for i, (vector_content, vector_id, vector_payload) in enumerate(vectors):
-                vector_tuple = (vector_content, vector_id, vector_payload)
-                
-                # Prendiamo il cluster ID dal risultato batch corrispondente all'indice i
                 top_1 = target_clusters_batch[i][0]
+                # Aggiungi cluster_id al payload
+                enhanced_payload = f"{vector_payload}|cluster_id:{top_1}"
+                vector_tuple = (vector_content, vector_id, enhanced_payload)
                 
                 found = 0
                 for index, peer in enumerate(self.peers):
@@ -453,8 +487,14 @@ class ServerApp:
             if (self.status == 'bootstrap' or self.status == 'clustering') and self.i_am_coord():
                 logger.debug(f"[Local Query] Bootstrap/Clustering mode: performing linear search on buffer.")
                 return self.linear_search(query, topk)
-            logger.debug(f"[Local Query] Querying local Qdrant for {len(query)} vectors.")
-            results = qdrant_module.query_vectors(self.qdrant_url, self.collection_name, query, topk)
+            logger.debug(f"[Local Query] Querying local Qdrant for {len(query)} vectors across {len(self.node_clusters)} collections.")
+            all_results = []
+            for cluster_id, _ in self.node_clusters:
+                collection_name = self.cluster_collections.get(cluster_id, f"{self.collection_name}_cluster_{cluster_id}")
+                cluster_results = qdrant_module.query_vectors(self.qdrant_url, collection_name, query, topk)
+                all_results.extend(cluster_results)
+            all_results.sort(key=lambda x: x['score'], reverse=True)
+            results = all_results[:topk * len(query)]
             for i, res in enumerate(results):
                 logger.info(f"[Local Qdrant Query] Result {i+1}: ID={res.get('id')}, Score={res.get('score')}")
             return results

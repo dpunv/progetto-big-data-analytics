@@ -164,7 +164,7 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
     elif device.type == "mps":
         logger.info(f"✓ GPU ACCELERATION ENABLED: Apple MPS")
     else:
-        logger.info(f"⚠ Running on CPU (no GPU acceleration)")
+        logger.info("WARNING: Running on CPU (no GPU acceleration)")
     
     logger.info(f"Device: {device}")
 
