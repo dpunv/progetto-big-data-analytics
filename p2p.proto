@@ -15,6 +15,7 @@ message VectorPoint {
     repeated float vector = 1;
     int64 id = 2;
     string payload = 3;
+    int64 cluster_id = 4;
 }
 
 message AddVectorsRequest {
@@ -23,14 +24,15 @@ message AddVectorsRequest {
     string type = 3; // "bootstrap", "clustering", etc.
 }
 
+message VectorList {
+    repeated float values = 1;
+}
+
 message QueryRequest {
     int64 req_id = 1;
     repeated VectorList query_vectors = 2;
     int32 topk = 3;
-}
-
-message VectorList {
-    repeated float values = 1;
+    int64 cluster_id = 4;
 }
 
 message ScoredPoint {

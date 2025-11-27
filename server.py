@@ -115,6 +115,123 @@ async def count_endpoint():
         raise Exception("ServerApp not created")
     return server.get_count_client()
 
+from fastapi import FastAPI
+from pydantic import BaseModel, ConfigDict
+import metrics
+import uvicorn
+from typing import List, Tuple, Dict, TypedDict
+from server_logic import ServerApp
+import argparse
+from compound_types import *
+from clustering_module import MetaHNSW
+import threading
+from concurrent import futures
+import grpc
+import p2p_pb2_grpc
+from grpc_handler import P2PNodeServicer
+import logging
+import sys
+import utils
+
+app = FastAPI()
+server = None
+logger = logging.getLogger(__name__)
+
+class AddVectorsRequest(BaseModel):
+    id: int
+    content: ListOfVectorsWithPayload
+
+class AddVectorsPeerRequest(BaseModel):
+    id: int
+    content: ListOfVectorsComplete
+    type: str
+
+class QueryVectorsRequest(BaseModel):
+    id: int
+    query: ListOfVectors
+    topk: int
+
+class AddPeersRequest(BaseModel):
+    id: int
+    peers: List[Tuple[str, str, str]]
+
+class SetClustersRequest(BaseModel):
+    id: int
+    content: dict 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+@app.get("/")
+async def health_check_endpoint():
+    return {
+        "status": "healthy",
+        "node_id": server.node_id,
+        "is_coordinator": server.i_am_coord(),
+        "is_clustered": server.status,
+    }
+
+@app.post("/query")
+async def query_endpoint(query: QueryVectorsRequest):
+    logger.info(f"API: /query called (ReqID: {query.id})")
+    if server is None:
+        logger.error("ServerApp not created")
+        raise Exception("ServerApp not created")
+    results = server.query(query.query, query.topk, query.id)
+    return {
+        "results": results,
+        "status": "success",
+        "count": len(results)
+    }
+
+@app.post("/query_peer")
+async def query_peer_endpoint(query: QueryVectorsRequest):
+    logger.info(f"API: /query_peer called")
+    if server is None:
+        raise Exception("ServerApp not created")
+    results = server.query_me(query.query, query.topk)
+    logger.debug(f"Query peer results count: {len(results) if results else 0}")
+    return {
+        "results": results,
+        "status": "success",
+        "count": len(results)
+    }
+
+@app.post("/add")
+async def add_vectors_endpoint(vectors: AddVectorsRequest):
+    logger.info(f"API: /add called. ReqID: {vectors.id}, Vectors: {len(vectors.content)}")
+    if server is None:
+        raise Exception("ServerApp not created")
+    server.add_vectors_client(vectors.content, vectors.id)
+    logger.info("API: /add completed")
+
+@app.post("/receive_vectors_peer")
+async def receive_vectors_peer_endpoint(vectors: AddVectorsPeerRequest):
+    logger.info("API: /receive_vectors_peer called")
+    if server is None:
+        raise Exception("ServerApp not created")
+    server.add_vectors(vectors.content, vectors.type, vectors.id)
+    logger.info("vector added via peer endpoint")
+
+@app.post("/register_peers")
+async def register_peers_endpoint(peers: AddPeersRequest):
+    if server is None:
+        raise Exception("ServerApp not created")
+    server.add_peers(peers.peers)
+
+@app.post("/set_clusters")
+async def set_clusters_endpoint(data: SetClustersRequest):
+    logger.info(f"API: /set_clusters called")
+    if server is None:
+        raise Exception("ServerApp not created")
+    data.content["meta_hnsw"] = MetaHNSW.from_serializable_dict(data.content["meta_hnsw"])
+    server.set_clusters(data.content, data.id)
+
+@app.get("/count")
+async def count_endpoint():
+    if server is None:
+        raise Exception("ServerApp not created")
+    return server.get_count_client()
+
 @app.get("/count_peer")
 async def count_peer_endpoint():
     if server is None:
@@ -135,11 +252,18 @@ if __name__ == "__main__":
     parser.add_argument('--metrics-port', type=int, default=8000, help='Port for Prometheus metrics')
     parser.add_argument('--batch-size', type=int, default=256, help='Batch size for vector insertion')
     parser.add_argument('--batch-size-retry', type=int, default=64, help='Batch size for vector insertion retries')
+    parser.add_argument('--log-level', type=str, default='WARNING', help='Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)')
     args = parser.parse_args()
 
     # Setup Logging
     handlers = []
-    log_level = logging.WARNING
+    
+    # Map string log level to logging constant
+    numeric_level = getattr(logging, args.log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {args.log_level}')
+    
+    log_level = numeric_level
 
     if not utils.LOGGING_ENABLED:
         log_level = logging.CRITICAL

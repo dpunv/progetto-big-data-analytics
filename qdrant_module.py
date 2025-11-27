@@ -28,7 +28,7 @@ def create_collection(url, collection_name, vector_size: int, distance: str = "C
     client = get_client(url)
     try:
         if client.collection_exists(collection_name):
-            logger.info(f"Collection '{collection_name}' already exists on {url}")
+            # logger.info(f"Collection '{collection_name}' already exists on {url}")
             return True
 
         # Map string distance to Qdrant model
@@ -57,7 +57,7 @@ def query_vectors(url, collection, query, topk):
     Returns a list of lists of ScoredPoint objects.
     """
     client = get_client(url)
-    logger.info(f"[Qdrant] Executing batch search for {len(query)} vectors on {url}...")
+    logger.info(f"[Qdrant] Executing batch search for {len(query)} vectors on {url} (Collection: {collection})...")
     try:
         with metrics.DB_LATENCY.labels(operation='search_batch').time():
         # Create search requests
@@ -108,6 +108,12 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
     """
     client = get_client(url)
     logger.info(f"[Qdrant] Attempting to insert {len(vectors)} vectors into {collection} on {url}...")
+    
+    # Ensure collection exists
+    if vectors:
+        dim = len(vectors[0][0])
+        create_collection(url, collection, dim)
+
     with metrics.DB_LATENCY.labels(operation='upload_points').time(): 
         # Convert your input list to PointStruct objects
         points = [

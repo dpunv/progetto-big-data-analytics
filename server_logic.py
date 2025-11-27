@@ -50,10 +50,13 @@ class Peer:
     def send(self, vectors: ListOfVectorsComplete, status: str, id):
         logger.debug(f"--> [Peer Send] Sending {len(vectors)} vectors to Peer {self.id} ({self.grpc_url}) | Status: {status}")
         
-        proto_vectors = [
-            p2p_pb2.VectorPoint(vector=v[0], id=v[1], payload=v[2]) 
-            for v in vectors
-        ]
+        proto_vectors = []
+        for v in vectors:
+            # Check if vector tuple has cluster_id (4 elements)
+            if len(v) == 4:
+                proto_vectors.append(p2p_pb2.VectorPoint(vector=v[0], id=v[1], payload=v[2], cluster_id=v[3]))
+            else:
+                proto_vectors.append(p2p_pb2.VectorPoint(vector=v[0], id=v[1], payload=v[2]))
         
         req = p2p_pb2.AddVectorsRequest(
             req_id=id,
@@ -69,8 +72,15 @@ class Peer:
 
     def send_clusters(self, assignment, clusters, meta_hnsw, request_id):
         logger.debug(f"--> [Peer SendClusters] Sending cluster assignment to Peer {self.id}")
+        
+        # Reconstruct vectors with cluster_id for 'my_vectors'
+        my_vectors_with_cluster_id = []
+        for cluster_id, _ in assignment[self.id]:
+            for vector_complete in clusters[cluster_id][1]:
+                my_vectors_with_cluster_id.append(vector_complete + (cluster_id,))
+
         to_send_dict = {
-            'my_vectors': [vector_complete for cluster_id, _ in assignment[self.id] for vector_complete in clusters[cluster_id][1]],
+            'my_vectors': my_vectors_with_cluster_id,
             'peers_clusters': assignment,
             'meta_hnsw': meta_hnsw.to_serializable_dict()
         }
@@ -87,10 +97,10 @@ class Peer:
         except grpc.RpcError as e:
             logger.error(f"--> [Peer SendClusters] FAILED to {self.id}: {e}")
 
-    def query_peer(self, query: ListOfVectors, topk: int, request_id: int):
-        logger.debug(f"--> [Peer Query] Querying Peer {self.id} for {len(query)} vectors")
+    def query_peer(self, query: ListOfVectors, topk: int, request_id: int, cluster_id: int = -1):
+        logger.debug(f"--> [Peer Query] Querying Peer {self.id} for {len(query)} vectors (ClusterID: {cluster_id})")
         proto_query = [p2p_pb2.VectorList(values=v) for v in query]
-        req = p2p_pb2.QueryRequest(req_id=request_id, query_vectors=proto_query, topk=topk)
+        req = p2p_pb2.QueryRequest(req_id=request_id, query_vectors=proto_query, topk=topk, cluster_id=cluster_id)
         
         try:
             response = self.stub.QueryPeer(req)
@@ -232,7 +242,12 @@ class ServerApp:
                 self.vector_buffer = []
                 logger.info(f"*** Status changed to 'clustered'. Processing local assignment ({len(assignment[self.node_id])} clusters)...")
                 
-                local_vectors = [vector_complete for cluster_id, _ in assignment[self.node_id] for vector_complete in clusters[cluster_id][1]]
+                local_vectors = []
+                for cluster_id, _ in assignment[self.node_id]:
+                    for vector_complete in clusters[cluster_id][1]:
+                        # Append cluster_id to the vector tuple
+                        local_vectors.append(vector_complete + (cluster_id,))
+                
                 logger.info(f"Clustering: Inserting {len(local_vectors)} assigned vectors to local Qdrant.")
                 self.add_vectors(local_vectors, self.status, request_id)
                 
@@ -249,7 +264,24 @@ class ServerApp:
             
             if status_of_sender == 'clustered':
                 logger.debug(f"[Add Vectors] Direct Insert: Storing {len(vectors)} vectors in local Qdrant (Sender is clustered).")
-                qdrant_module.insert_vectors(self.qdrant_url, self.collection_name, vectors, self.batch_size_retry, self.batch_size)
+                
+                # Group by cluster_id
+                vectors_by_cluster = {}
+                for v in vectors:
+                    if len(v) == 4:
+                        cluster_id = v[3]
+                        if cluster_id not in vectors_by_cluster:
+                            vectors_by_cluster[cluster_id] = []
+                        vectors_by_cluster[cluster_id].append(v[:3]) # Pass only first 3 elements to qdrant_module
+                    else:
+                        # Fallback if no cluster_id (shouldn't happen in clustered mode ideally, but for safety)
+                        if 'default' not in vectors_by_cluster:
+                            vectors_by_cluster['default'] = []
+                        vectors_by_cluster['default'].append(v)
+
+                for cluster_id, cluster_vectors in vectors_by_cluster.items():
+                    coll_name = f"cluster_{cluster_id}" if cluster_id != 'default' else self.collection_name
+                    qdrant_module.insert_vectors(self.qdrant_url, coll_name, cluster_vectors, self.batch_size_retry, self.batch_size)
             else:
                 if not self.i_am_coord():
                     logger.error("Error: Received bootstrap/clustering vectors but I am not coordinator.")
@@ -367,14 +399,15 @@ class ServerApp:
                 found = 0
                 for index, peer in enumerate(self.peers):
                     if peer.contains(top_1):
-                        assigned_vectors[index].append(vector_tuple)
+                        # Append cluster_id to the vector tuple
+                        assigned_vectors[index].append(vector_tuple + (top_1,))
                         found += 1
                         # logger.debug(f"[DEBUG] found replica for vector: {found}") # Decommentare solo se necessario per debug profondo
 
                 # Logica di replicazione (Invariata)
                 if found != self.replicas:
                     # logger.debug(f"[DEBUG] to me replica for vector: {found}")
-                    to_me.append(vector_tuple)
+                    to_me.append(vector_tuple + (top_1,))
                 
                 if found < self.replicas-1:
                     logger.debug(f"[DEBUG] not enough replicas found: {found} (Cluster ID: {top_1})")
@@ -448,13 +481,15 @@ class ServerApp:
                 logger.info(f"[Linear Search] Result {i+1}: ID={res.get('id')}, Score={res.get('score')}")
             return to_return
 
-    def query_me(self, query: ListOfVectors, topk: int):
+    def query_me(self, query: ListOfVectors, topk: int, cluster_id: int = -1):
         with metrics.REQUEST_LATENCY.labels(operation='local_query').time():
             if (self.status == 'bootstrap' or self.status == 'clustering') and self.i_am_coord():
                 logger.debug(f"[Local Query] Bootstrap/Clustering mode: performing linear search on buffer.")
                 return self.linear_search(query, topk)
-            logger.debug(f"[Local Query] Querying local Qdrant for {len(query)} vectors.")
-            results = qdrant_module.query_vectors(self.qdrant_url, self.collection_name, query, topk)
+            
+            coll_name = f"cluster_{cluster_id}" if cluster_id != -1 else self.collection_name
+            logger.debug(f"[Local Query] Querying local Qdrant collection '{coll_name}' for {len(query)} vectors.")
+            results = qdrant_module.query_vectors(self.qdrant_url, coll_name, query, topk)
             for i, res in enumerate(results):
                 logger.info(f"[Local Qdrant Query] Result {i+1}: ID={res.get('id')}, Score={res.get('score')}")
             return results
@@ -485,10 +520,14 @@ class ServerApp:
                 for index, peer in enumerate(self.peers):
                     for result in top_3:
                         if peer.contains(result):
-                            to_query_peer[index].append(vector)
+                            # We need to send (query_vector, cluster_id) pair or group by cluster_id
+                            # Current structure: to_query_peer[index] is list of vectors.
+                            # We need to change this to list of (vector, cluster_id) or dict {cluster_id: [vectors]}
+                            # Let's use a list of tuples for now and handle it in the task
+                            to_query_peer[index].append((vector, result))
                 for result in top_3:
                     if result in [c[0] for c in self.node_clusters]:
-                        to_query_me.append(vector)
+                        to_query_me.append((vector, result))
             
             # Log Routing
             q_summary = [f"Peer {peer.id}: {len(to_query_peer[i])}" for i, peer in enumerate(self.peers)]
@@ -496,10 +535,21 @@ class ServerApp:
             logger.debug(f"[Global Query] Routing: {', '.join(q_summary)}")
 
             # Parallel execution of queries
-            def query_peer_task(index, peer, queries):
+            def query_peer_task(index, peer, queries_with_clusters):
                 try:
-                    results = peer.query_peer(queries, topk, request_id)
-                    return (peer.id, True, results)
+                    # Group by cluster_id
+                    by_cluster = {}
+                    for q, c_id in queries_with_clusters:
+                        if c_id not in by_cluster:
+                            by_cluster[c_id] = []
+                        by_cluster[c_id].append(q)
+                    
+                    all_results = []
+                    for c_id, qs in by_cluster.items():
+                        res = peer.query_peer(qs, topk, request_id, cluster_id=c_id)
+                        all_results.extend(res)
+                        
+                    return (peer.id, True, all_results)
                 except Exception as e:
                     logger.error(f"[Global Query] Failed to query {peer.id}: {e}")
                     return (peer.id, False, [])
@@ -512,7 +562,20 @@ class ServerApp:
             
             # Also query self in parallel if needed
             if to_query_me:
-                tasks.append((lambda: (self.node_id, True, self.query_me(to_query_me, topk)), ()))
+                # Group local queries by cluster
+                by_cluster_local = {}
+                for q, c_id in to_query_me:
+                    if c_id not in by_cluster_local:
+                        by_cluster_local[c_id] = []
+                    by_cluster_local[c_id].append(q)
+                
+                def query_local_task():
+                    local_res = []
+                    for c_id, qs in by_cluster_local.items():
+                        local_res.extend(self.query_me(qs, topk, cluster_id=c_id))
+                    return (self.node_id, True, local_res)
+
+                tasks.append((query_local_task, ()))
             
             results_list = self._run_parallel_tasks(tasks)
             
