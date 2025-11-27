@@ -194,11 +194,14 @@ def collect_prometheus_metrics(start_port=10001, num_nodes=3):
 
     for i in range(num_nodes):
         port = start_port + i
+        node_name = f"node{i+1}"
         url = f"http://localhost:{port}/metrics"
         
         try:
             response = requests.get(url, timeout=2)
-            if response.status_code != 200: continue
+            if response.status_code != 200: 
+                logger.warning(f"Failed to get metrics from {node_name} on port {port}")
+                continue
             
             lines = response.text.split('\n')
             
@@ -206,18 +209,32 @@ def collect_prometheus_metrics(start_port=10001, num_nodes=3):
                 if line.startswith('#') or not line: continue
                 if '_created' in line: continue
                 if '_bucket' in line: continue
-                match_op = re.search(r'operation="([^"]+)"', line)
-                if match_op:
-                    op_name = match_op.group(1)
-                else:
-                    op_name = line.split('{')[0] if '{' in line else line.split(' ')[0]
+                metric_name = line.split('{')[0] if '{' in line else line.split(' ')[0]
                 try:
                     value = float(line.split(' ')[-1])
                 except ValueError:
                     continue
 
+                # Parse labels for better categorization
+                match_op = re.search(r'operation="([^"]+)"', line)
+                match_target = re.search(r'target_node="([^"]+)"', line)
+                match_query_type = re.search(r'query_type="([^"]+)"', line)
+                match_source = re.search(r'source="([^"]+)"', line)
+                match_cluster = re.search(r'cluster_id="([^"]+)"', line)
+                if match_op:
+                    op_name = match_op.group(1)
+                elif match_target:
+                    op_name = f"to_{match_target.group(1)}"
+                elif match_query_type and match_source:
+                    op_name = f"{match_query_type.group(1)}_{match_source.group(1)}"
+                elif match_query_type:
+                    op_name = match_query_type.group(1)
+                else:
+                    op_name = metric_name
+
                 if '_latency_seconds_count' in line or '_latency_seconds_sum' in line:
-                    if op_name not in histograms: histograms[op_name] = {'count': 0, 'sum': 0}
+                    if op_name not in histograms: 
+                        histograms[op_name] = {'count': 0, 'sum': 0}
                     
                     if '_count' in line:
                         histograms[op_name]['count'] += value
@@ -225,23 +242,75 @@ def collect_prometheus_metrics(start_port=10001, num_nodes=3):
                         histograms[op_name]['sum'] += value
 
                 elif '_total' in line:
-                    if 'python_' in line or 'process_' in line: continue
+                    if 'python_' in line or 'process_' in line: 
+                        continue
                     
-                    if op_name not in counters: counters[op_name] = 0
-                    counters[op_name] += value
+                    # Create descriptive counter name
+                    if 'queries_received' in metric_name:
+                        counter_key = f"received_{op_name}"
+                    elif 'queries_routed' in metric_name:
+                        counter_key = f"query_routed_{op_name}"
+                    elif 'vectors_routed' in metric_name:
+                        counter_key = f"vector_routed_{op_name}"
+                    elif 'cluster_hits' in metric_name:
+                        counter_key = f"cluster_hit_{match_cluster.group(1) if match_cluster else 'unknown'}"
+                    else:
+                        counter_key = op_name
+                    
+                    if counter_key not in counters: 
+                        counters[counter_key] = 0
+                    counters[counter_key] += value
 
         except Exception as e:
-            pass
+            logger.error(f"Error collecting metrics from {node_name}: {e}")
 
-    print(f"{'OPERAZIONE (Tempo)':<30} | {'REQ':<10} | {'AVG (s)':<15}")
-    print("-" * 60)
+    # Display latency metrics
+    print(f"\n{'OPERAZIONE (Tempo)':<40} | {'REQ':<10} | {'AVG (s)':<15}")
+    print("-" * 70)
     for op, data in sorted(histograms.items()):
         count = data['count']
         if count > 0:
             avg = data['sum'] / count
-            print(f"{op:<30} | {int(count):<10} | {avg:.5f}")
-    print("-" * 60)
+            print(f"{op:<40} | {int(count):<10} | {avg:.5f}")
+    print("-" * 70)
 
+    # Display query distribution metrics
+    print(f"\n{'DISTRIBUZIONE QUERY':<40} | {'TOTALE':<10}")
+    print("-" * 70)
+    
+    # Separate by category
+    received = {k: v for k, v in counters.items() if k.startswith('received_')}
+    query_routed = {k: v for k, v in counters.items() if k.startswith('query_routed_')}
+    vector_routed = {k: v for k, v in counters.items() if k.startswith('vector_routed_')}
+    
+    if received:
+        print("\n[QUERY RICEVUTE]")
+        for metric, value in sorted(received.items()):
+            print(f"  {metric:<38} | {int(value):<10}")
+    
+    if query_routed:
+        print("\n[QUERY ROUTATE (Chiamate Peer)]")
+        for metric, value in sorted(query_routed.items()):
+            print(f"  {metric:<38} | {int(value):<10}")
+    
+    if vector_routed:
+        print("\n[VETTORI ROUTATI (Dettaglio)]")
+        for metric, value in sorted(vector_routed.items()):
+            print(f"  {metric:<38} | {int(value):<10}")
+    
+    if not (received or query_routed or vector_routed):
+        print("  (Nessuna query processata)")
+    print("-" * 70)
+    
+    # Display cluster hit distribution
+    cluster_hits = {k: v for k, v in counters.items() if k.startswith('cluster_hit_')}
+    if cluster_hits:
+        print(f"\n{'CLUSTER HIT RATE (Top 10)':<40} | {'HITS':<10}")
+        print("-" * 70)
+        for cluster, hits in sorted(cluster_hits.items(), key=lambda x: x[1], reverse=True)[:10]:
+            cluster_id = cluster.replace('cluster_hit_', '')
+            print(f"  Cluster {cluster_id:<30} | {int(hits):<10}")
+        print("-" * 70)
     print("=" * 60 + "\n")
 
 def main():

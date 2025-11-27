@@ -140,6 +140,8 @@ class ServerApp:
         self.vector_buffer = []
         self.additional_buffer = []
         self.num_vectors_before_clustering = num_vectors_before_clustering
+        self.query_received_count = 0
+        self.metrics_lock = threading.Lock()
         self.vector_buffer_lock = threading.RLock()
         self.additional_buffer_lock = threading.Lock()
         self.status_lock = threading.Lock()
@@ -330,7 +332,6 @@ class ServerApp:
             self.node_clusters = assignment['peers_clusters'][self.node_id]
             self.meta_hnsw = clustering_module.MetaHNSW.from_serializable_dict(assignment['meta_hnsw'])
             self.status = 'clustered'
-            
             my_vecs = assignment['my_vectors']
             logger.info(f"[Set Clusters] Storing {len(my_vecs)} assigned vectors locally.")
             self.add_vectors(my_vecs, self.status, request_id)
@@ -437,6 +438,7 @@ class ServerApp:
 
     def query_me(self, query: ListOfVectors, topk: int):
         with metrics.REQUEST_LATENCY.labels(operation='local_query').time():
+            metrics.QUERY_RECEIVED.labels(query_type='local', source='peer').inc(len(query))
             if (self.status == 'bootstrap' or self.status == 'clustering') and self.i_am_coord():
                 logger.debug(f"[Local Query] Bootstrap/Clustering mode: performing linear search on buffer.")
                 return self.linear_search(query, topk)
@@ -445,11 +447,13 @@ class ServerApp:
             for i, res in enumerate(results):
                 logger.info(f"[Local Qdrant Query] Result {i+1}: ID={res.get('id')}, Score={res.get('score')}")
             return results
-    
+
     def query(self, query: ListOfVectors, topk: int, request_id: int):
         with metrics.REQUEST_LATENCY.labels(operation='global_query').time():
             logger.info(f"[Global Query] Processing query (ReqID: {request_id}). Queries: {len(query)}, TopK: {topk}")
             response = []
+            with self.metrics_lock:
+                self.query_received_count += 1
             if self.meta_hnsw is None or self.status == 'clustering':
                 if self.i_am_coord():
                     logger.warning("MetaHNSW not built or Clustering in progress. Coordinator falling back to Linear Search.")
@@ -466,9 +470,12 @@ class ServerApp:
             to_query_peer = [[] for _ in range(len(self.peers))]
             to_query_me = []
             
-            # Routing queries
+            # Routing queries with cluster hit tracking
             for vector in query:
                 top_3 = self.route_vector(vector, 3)
+                for cluster_id in top_3:
+                    metrics.CLUSTER_HITS.labels(cluster_id=str(cluster_id)).inc()
+        
                 for index, peer in enumerate(self.peers):
                     for result in top_3:
                         if peer.contains(result):
@@ -476,6 +483,14 @@ class ServerApp:
                 for result in top_3:
                     if result in [c[0] for c in self.node_clusters]:
                         to_query_me.append(vector)
+            
+            # Track routing decisions
+            for index, peer in enumerate(self.peers):
+                if to_query_peer[index]:
+                    # Conta quanti VETTORI individuali sono stati routati
+                    metrics.VECTORS_ROUTED.labels(target_node=peer.id).inc(len(to_query_peer[index]))
+                    # Conta quante QUERY (chiamate uniche al peer) vengono fatte
+                    metrics.QUERY_ROUTED.labels(target_node=peer.id).inc(1)
             
             # Log Routing
             q_summary = [f"Peer {peer.id}: {len(to_query_peer[i])}" for i, peer in enumerate(self.peers)]
@@ -485,10 +500,12 @@ class ServerApp:
             # Parallel execution of queries
             def query_peer_task(index, peer, queries):
                 try:
-                    results = peer.query_peer(queries, topk, request_id)
+                    with metrics.PEER_LATENCY.labels(peer_id=peer.id, operation='query').time():
+                        results = peer.query_peer(queries, topk, request_id)
                     return (peer.id, True, results)
                 except Exception as e:
                     logger.error(f"[Global Query] Failed to query {peer.id}: {e}")
+                    metrics.PEER_FAILURES.labels(peer_id=peer.id, operation='query').inc()
                     return (peer.id, False, [])
             
             # Submit query tasks to thread pool
@@ -544,3 +561,8 @@ class ServerApp:
                 res[peer.id] = peer.get_count()
             res[self.node_id] = self.get_count()
             return res
+        
+    def metrics_snapshot(self):
+        return {
+                'query_received_count': self.query_received_count
+        }

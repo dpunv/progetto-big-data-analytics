@@ -69,6 +69,7 @@ async def query_endpoint(query: QueryVectorsRequest):
 @app.post("/query_peer")
 async def query_peer_endpoint(query: QueryVectorsRequest):
     logger.info(f"API: /query_peer called")
+    metrics.QUERY_RECEIVED.labels(query_type='peer', source='peer').inc()
     if server is None:
         raise Exception("ServerApp not created")
     results = server.query_me(query.query, query.topk)
@@ -120,6 +121,12 @@ async def count_peer_endpoint():
     if server is None:
         raise Exception("ServerApp not created")
     return server.get_count()
+
+@app.get("/metrics_snapshot")
+async def metrics_snapshot_endpoint():
+    if server is None:
+        raise Exception("ServerApp not created")
+    return server.metrics_snapshot()
 
 # Add gRPC URL argument
 if __name__ == "__main__":

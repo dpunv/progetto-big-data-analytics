@@ -70,32 +70,6 @@ class Server:
         except Exception as e:
             logger.error(f"Count failed on {self.id}: {e}")
             return None
-
-def run_client(server, queries, topk=5):   
-    logger.info(f"Starting queries to {server.url}...")
-    start_time = time.time()
-    response=server.query_vectors(queries)
-    elapsed = time.time() - start_time
-    if elapsed > 0:
-        avg_lat = elapsed / len(queries)
-        logger.info(f"Completed {len(queries)} queries in {elapsed:.2f}s (Avg Latency: {avg_lat:.4f}s)")
-        
-        print("\n" + "="*40)
-        print(" CLIENT SIDE METRICS REPORT")
-        print("="*40)
-        print(f" Total Queries:   {len(queries)}")
-        print(f" Total Time:      {elapsed:.2f} s")
-        print(f" Avg Latency:     {avg_lat:.4f} s")
-        print("="*40 + "\n")
-    
-        with open("logs/client_metrics.txt", "w") as f:
-            f.write(f"CLIENT_AVG_LATENCY={avg_lat}\n")
-            f.write(f"CLIENT_TOTAL_REQ={len(queries)}\n")
-    else:
-        logger.warning("No successful queries recorded.")
-
-    return response
-
         
 def main():
     parser = argparse.ArgumentParser()
@@ -109,7 +83,8 @@ def main():
     if not utils.LOGGING_ENABLED:
         log_level = logging.CRITICAL
     elif args.log_file:
-        handlers.append(logging.FileHandler(args.log_file, mode='w'))
+        # Use UTF-8 encoding for file handler to support Unicode symbols
+        handlers.append(logging.FileHandler(args.log_file, mode='w', encoding='utf-8'))
     else:
         handlers.append(logging.StreamHandler(sys.stdout))
 
@@ -232,20 +207,97 @@ def main():
 
     logger.info('Sending query')
 
-    query_vector = data[0]['embedding']
-    res_obj = run_client(servers[0], [query_vector])
-    #res_obj = servers[0].query_vectors([query_vector])
-    if res_obj:
-        res = res_obj.json()['results']
-        for result in res:
-            logger.info(f"Result: {result['id']}: {result['score']} -> {result['payload']['string']}")
+    query_vectors = [data[i]['embedding'] for i in range(10)]
+    
+    # Distribute queries across all servers in round-robin fashion
+    logger.info(f"Distributing {len(query_vectors)} queries across {len(servers)} servers...")
+    
+    all_results = []
+    results_by_query = {}  # Store results per query index
+    
+    # Send queries ONE AT A TIME to get individual results
+    for idx, query_vector in enumerate(query_vectors):
+        server_idx = idx % len(servers)
+        target_server = servers[server_idx]
+        
+        logger.info(f"Sending query {idx} to {target_server.id}")
+        
+        # Send single query and get response
+        payload = {
+            'id': get_id(),
+            'query': [query_vector],  # Single query
+            'topk': 5
+        }
+        
+        try:
+            response = requests.post(f'{target_server.url}/query', json=payload)
+            if response.status_code == 200:
+                res = response.json()['results']
+                results_by_query[idx] = res
+                all_results.extend(res)
+            else:
+                logger.error(f"Query {idx} failed with status {response.status_code}")
+                results_by_query[idx] = []
+        except Exception as e:
+            logger.error(f"Query {idx} failed: {e}")
+            results_by_query[idx] = []
+    
+    # Display results query by query with correspondence
+    logger.info(f"\n{'='*80}")
+    logger.info(f"QUERY RESULTS (Distributed across {len(servers)} servers)")
+    logger.info(f"{'='*80}\n")
+    
+    logger.info("### SYSTEM RESULTS vs GROUND TRUTH ###\n")
+    
+    for idx, query_vector in enumerate(query_vectors):
+        server_idx = idx % len(servers)
+        logger.info(f"--- QUERY {idx} (sent to {servers[server_idx].id}) ---")
+        
+        # Get system results for this query
+        system_results = results_by_query.get(idx, [])
+        if system_results:
+            # Sort and show top 5 system results
+            sorted_results = sorted(system_results, key=lambda x: x['score'], reverse=True)[:5]
+            logger.info(f"\nSystem Results (Top 5):")
+            for i, result in enumerate(sorted_results, 1):
+                logger.info(f"  {i}. [{result['score']:.4f}] {result['payload']['string'][:75]}...")
+        
+        # Calculate ground truth for this query
+        distances_calcs = [(vector, utils.cosine_similarity(vector['embedding'], query_vector)) for vector in data[:vector_sent]]
+        distances_calcs.sort(key=lambda x: x[1], reverse=True)
+        
+        logger.info(f"\nGround Truth (Top 5):")
+        for i, (v, d) in enumerate(distances_calcs[:5], 1):
+            logger.info(f"  {i}. [{d:.4f}] {v['text'][:75]}...")
+        
+        logger.info(f"\n### FOR CORRESPONDENCE (Query {idx}) ###")
+        if system_results:
+            sorted_sys = sorted(system_results, key=lambda x: x['score'], reverse=True)[:5]
+            logger.info("System vs Ground Truth:")
+            max_compare = min(5, len(sorted_sys))
+            for i in range(max_compare):
+                sys_score = sorted_sys[i]['score']
+                sys_text = sorted_sys[i]['payload']['string'][:60]
+                gt_score = distances_calcs[i][1]
+                gt_text = distances_calcs[i][0]['text'][:60]
+                
+                match = "✓" if abs(sys_score - gt_score) < 0.01 else "✗"
+                logger.info(f"  {i+1}. [{match}] SYS={sys_score:.4f} | GT={gt_score:.4f}")
+                logger.info(f"       SYS: {sys_text}...")
+                logger.info(f"       GT:  {gt_text}...")
+        else:
+            logger.warning("  (No system results available for this query)")
+        
+        logger.info("")
 
-    logger.info("### FOR CORRESPONDENCE ###")
-
-    distances_calcs = [(vector, utils.cosine_similarity(vector['embedding'], query_vector)) for vector in data[:vector_sent]]
-    distances_calcs.sort(key=lambda x: x[1], reverse=True)
-    for v, d in distances_calcs[:5]:
-        logger.info(f"Ground Truth: {d} -> {v['text']}")
+    # Show overall aggregated results at the end
+    logger.info(f"\n{'='*80}")
+    logger.info(f"AGGREGATED TOP 10 RESULTS (All queries combined)")
+    logger.info(f"{'='*80}\n")
+    
+    for i, result in enumerate(sorted(all_results, key=lambda x: x['score'], reverse=True)[:10], 1):
+        logger.info(f"{i}. ID={result['id']}, Score={result['score']:.4f}")
+        logger.info(f"   {result['payload']['string'][:75]}...")
 
     logger.info('Getting vector counts (polling for consistency)...')
     expected_total = vector_sent * config['replicas']
