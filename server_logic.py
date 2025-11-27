@@ -594,6 +594,6 @@ class ServerApp:
         with metrics.REQUEST_LATENCY.labels(operation='get_count_client').time():
             res = {}
             for peer in self.peers:
-                res[peer.id] = peer.get_count()
-            res[self.node_id] = self.get_count()
+                res[peer.id] = peer.get_count()  # Chiama l'API HTTP del peer
+            res[self.node_id] = self.get_count()  # Usa la tua get_count() locale
             return res
