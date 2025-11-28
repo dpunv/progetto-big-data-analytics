@@ -2,6 +2,7 @@ import numpy as np
 import json
 import faiss
 from sklearn.metrics import silhouette_score
+from sklearn.cluster import KMeans
 import time
 import torch
 import itertools
@@ -54,11 +55,6 @@ def kmeans_torch(X_tensor, num_clusters, niter=15, tol=1e-4, device='cpu'):
         # 4. Aggiornamento centroidi
         # Questo ciclo può essere vettorizzato ma per K piccolo è veloce anche così
         new_centroids = torch.zeros_like(centroids)
-        counts = torch.zeros(num_clusters, device=device).unsqueeze(1)
-        
-        # Scatter add è molto veloce su GPU per sommare in base agli indici
-        # One-hot encoding implicito per sommare
-        # Per semplicità e stabilità usiamo un approccio masked semplice o scatter_add_
         
         # Metodo veloce PyTorch per ricalcolo media:
         for k in range(num_clusters):
@@ -166,10 +162,22 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
     else:
         logger.info(f"⚠ Running on CPU (no GPU acceleration)")
     
+    device = torch.device("cpu") # force CPU for testing
+    
     logger.info(f"Device: {device}")
 
     # 2. Spostamento dati su GPU una volta sola
-    X_tensor = torch.from_numpy(X).float().to(device)
+    if device.type != 'cpu':
+        try:
+            X_tensor = torch.from_numpy(X).float().to(device)
+            logger.info(f"Successfully moved data to {device}")
+        except Exception as e:
+            logger.warning(f"Failed to move data to {device}: {e}. Falling back to CPU.")
+            device = torch.device("cpu")
+            X_tensor = None
+    else:
+        X_tensor = None
+    
     n = X.shape[0]
 
     max_score = -2
@@ -191,18 +199,30 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
         logger.info(f"Using all {n} samples for silhouette score")
 
     for k in k_range:
-        # Esegue training su GPU
-        centroids_gpu, labels_gpu = kmeans_torch(X_tensor, num_clusters=k, niter=KMEANS_N_ITER, device=device)
-        
-        # Sposta SOLO le etichette necessarie su CPU per calcolare lo score
-        # Nota: silhouette_score richiede CPU numpy array.
-        # Se abbiamo fatto subsampling, dobbiamo prendere le label corrispondenti agli indici
-        if n > SILHOUETTE_SUBSAMPLE_SIZE:
-            # Dobbiamo ricalcolare le label per il subset o prenderle dal tensore completo
-            # Prendiamo dal tensore completo e tagliamo
-            labels_cpu_sample = labels_gpu[idx].cpu().numpy()
+        if device.type == 'cpu':
+            # Use sklearn KMeans (CPU optimized)
+            kmeans = KMeans(n_clusters=k, max_iter=KMEANS_N_ITER, random_state=42, n_init=1)
+            kmeans.fit(X)
+            
+            if n > SILHOUETTE_SUBSAMPLE_SIZE:
+                labels_cpu_sample = kmeans.labels_[idx]
+            else:
+                labels_cpu_sample = kmeans.labels_
+                
+            current_centroids = kmeans.cluster_centers_
+            current_labels = kmeans.labels_
+            
         else:
-            labels_cpu_sample = labels_gpu.cpu().numpy()
+            # Esegue training su GPU
+            centroids_gpu, labels_gpu = kmeans_torch(X_tensor, num_clusters=k, niter=KMEANS_N_ITER, device=device)
+            # Sposta SOLO le etichette necessarie su CPU per calcolare lo score
+            if n > SILHOUETTE_SUBSAMPLE_SIZE:
+                labels_cpu_sample = labels_gpu[idx].cpu().numpy()
+            else:
+                labels_cpu_sample = labels_gpu.cpu().numpy()
+                
+            current_centroids = centroids_gpu.cpu().numpy()
+            current_labels = labels_gpu.cpu().numpy()
 
         try:
             score = silhouette_score(X_cpu_sample, labels_cpu_sample)
@@ -214,9 +234,8 @@ def find_k_and_run_kmeans(X, max_k=30, random_state=42):
 
         if score > max_score:
             max_score = score
-            # Teniamo i centroidi su CPU per salvarli/ritornarli alla fine
-            best_centroids = centroids_gpu.cpu().numpy()
-            best_labels = labels_gpu.cpu().numpy()
+            best_centroids = current_centroids
+            best_labels = current_labels
             best_k = k
 
     # Pulizia memoria GPU
@@ -310,14 +329,14 @@ def find_assignment(clusters: List[Tuple[str, int, List[float]]], all_nodes, rep
 
     return assignment
 
-def get_clusters(vectors: ListOfVectorsComplete) -> Dict[VectorId, Tuple[Vector, ListOfVectorsComplete]]:
+def get_clusters(vectors: ListOfVectorsComplete, max_clusters=30) -> Dict[VectorId, Tuple[Vector, ListOfVectorsComplete]]:
     logger.info(f"get_clusters() called with {len(vectors)} vectors")
     
     # Extract only vectors for clustering
-    data_matrix = np.array([v[0] for v in vectors])
+    data_matrix = np.array([v[0] for v in vectors], dtype=np.float32)
     logger.info(f"Extracted data matrix of shape: {data_matrix.shape}")
     
-    _, best_centroids, labels = find_k_and_run_kmeans(data_matrix)
+    _, best_centroids, labels = find_k_and_run_kmeans(data_matrix, max_clusters)
     
     best_c = best_centroids.tolist()
     result = {}
@@ -376,8 +395,12 @@ def find_batch(hnsw: MetaHNSW, vectors: Union[List[Vector], np.ndarray], k: int)
     """
     # 1. Convert to numpy float32 only once
     if isinstance(vectors, list):
+        if not vectors:
+            return []
         data = np.array(vectors, dtype=np.float32)
     else:
+        if vectors.size == 0:
+            return []
         data = vectors.astype(np.float32)
         
     # 2. Call batch search

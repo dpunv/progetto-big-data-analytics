@@ -116,7 +116,7 @@ class Peer:
             return requests.get(f'{self.url}/count_peer').json()
         except Exception as e:
             logger.error(f"Error getting count from {self.id}: {e}")
-            return {}
+            return -1
             
     def close(self):
         """Close the gRPC channel."""
@@ -197,8 +197,8 @@ class ServerApp:
             logger.info("Clustering: Calculating node assignments...")
             clusters = clustering_module.get_clusters(vectors_to_cluster)
             assignment = clustering_module.get_node_assignment(clusters, peers_with_me, self.replicas)
+            logger.info("ci sono fin qui")
             self.meta_hnsw = clustering_module.build_meta_hnsw(clusters, self.dimension)
-            
             [logger.info(f"Clusters and vectors count per node: {node_id}: Clusters: {len(clusters_in_node)} - Vectors: {sum([len(clusters[cluster[0]][1]) for cluster in clusters_in_node])}") for node_id, clusters_in_node in assignment.items()]
 
             logger.info("Clustering: Broadcasting assignments to peers...")
@@ -237,9 +237,12 @@ class ServerApp:
                 self.add_vectors(local_vectors, self.status, request_id)
                 
             with self.additional_buffer_lock:
-                logger.info(f"Clustering: Processing additional buffer ({len(self.additional_buffer)} vectors)...")
-                self.route_vectors_send(self.additional_buffer, request_id)
-                self.additional_buffer = []
+                if self.additional_buffer:
+                    logger.info(f"Clustering: Processing additional buffer ({len(self.additional_buffer)} vectors)...")
+                    self.route_vectors_send(self.additional_buffer, request_id)
+                    self.additional_buffer = []
+                else:
+                    logger.info("Clustering: No additional buffer to process.")
                 
             logger.info("*** CLUSTERING FINISHED ***")
 
