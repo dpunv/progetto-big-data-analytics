@@ -226,17 +226,23 @@ def main():
     else:
         logger.info("All batches sent successfully!")
     
-    time.sleep(1)
+    time.sleep(5)
 
     logger.info('Getting vector counts (polling for consistency)...')
     expected_total = vector_sent * config['replicas']
+    total = 0
+    #time.sleep(180)
     if int(config['num_before_clustering']) <= vector_sent:
-        max_retries = 30
-        for i in range(max_retries):
+        for i in range(config['max_retries']):
             count_res = servers[1 if len(servers) > 1 else 0].get_count()
             if count_res:
                 counts = count_res.json()
-                total = sum([count for _, count in counts.items()])
+                total = 0
+                for node_id, count in counts.items():
+                    if isinstance(count, int):
+                        total += count
+                    else:
+                        logger.warning(f"Invalid count received from {node_id}: {count}")
                 logger.info(f'Counts: {counts} - Total: {total}/{expected_total}')
                 if total >= expected_total:
                     break

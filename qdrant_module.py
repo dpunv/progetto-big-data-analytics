@@ -1,7 +1,9 @@
 import metrics
 from qdrant_client import QdrantClient, models
 import logging
-
+from itertools import groupby
+from operator import itemgetter
+import utils
 logger = logging.getLogger(__name__)
 
 # Helper to create a client instance.
@@ -10,15 +12,16 @@ _client_cache = {}
 def get_client(url: str) -> QdrantClient:
     if url in _client_cache:
         return _client_cache[url]
-        
+
     # prefer_grpc=True forces the client to use the gRPC port (usually 6334)
     client = QdrantClient(
         url=url, 
         grpc_port=(int(url.split(':')[-1])+1), 
         prefer_grpc=True,
+        timeout=60,
         grpc_options={
-            'grpc.max_send_message_length': 100 * 1024 * 1024,
-            'grpc.max_receive_message_length': 100 * 1024 * 1024
+            'grpc.max_send_message_length': 512 * 1024 * 1024,
+            'grpc.max_receive_message_length': 512 * 1024 * 1024
         }
     )
     _client_cache[url] = client
@@ -51,6 +54,12 @@ def create_collection(url, collection_name, vector_size: int, distance: str = "C
         logger.error(f"Error creating collection on {url}: {e}")
         return False
 
+def query_vectors_generic(url, collection, query, topk):
+    keyfunc = itemgetter(1)
+    vectors_sorted = sorted(query, key=keyfunc)
+    grouped = [query_vectors(url, utils.get_collection_name(collection, key), list(group), topk) for key, group in groupby(vectors_sorted, keyfunc)]
+    return [item for sublist in grouped for item in sublist]
+
 def query_vectors(url, collection, query, topk):
     """
     Query vectors using query_batch_points (gRPC).
@@ -63,7 +72,7 @@ def query_vectors(url, collection, query, topk):
         # Create search requests
             search_queries = [
                 models.QueryRequest(
-                    query=query_vector,
+                    query=query_vector[0] if isinstance(query_vector, tuple) else query_vector,
                     limit=topk,
                     with_payload=True,
                     with_vector=True
@@ -98,6 +107,11 @@ def query_vectors(url, collection, query, topk):
         logger.error(f"[Qdrant] QUERY ERROR on {url}: {e}")
         return []
 
+def insert_vectors_generic(url, collection, vectors, batch_size_retry, batch_size=256):
+    keyfunc = itemgetter(3)
+    vectors_sorted = sorted(vectors, key=keyfunc)
+    grouped = [insert_vectors(url, utils.get_collection_name(collection, key), list(group), batch_size_retry, batch_size) for key, group in groupby(vectors_sorted, keyfunc)]
+
 def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
     """
     Insert vectors using upload_points.
@@ -114,9 +128,9 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
             models.PointStruct(
                 id=vector_id,
                 vector=vector_content,
-                payload={"string": vector_payload}
+                payload={"string": vector_payload, "cluster_id": cluster_id}
             )
-            for vector_content, vector_id, vector_payload in vectors
+            for vector_content, vector_id, vector_payload, cluster_id in vectors
         ]
         # Se batch_size non è specificato (o se vogliamo ottimizzare), 
         # diciamo a Qdrant di inviare tutto in una volta sola.
@@ -133,13 +147,15 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
                 collection_name=collection,
                 points=points,
                 batch_size=effective_batch_size, 
-                wait=False #CAMBIATO QUESTOOO
+                wait=True
             )
             logger.info(f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}.")
             return True
 
         except Exception as e:
             logger.warning(f"[Qdrant] Upload with batch_size={batch_size} failed: {e}. Retrying with batch_size={batch_size_retry}...")
+            import time
+            time.sleep(1)
             try:
                 client.upload_points(
                     collection_name=collection,

@@ -50,7 +50,7 @@ async def health_check_endpoint():
         "status": "healthy",
         "node_id": server.node_id,
         "is_coordinator": server.i_am_coord(),
-        "is_clustered": server.status,
+        "is_clustered": server.status.value,
     }
 
 @app.post("/query")
@@ -174,8 +174,8 @@ if __name__ == "__main__":
     # --- START GRPC SERVER ---
     def serve_grpc(server_app, grpc_port):
         options = [
-            ('grpc.max_send_message_length', 100 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 100 * 1024 * 1024)
+            ('grpc.max_send_message_length', 512 * 1024 * 1024),
+            ('grpc.max_receive_message_length', 512 * 1024 * 1024)
         ]
         grpc_server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=10),

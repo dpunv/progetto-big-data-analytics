@@ -15,6 +15,7 @@ message VectorPoint {
     repeated float vector = 1;
     int64 id = 2;
     string payload = 3;
+    string cluster = 4;
 }
 
 message AddVectorsRequest {
@@ -31,6 +32,7 @@ message QueryRequest {
 
 message VectorList {
     repeated float values = 1;
+    string cluster_id = 2;
 }
 
 message ScoredPoint {
