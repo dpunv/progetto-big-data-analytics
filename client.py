@@ -264,7 +264,7 @@ def main():
 
     
     logger.info('Sending query')
-    query_vectors = [data[i]['embedding'] for i in range(10)]
+    query_vectors = [data[i]['embedding'] for i in range(3)]
     results_by_query = run_queries(servers, query_vectors)
     logger.info(f"\n{'='*80}")
     logger.info(f"QUERY RESULTS (Distributed across {len(servers)} servers)")

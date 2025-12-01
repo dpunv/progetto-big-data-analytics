@@ -274,27 +274,6 @@ class ServerApp:
                              logger.debug(f"[Worker] Received {len(vectors)} vectors in BOOTSTRAP (Not Coord). Dropping or waiting?")
 
                 elif self.status == ServerStatus.CLUSTERING:
-                    # If we are clustering, we just let vectors sit in the queue?
-                    # No, we just popped them!
-                    # We need to buffer them temporarily until clustering finishes.
-                    # But wait, if _perform_clustering is blocking, we wouldn't be here popping!
-                    # _perform_clustering is called FROM this thread.
-                    # So we only reach here if we are NOT clustering (or just finished).
-                    # Wait, if status was set to CLUSTERING by another thread?
-                    # No, only THIS thread sets status to CLUSTERING (in the block above).
-                    # So if self.status is CLUSTERING here, it means... wait.
-                    # If we are in CLUSTERING state, it means we are currently running _perform_clustering?
-                    # No, _perform_clustering blocks this thread.
-                    # So we can't be popping from queue while clustering.
-                    # UNLESS: status was set to CLUSTERING, and we returned from _perform_clustering?
-                    # No, _perform_clustering sets status to CLUSTERED at the end.
-                    
-                    # So, effectively, we should never see status == CLUSTERING here 
-                    # because we transition BOOTSTRAP -> CLUSTERING -> (block) -> CLUSTERED
-                    # all in one go.
-                    
-                    # Exception: If we want to support non-blocking clustering?
-                    # No, blocking is safer for consistency.
                     pass
 
                 elif self.status == ServerStatus.CLUSTERED:
@@ -555,7 +534,7 @@ class ServerApp:
             logger.debug(f"[Global Query] Routing: {', '.join(q_summary)}")
 
             # Parallel execution of queries
-            def query_peer_task(index, peer, queries):
+            def query_peer_task(peer, queries):
                 try:
                     with metrics.PEER_LATENCY.labels(peer_id=peer.id, operation='query').time():
                         results = peer.query_peer(queries, topk, request_id)
