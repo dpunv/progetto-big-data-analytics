@@ -16,17 +16,18 @@ class P2PNodeServicer(p2p_pb2_grpc.P2PNodeServicer):
         # Convert Proto messages back to Python Tuples for ServerApp
         converted_content = []
         for vp in request.content:
-            # (Vector, VectorId, VectorPayload)
-            converted_content.append((list(vp.vector), vp.id, vp.payload))
-        
+            # (Vector, VectorId, VectorPayload, VectorCluster)
+
+            converted_content.append((list(vp.vector), vp.id, vp.payload, vp.cluster))
+
         self.server_app.add_vectors(converted_content, request.type, request.req_id)
         logger.info(f"[GRPC IN] ReceiveVectors processed successfully.")
         return p2p_pb2.Empty()
 
     def QueryPeer(self, request, context):
         logger.info(f"[GRPC IN] QueryPeer called. ReqID: {request.req_id}, TopK: {request.topk}, Vectors: {len(request.query_vectors)}")
-        # Convert Proto vectors to Python lists
-        queries = [list(q.values) for q in request.query_vectors]
+        # Convert Proto vectors to Python lists of tuples (vector, cluster_id)
+        queries = [(list(q.values), q.cluster_id) for q in request.query_vectors]
         
         results = self.server_app.query_me(queries, request.topk)
         

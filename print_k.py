@@ -1,8 +1,8 @@
 import json
 
 data = []
-with open('embeddings_150k.json', 'r') as f:
-    data = json.load(f)[:30_000]
+with open('embeddings_mid.json', 'r') as f:
+    data = json.load(f)[:50_000]
 
 print(data)
 

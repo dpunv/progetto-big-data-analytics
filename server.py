@@ -50,7 +50,7 @@ async def health_check_endpoint():
         "status": "healthy",
         "node_id": server.node_id,
         "is_coordinator": server.i_am_coord(),
-        "is_clustered": server.status,
+        "is_clustered": server.status.value,
     }
 
 @app.post("/query")

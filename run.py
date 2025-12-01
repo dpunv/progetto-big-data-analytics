@@ -127,7 +127,7 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coor
         )
         server_processes.append(proc)
         
-        qdrant_module.create_collection(qdrant_url, 'vectors', 384)
+        #qdrant_module.create_collection(qdrant_url, 'vectors', 384)
         
         logger.info(f"Started server '{node_id}' on port {fastapi_port}, Metrics={metrics_port}, (Qdrant: {qdrant_http_port}, PID: {proc.pid}). Log: {log_file}")
 
@@ -264,9 +264,9 @@ def main():
     metrics_ports = [METRICS_START_PORT + i + 1 for i in range(N)] 
     config = {
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'localhost:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
-        'batch_size': 1800,
-        'batch_size_retry': 500,
-        'num_vectors': 50000,
+        'batch_size': 500,
+        'batch_size_retry': 64,
+        'num_vectors': 50_000,
         'num_before_clustering': 2000,
         'replicas': 2,
         'max_retries': 30

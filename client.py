@@ -249,6 +249,7 @@ def main():
 
     logger.info('Getting vector counts (polling for consistency)...')
     expected_total = vector_sent * config['replicas']
+    total = 0
     #time.sleep(180)
     if int(config['num_before_clustering']) <= vector_sent:
         for i in range(config['max_retries']):

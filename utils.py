@@ -45,3 +45,7 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
         return 0.0
         
     return dot_product / (norm_a * norm_b)
+
+
+def get_collection_name(name, cluster):
+    return f"{name}_{cluster}"

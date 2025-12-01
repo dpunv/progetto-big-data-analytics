@@ -105,6 +105,19 @@ class MetaHNSW:
         if self.hnsw_index is None:
             logger.error("Error: hnsw still unbuilt")
             raise Exception("Error: hnsw still unbuilt")
+            
+        current_count = self.hnsw_index.element_count
+        if k > current_count:
+            # logger.warning(f"Requested k={k} is larger than index size {current_count}. Adjusting k.")
+            k = current_count
+            
+        if k == 0:
+            return []
+            
+        # Ensure ef is large enough
+        if self.hnsw_index.ef < k:
+            self.hnsw_index.set_ef(k)
+
         query = np.array(query_vector, dtype=np.float32)
         cluster_ids, distances = self.hnsw_index.knn_query(query, k=k)
         return sorted([(cluster_id, dist) for cluster_id, dist in zip(cluster_ids[0], distances[0])], key=lambda x: x[1])
@@ -112,6 +125,17 @@ class MetaHNSW:
     def search_batch(self, query_vectors: np.ndarray, k: int = 1) -> Tuple[np.ndarray, np.ndarray]:
         if self.hnsw_index is None:
             raise Exception("Error: hnsw still unbuilt")
+            
+        current_count = self.hnsw_index.element_count
+        if k > current_count:
+            k = current_count
+            
+        if k == 0:
+            return np.array([]), np.array([])
+
+        if self.hnsw_index.ef < k:
+            self.hnsw_index.set_ef(k)
+
         labels, distances = self.hnsw_index.knn_query(query_vectors, k=k)
         return labels, distances
 
@@ -346,8 +370,15 @@ def get_clusters(vectors: ListOfVectorsComplete, max_clusters=30) -> Dict[Vector
     logger.info("Grouping vectors by cluster labels...")
     for i in range(len(best_c)):
         indices = np.where(labels == i)[0]
-        # Retrieve original objects
-        cluster_vectors = [vectors[j] for j in indices]
+        # Retrieve original objects and update cluster ID
+        cluster_vectors = []
+        for j in indices:
+            # vectors[j] is (vector_content, vector_id, vector_payload, old_cluster_id)
+            # We need to update old_cluster_id to str(i)
+            v = vectors[j]
+            new_vector_tuple = (v[0], v[1], v[2], str(i))
+            cluster_vectors.append(new_vector_tuple)
+            
         result[i] = (best_c[i], cluster_vectors)
     
     logger.info(f"Created {len(result)} clusters from vectors")
