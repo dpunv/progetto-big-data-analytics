@@ -1,0 +1,281 @@
+import json
+import re
+import time
+import subprocess
+import sys
+import os
+import shutil
+import signal
+import atexit
+import requests
+import logging
+
+# Setup local logging
+if os.path.exists("logs_rust"):
+    shutil.rmtree("logs_rust")
+os.makedirs("logs_rust", exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("logs_rust/run.log", mode='w')
+    ]
+)
+logger = logging.getLogger("RunnerRust")
+
+server_processes = []
+RUST_PROJECT_DIR = "rust_p2p_analytics"
+SERVER_BIN = os.path.join(RUST_PROJECT_DIR, "target", "release", "server")
+CLIENT_BIN = os.path.join(RUST_PROJECT_DIR, "target", "release", "client")
+
+def run_rust_tests():
+    logger.info("Running Rust unit tests...")
+    try:
+        subprocess.run(["cargo", "test"], cwd=RUST_PROJECT_DIR, check=True)
+        logger.info("Rust unit tests passed successfully.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Rust unit tests failed: {e}")
+        sys.exit(1)
+
+def build_rust_project():
+    logger.info("Building Rust project...")
+    try:
+        subprocess.run(["cargo", "build", "--release"], cwd=RUST_PROJECT_DIR, check=True)
+        logger.info("Rust project built successfully.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to build Rust project: {e}")
+        sys.exit(1)
+
+def write_config(config):
+    with open('config.json', 'w') as f:
+        json.dump(config, f)
+    logger.info("Config file written.")
+
+def write_docker_compose(qdrant_ports):
+    logger.info(f"Generating compose.yml for {len(qdrant_ports)} nodes...")
+
+    with open("compose.yml", "w") as f:
+        f.write("services:\n")
+        
+        for i, port in enumerate(qdrant_ports):
+            qdrant_http_port = port
+            qdrant_grpc_port = qdrant_http_port + 1
+            
+            f.write(f"  qdrant-{i+1}:\n")
+            f.write(f"    image: qdrant/qdrant:latest\n")
+            f.write(f"    container_name: qdrant-{i+1}\n")
+            f.write(f"    ports:\n")
+            f.write(f"      - \"{qdrant_http_port}:6333\"\n")
+            f.write(f"      - \"{qdrant_grpc_port}:6334\"\n")
+            f.write(f"    environment:\n")
+            f.write(f"      - QDRANT__STORAGE__STRICT_MODE=false\n")
+            f.write(f"    volumes:\n")
+            f.write(f"      - ./qdrant_storage_{i+1}:/qdrant/storage\n")
+            f.write(f"    restart: unless-stopped\n")
+
+    logger.info("compose.yml generated successfully.")
+
+def launch_and_wait_for_qdrant(qdrant_ports, timeout=60):
+    logger.info(f"Starting {len(qdrant_ports)} Qdrant databases with Docker Compose...")
+    try:
+        subprocess.run(["docker", "compose", "-f", "compose.yml", "up", "-d"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error starting Docker Compose: {e}")
+        return False
+
+    logger.info("Waiting for Qdrant nodes to be ready (checking /readyz)...")
+    start_time = time.time()
+    ready_nodes = set()
+    
+    while len(ready_nodes) < len(qdrant_ports):
+        if time.time() - start_time > timeout:
+            logger.error(f"Timeout! Only {len(ready_nodes)}/{len(qdrant_ports)} Qdrant nodes are ready.")
+            return False
+
+        for port in qdrant_ports:
+            if port in ready_nodes:
+                continue
+            url = f"http://localhost:{port}/readyz"
+            try:
+                response = requests.get(url, timeout=1) 
+                
+                if response.status_code == 200:
+                    ready_nodes.add(port)
+                    logger.info(f"  [OK] Qdrant node on port {port} is ready. ({len(ready_nodes)}/{len(qdrant_ports)})")
+            except requests.exceptions.RequestException:
+                pass
+        if len(ready_nodes) < len(qdrant_ports):
+            time.sleep(2)
+
+    logger.info("All Qdrant nodes are ready.")
+    return True
+
+def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coordinator_url='http://localhost:8001', replicas=3, num_before_clustering=1000, batch_size=256, batch_size_retry=64):
+    for i in range(1, len(fast_api_ports) + 1):
+        node_id = f"node{i}"
+        fastapi_port = fast_api_ports[i-1]
+        qdrant_http_port = qdrant_ports[i-1]
+        grpc_port = grpc_ports[i-1]
+        
+        qdrant_url = f'http://127.0.0.1:{grpc_port}' # Wait, this is node grpc port.
+        # We need qdrant grpc port.
+        # qdrant_grpc_port is not passed to launch_servers?
+        # launch_servers receives qdrant_ports (http).
+        # grpc port is http + 1.
+        qdrant_grpc_port = qdrant_http_port + 1
+        qdrant_url = f'http://127.0.0.1:{qdrant_grpc_port}'
+        log_file = f'logs_rust/{node_id}.log'
+        
+        # Rust server arguments
+        args = [
+            SERVER_BIN,
+            '--node-name', node_id,
+            '--node-url', f'http://127.0.0.1:{fastapi_port}',
+            '--node-grpc-url', f'http://127.0.0.1:{grpc_port}',
+            '--qdrant-url', qdrant_url,
+            '--coordinator-url', coordinator_url.replace("localhost", "127.0.0.1"),
+            '--replicas', str(replicas),
+            '--num-before-clustering', str(num_before_clustering),
+            '--dimension', '384' # Default dimension
+        ]
+
+        # Redirect stdout/stderr to log file
+        with open(log_file, "w") as f:
+            proc = subprocess.Popen(
+                args,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+            )
+        server_processes.append(proc)
+        
+        logger.info(f"Started Rust server '{node_id}' on port {fastapi_port}, (Qdrant: {qdrant_http_port}, PID: {proc.pid}). Log: {log_file}")
+
+    return server_processes
+
+def wait_for_servers(fast_api_ports, timeout=60):
+    start_time = time.time()
+    ready_nodes = []
+    while len(ready_nodes) < len(fast_api_ports):
+        if time.time() - start_time > timeout:
+            logger.error(f"Timeout! Only {len(ready_nodes)}/{len(fast_api_ports)} servers are ready.")
+            return False
+        for i, port in enumerate(fast_api_ports):
+            if i in ready_nodes:
+                continue
+            try:
+                response = requests.get(f"http://127.0.0.1:{port}/", timeout=2)
+                if response.status_code == 200:
+                    ready_nodes.append(i)
+                    logger.info(f"  [OK] Server on port {port} is ready ({len(ready_nodes)}/{len(fast_api_ports)})")
+            except (requests.exceptions.RequestException, requests.exceptions.ConnectionError):
+                pass
+        
+        if len(ready_nodes) < len(fast_api_ports):
+            time.sleep(1)
+    return True
+
+def cleaning(N):
+    logger.info("Shutting down...")
+    
+    if server_processes:
+        logger.info(f"Stopping {len(server_processes)} Rust servers...")
+        for proc in server_processes:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except:
+                proc.kill()
+
+    logger.info("Stopping Docker containers...")
+    try:
+        subprocess.run(["docker", "compose", "-f", "compose.yml", "down"], 
+                        check=False, capture_output=True)
+    except:
+        pass
+    
+    if os.path.exists("compose.yml"):
+        os.remove("compose.yml")
+
+    if os.path.exists("config.json"):
+        os.remove("config.json")
+    
+    for i in range(1, N + 1):
+        storage_dir = f"qdrant_storage_{i}"
+        if os.path.exists(storage_dir):
+            shutil.rmtree(storage_dir, ignore_errors=True)
+
+    logger.info("Cleanup complete.")
+
+def main():
+    N = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    FASTAPI_START_PORT = 8000
+    GRPC_START_PORT = 9000
+    QDRANT_START_PORT = 6333
+    QDRANT_PORT_STEP = 2
+    METRICS_START_PORT = 10000
+
+    atexit.register(cleaning, N)
+    signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
+    signal.signal(signal.SIGTERM, lambda sig, frame: sys.exit(0))
+
+    run_rust_tests()
+    build_rust_project()
+
+    fast_api_ports = [FASTAPI_START_PORT + i + 1 for i in range(N)]
+    qdrant_ports = [QDRANT_START_PORT + (i * QDRANT_PORT_STEP) for i in range(N)]
+    grpc_ports = [GRPC_START_PORT + i + 1 for i in range(N)] 
+    metrics_ports = [METRICS_START_PORT + i + 1 for i in range(N)] 
+    config = {
+        'servers': [{'id': f'node{i+1}', 'url': f'http://127.0.0.1:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'http://127.0.0.1:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
+        'batch_size': 500,
+        'batch_size_retry': 64,
+        'num_vectors': 500_000,
+        'num_before_clustering': 10_000,
+        'replicas': 2,
+        'max_retries': 30,
+        'embedding_file': 'embeddings_big.json'
+    }
+
+    write_config(config)
+
+    write_docker_compose(qdrant_ports)
+
+    if not launch_and_wait_for_qdrant(qdrant_ports):
+        logger.error("Failed to start Qdrant servers. Exiting.")
+        sys.exit(1)
+
+    launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, replicas=config['replicas'], num_before_clustering=config['num_before_clustering'], batch_size=config['batch_size'], batch_size_retry=config['batch_size_retry'])
+
+    if not wait_for_servers(fast_api_ports):
+        sys.exit()
+    
+    logger.info("Launching Rust Client...")
+    # Redirect client output to log file
+    with open("logs_rust/client.log", "w") as f:
+        result = subprocess.run([CLIENT_BIN], stdout=f, stderr=subprocess.STDOUT)
+
+    logger.info("Client finished. Collecting metrics...")
+    try:
+        with open("logs_rust/metrics.txt", "w") as f:
+            for i, port in enumerate(fast_api_ports):
+                node_name = f"node{i+1}"
+                url = f"http://localhost:{port}/metrics"
+                f.write(f"\n--- Metrics for {node_name} ({url}) ---\n")
+                try:
+                    response = requests.get(url, timeout=2)
+                    if response.status_code == 200:
+                        f.write(response.text)
+                    else:
+                        f.write(f"Error: Status code {response.status_code}\n")
+                except requests.exceptions.RequestException as e:
+                    f.write(f"Error connecting to {node_name}: {e}\n")
+        logger.info("Metrics saved to logs_rust/metrics.txt")
+    except Exception as e:
+        logger.error(f"Failed to save metrics: {e}")
+
+    sys.exit(result.returncode)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package p2p;
+
+service NodeService {
+    rpc ReceiveVectors (AddVectorsRequest) returns (Empty);
+    rpc QueryPeer (QueryRequest) returns (QueryResponse);
+    rpc RegisterPeers (RegisterPeersRequest) returns (Empty);
+    rpc SetClusters (SetClustersRequest) returns (Empty);
+}
+
+message Empty {}
+
+message VectorPoint {
+    repeated float vector = 1;
+    int64 id = 2;
+    string payload = 3;
+    string cluster = 4;
+}
+
+message AddVectorsRequest {
+    int64 req_id = 1;
+    repeated VectorPoint content = 2;
+    string request_type = 3; // "bootstrap", "clustering", "clustered"
+}
+
+message VectorList {
+    repeated float values = 1;
+    string cluster_id = 2;
+}
+
+message QueryRequest {
+    int64 req_id = 1;
+    repeated VectorList query_vectors = 2;
+    int32 topk = 3;
+}
+
+message ScoredPoint {
+    int64 id = 1;
+    float score = 2;
+    VectorPoint payload = 3;
+}
+
+message QueryResponse {
+    repeated ScoredPoint results = 1;
+}
+
+message PeerInfo {
+    string id = 1;
+    string http_url = 2;
+    string grpc_url = 3;
+}
+
+message RegisterPeersRequest {
+    repeated PeerInfo peers = 1;
+}
+
+message ClusterInfo {
+    string id = 1;
+    repeated float centroid = 2;
+    repeated int64 vector_ids = 3;
+}
+
+message ClusterAssignment {
+    string node_id = 1;
+    repeated string cluster_ids = 2;
+}
+
+message SetClustersRequest {
+    repeated ClusterInfo clusters = 1;
+    bytes meta_hnsw = 2;
+    repeated ClusterAssignment global_assignment = 3;
+}
