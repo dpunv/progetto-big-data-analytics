@@ -171,6 +171,7 @@
         <button class="primary" onclick="startSimulation()">1. Start Simulation (Send 180 Vectors)</button>
         <input type="text" id="queryInput" placeholder="Enter query (e.g., 'cat')" value="cat">
         <button class="primary" onclick="sendQuery()">2. Send Query</button>
+        <button class="primary" onclick="simulateRandomQueries()">3. Simulate 50 Random Queries</button>
         <button class="secondary" onclick="resetSystem()">Reset</button>
     </div>
     <script>
@@ -574,6 +575,33 @@
                 }, 800); // Simulate lookup time
             });
         }
+
+        function simulateRandomQueries() {
+            if (systemStatus !== 'CLUSTERED') {
+                alert("System must be CLUSTERED to query.");
+                return;
+            }
+
+            let count = 0;
+            const maxQueries = 50;
+            const interval = setInterval(() => {
+                if (count >= maxQueries) {
+                    clearInterval(interval);
+                    return;
+                }
+
+                // Pick random keyword
+                const keys = Object.keys(KEYWORDS);
+                const randomKey = keys[Math.floor(Math.random() * keys.length)];
+
+                // Update input and send
+                queryInput.value = randomKey;
+                sendQuery();
+
+                count++;
+            }, 1500); // 1.5s interval to allow animation to play out a bit
+        }
+
         function resetSystem() {
             systemStatus = 'BOOTSTRAP';
             statusText.innerText = "System Status: BOOTSTRAP";
