@@ -99,6 +99,10 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coor
         qdrant_http_port = qdrant_ports[i-1]
         grpc_port = grpc_ports[i-1]
         metrics_port = metrics_ports[i-1]
+
+        # NUOVO: Calcolo porta UDP
+        # Se FastAPI parte da 8001, UDP parte da 7001
+        udp_port = fastapi_port - 1000
         
         qdrant_url = f'http://localhost:{qdrant_http_port}'
         log_file = f'logs/{node_id}.log'
@@ -115,7 +119,8 @@ def launch_servers(fast_api_ports, qdrant_ports, grpc_ports, metrics_ports, coor
                 '--num-before-clustering', str(num_before_clustering),
                 '--log-file', log_file,
                 '--batch-size', str(batch_size),
-                '--batch-size-retry', str(batch_size_retry)
+                '--batch-size-retry', str(batch_size_retry),
+                '--udp-port', str(udp_port)
             ],
             # We do NOT redirect stdout/stderr here so that the server process
             # can write to its own log file cleanly via logging module,
@@ -335,7 +340,7 @@ def main():
         'servers': [{'id': f'node{i+1}', 'url': f'http://localhost:{FASTAPI_START_PORT + i + 1}', 'grpc_url': f'localhost:{GRPC_START_PORT + i + 1}', 'is_coordinator': False if i != 0 else True} for i in range(N)],
         'batch_size': 500,
         'batch_size_retry': 64,
-        'num_vectors': 50_000,
+        'num_vectors': 15_000,
         'num_before_clustering': 2000,
         'replicas': 2,
         'max_retries': 30

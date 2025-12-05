@@ -15,6 +15,9 @@ import logging
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
+import socket
+import struct
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,17 @@ GRPC_OPTIONS = [
     ('grpc.max_send_message_length', 512 * 1024 * 1024),
     ('grpc.max_receive_message_length', 512 * 1024 * 1024)
 ]
+
+# Costanti per il carico
+
+ALPHA_VECTOR = 1.5e-7
+BETA_QPS = 4e-4
+BASE_LOAD = 0.5
+
+# --- Costanti UDP Heartbeat ---
+HEARTBEAT_INTERVAL = 2.0  # Veloce per il test (in prod: 5.0)
+TIMEOUT_LIMIT = 10.0      # Se non ti sento per 10s, sei morto (in prod: 30.0)
+JITTER = 1.0
 
 class ServerStatus(Enum):
     BOOTSTRAP = 'bootstrap'
@@ -149,11 +163,12 @@ class Peer:
             self.channel.close()
 
 class ServerApp:
-    def __init__(self, id, url, qdrant_url, grpc_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384, batch_size=256, batch_size_retry=64):
+    def __init__(self, id, url, qdrant_url, grpc_url, coordinator_url, replicas=3, collection_name="vectors", num_vectors_before_clustering=10_000, dimension=384, batch_size=256, batch_size_retry=64, udp_port=None):
         self.node_id = id
         self.url = url
         self.qdrant_url = qdrant_url
         self.grpc_url = grpc_url
+        self.udp_port = udp_port  # NUOVO: Porta UDP locale
         self.coordinator_url = coordinator_url
         self.collection_name = collection_name
         self.dimension = dimension
@@ -187,8 +202,180 @@ class ServerApp:
         self.worker_thread = threading.Thread(target=self._process_queue, name="QueueWorker", daemon=True)
         self.worker_thread.start()
         
-        logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}")
-    
+        # --- NUOVO: Gestione Stato Globale e Carico ---
+        self.current_load = 0.5
+        self.last_qps_check_time = time.time()
+        self.last_query_count = 0
+        
+        # Tabella Salute Peer: { int_node_id: {'load': float, 'last_seen': timestamp, 'status': 'online'|'offline'} }
+        self.peer_health = {} 
+        self.peer_health_lock = threading.Lock()
+        
+        # UDP Socket
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.bind(('0.0.0.0', self.udp_port))
+        self.udp_sock.setblocking(False) # Non-blocking per il receive loop
+
+        # Avvio Thread UDP (Sender e Receiver)
+        self.running = True
+        self.udp_sender_thread = threading.Thread(target=self._udp_heartbeat_loop, name="UDP-Sender", daemon=True)
+        self.udp_receiver_thread = threading.Thread(target=self._udp_listener_loop, name="UDP-Receiver", daemon=True)
+        self.udp_sender_thread.start()
+        self.udp_receiver_thread.start()
+
+        logger.info(f"ServerApp initialized: ID={id}, URL={url}, Coords={coordinator_url}, UDP={udp_port}")
+
+    def _calculate_load(self):
+        """Calcola il carico corrente basato su Vettori e QPS."""
+        try:
+            # 1. Calcolo QPS Istantaneo
+            now = time.time()
+            time_diff = now - self.last_qps_check_time
+            if time_diff <= 0: time_diff = 1.0 # Evita divisione per zero
+            
+            with self.metrics_lock:
+                current_queries = self.query_received_count
+            
+            qps = (current_queries - self.last_query_count) / time_diff
+            
+            # Aggiorna per il prossimo ciclo
+            self.last_query_count = current_queries
+            self.last_qps_check_time = now
+
+            # 2. Ottieni Numero Vettori (Stimato o Reale)
+            # Nota: get_count() potrebbe essere lento se chiama Qdrant via HTTP. 
+            # Per l'heartbeat frequente, potremmo usare una variabile cachata o approssimata.
+            # Qui usiamo una chiamata rapida.
+            if self.status == ServerStatus.BOOTSTRAP:
+                with self.bootstrap_buffer_lock:
+                    num_vectors = len(self.bootstrap_buffer)
+            else:
+                # In produzione, meglio aggiornare questo valore in background ogni X secondi
+                # per non rallentare l'heartbeat loop. Per ora assumiamo sia veloce o usiamo un valore salvato.
+                num_vectors = self.get_count() # Assicurati che questo sia veloce o cachato
+                if num_vectors == -1: num_vectors = 0
+
+            # 3. Formula
+            load = BASE_LOAD + (ALPHA_VECTOR * num_vectors) + (BETA_QPS * qps)
+            return load, qps, num_vectors
+
+        except Exception as e:
+            logger.error(f"Error calculating load: {e}")
+            return 0.5, 0, 0
+
+    def _udp_heartbeat_loop(self):
+        """Loop di invio: Calcola carico -> Invia a tutti -> Dorme (con Jitter)."""
+        logger.info("Starting UDP Heartbeat Sender...")
+        
+        my_numeric_id = int(self.node_id.replace("node", "")) # Esempio: "node1" -> 1
+
+        while self.running:
+            try:
+                # 1. Calcola Carico
+                new_load, qps, n_vec = self._calculate_load()
+                self.current_load = new_load
+                
+                # 2. Prepara Pacchetto Binario
+                # Struct: int (4 bytes) + float (4 bytes) = 8 bytes totali
+                # 'i': integer, 'f': float
+                payload = struct.pack('!if', my_numeric_id, new_load)
+                
+                # 3. Invia a TUTTI i peer conosciuti
+                # Nota: Dobbiamo conoscere l'IP e la porta UDP dei peer.
+                # Assunzione: La porta UDP dei peer è calcolabile o salvata in self.peers.
+                # Per semplicità, qui assumiamo che self.peers abbia un metodo o attributo per l'indirizzo UDP.
+                # Visto che Peer ha `url` (http), deriveremo la porta UDP da lì (vedi run.py).
+                
+                peers_snapshot = list(self.peers) # Copia thread-safe
+                for peer in peers_snapshot:
+                    try:
+                        # Logica per derivare IP e Porta UDP dal peer
+                        # Assumiamo che Peer.url sia "http://localhost:8002"
+                        # E che la porta UDP sia (PortaHTTP - 1000) come definito in run.py
+                        peer_ip = peer.url.split("//")[1].split(":")[0]
+                        peer_http_port = int(peer.url.split(":")[-1])
+                        peer_udp_port = peer_http_port - 1000 # CONVENZIONE definita in run.py
+                        
+                        self.udp_sock.sendto(payload, (peer_ip, peer_udp_port))
+                    except Exception as e:
+                        # UDP fire and forget, loggiamo solo debug
+                        pass
+
+                # 4. Failure Detector (Watchdog) Locale
+                self._check_peer_timeouts()
+
+
+                # 5. Sleep con Jitter centralizzato
+                sleep_time = HEARTBEAT_INTERVAL + random.uniform(-JITTER, JITTER)
+                time.sleep(sleep_time)
+
+            except Exception as e:
+                logger.error(f"Error in UDP Heartbeat loop: {e}")
+                time.sleep(5)
+
+    def _udp_listener_loop(self):
+        """Loop di ricezione: Riceve pacchetti -> Aggiorna Tabella Salute."""
+        logger.info("Starting UDP Listener...")
+        while self.running:
+            try:
+                # Receive buffer size 1024 è più che sufficiente per 8 bytes
+                data, addr = self.udp_sock.recvfrom(1024)
+                
+                if len(data) >= 8:
+                    # Unpack: ID (int), Load (float)
+                    peer_id, peer_load = struct.unpack('!if', data[:8])
+                    
+                    with self.peer_health_lock:
+                        # Se il peer era offline o sconosciuto, logghiamo il ritorno
+                        old_status = self.peer_health.get(peer_id, {}).get('status')
+                        
+                        self.peer_health[peer_id] = {
+                            'load': peer_load,
+                            'last_seen': time.time(),
+                            'status': 'online'
+                        }
+                        
+                        if old_status != 'online':
+                            logger.info(f"UDP Monitor: Node {peer_id} detected ONLINE (Load: {peer_load:.2f})")
+
+            except BlockingIOError:
+                # Nessun dato disponibile (socket non bloccante), dormiamo un po' per non fondere la CPU
+                time.sleep(0.1)
+
+            except ConnectionResetError:
+                # [FIX CRITICO PER WINDOWS]
+                # Questo errore viene sollevato se inviamo un pacchetto a una porta chiusa.
+                # Il sistema operativo lo riporta al listener. Dobbiamo ignorarlo.
+                pass
+
+            except OSError as e:
+                # Gestione di altri errori di rete (es. buffer pieno, rete giù momentanea)
+                # Se il socket è stato chiuso esplicitamente (self.running=False), usciamo puliti
+                if not self.running:
+                    break
+                # Altrimenti ignoriamo l'errore transitorio
+                pass
+
+            except Exception as e:
+                # Errori imprevisti (es. struct unpack fallito per dati corrotti)
+                logger.error(f"UDP Listener unexpected error: {e}")
+                # Qui dormiamo per evitare loop infiniti in caso di bug logici gravi
+                time.sleep(1)
+
+    def _check_peer_timeouts(self):
+        """Controlla se qualcuno non risponde da > 30s."""
+        now = time.time()
+        timeout = 30.0
+        
+        with self.peer_health_lock:
+            for pid, info in self.peer_health.items():
+                if info['status'] == 'online':
+                    if (now - info['last_seen']) > timeout:
+                        logger.warning(f"FAILURE DETECTED: Node {pid} is now OFFLINE (Timeout).")
+                        info['status'] = 'offline'
+                        # Qui potresti voler rimuovere il peer dalla lista attiva self.peers 
+                        # o marcarlo come non utilizzabile per le query.
+                        
     def create_cluster_collections(self):
         logger.warning(f"Creating collections for {len(self.node_clusters)} clusters: {[c[0] for c in self.node_clusters]}")
         for cluster in self.node_clusters:

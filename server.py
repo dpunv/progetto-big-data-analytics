@@ -142,6 +142,7 @@ if __name__ == "__main__":
     parser.add_argument('--metrics-port', type=int, default=8000, help='Port for Prometheus metrics')
     parser.add_argument('--batch-size', type=int, default=256, help='Batch size for vector insertion')
     parser.add_argument('--batch-size-retry', type=int, default=64, help='Batch size for vector insertion retries')
+    parser.add_argument("--udp-port", type=int, required=True, help="UDP Port for Heartbeat")
     args = parser.parse_args()
 
     # Setup Logging
@@ -169,7 +170,7 @@ if __name__ == "__main__":
     logger.info(f"Config: URL={args.node_url}, GRPC={args.node_grpc_url}, Qdrant={args.qdrant_url}")
 
     # Initialize ServerApp
-    server = ServerApp(args.node_name, args.node_url, args.qdrant_url, args.node_grpc_url, args.coordinator_url, args.replicas, num_vectors_before_clustering=args.num_before_clustering, batch_size=args.batch_size, batch_size_retry=args.batch_size_retry)
+    server = ServerApp(args.node_name, args.node_url, args.qdrant_url, args.node_grpc_url, args.coordinator_url, args.replicas, num_vectors_before_clustering=args.num_before_clustering, batch_size=args.batch_size, batch_size_retry=args.batch_size_retry, udp_port=args.udp_port)
 
     # --- START GRPC SERVER ---
     def serve_grpc(server_app, grpc_port):
