@@ -145,6 +145,8 @@
         </ul>
     </div>
 
+
+
     <div class="status" id="statusText">System Status: BOOTSTRAP</div>
     <canvas id="flowCanvas" width="800" height="600"></canvas>
     <div class="legend">
@@ -172,6 +174,8 @@
         <input type="text" id="queryInput" placeholder="Enter query (e.g., 'cat')" value="cat">
         <button class="primary" onclick="sendQuery()">2. Send Query</button>
         <button class="primary" onclick="simulateRandomQueries()">3. Simulate 50 Random Queries</button>
+        <button class="primary" style="background-color: #9c27b0;" onclick="startUdpSimulation()">4. Start UDP Partition
+            Sim (Auto-Split 10s)</button>
         <button class="secondary" onclick="resetSystem()">Reset</button>
     </div>
     <script>
@@ -208,6 +212,47 @@
         let queryLookupNode = null; // Node currently performing index lookup
         const CLUSTERING_THRESHOLD = 100; // Updated to 100 as per user edit
 
+        // UDP Simulation State
+        const UDP_INTERVAL = 5000; // 5 seconds
+        const UDP_TIMEOUT = 10000; // 10 seconds (Partition threshold)
+        const SIM_SPEED = 2.0; // 2x Speed for simulation
+        let networkSplitActive = false; // State for 50/50 split (Packet Logic)
+        let networkSplitTimer = null; // Timer for auto-split
+        let showSplitLine = false; // State for Visual Line
+        let visualSplitTimer = null; // Timer for Visual Line
+        let effects = []; // Array for visual effects (Red X)
+        // (If 2x speed, 5000ms becomes 2500ms real time)
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (systemStatus !== 'UDP_SIMULATION') return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            // Check clicks on servers (1-4)
+            for (let i = 1; i < nodes.length; i++) {
+                const n = nodes[i];
+                const dx = x - n.x;
+                const dy = y - n.y;
+                if (dx * dx + dy * dy < 30 * 30) {
+                    toggleNodeCrash(n);
+                    break;
+                }
+            }
+        });
+
+        function toggleNodeCrash(node) {
+            node.isCrashed = !node.isCrashed;
+            if (node.isCrashed) {
+                node.color = '#555'; // Gray for crashed
+            } else {
+                // Restore color
+                if (node.id === 'node1') node.color = '#2196f3'; // Coord is just another server in this mode
+                else node.color = '#2196f3';
+                node.lastPingTime = Date.now(); // Reset ping time
+            }
+        }
+
         function drawNode(node) {
             ctx.beginPath();
             ctx.arc(node.x, node.y, 30, 0, Math.PI * 2);
@@ -227,6 +272,19 @@
             ctx.font = '14px Arial';
             ctx.textAlign = 'center';
             ctx.fillText(node.label, node.x, node.y + 45);
+
+            // UDP Load & Status
+            if (systemStatus === 'UDP_SIMULATION' && node.type === 'server') {
+                if (node.isCrashed) {
+                    ctx.fillStyle = '#f44336';
+                    ctx.font = 'bold 12px Arial';
+                    ctx.fillText("CRASHED", node.x, node.y + 5);
+                } else {
+                    ctx.fillStyle = '#aaa';
+                    ctx.font = '10px Arial';
+                    ctx.fillText(`Load: ${node.load}`, node.x, node.y - 15);
+                }
+            }
 
             // Draw buffer for coordinator
             if (node.id === 'node1') {
@@ -306,21 +364,53 @@
             // Draw Nodes
             nodes.forEach(drawNode);
 
+            // Draw Split Line
+            if (showSplitLine) {
+                drawSplitLine();
+            }
+
+            // Draw Effects (e.g. Red X)
+            drawEffects();
+
             // Update and Draw Packets
             for (let i = packets.length - 1; i >= 0; i--) {
                 let p = packets[i];
                 let dx = p.target.x - p.x;
                 let dy = p.target.y - p.y;
                 let dist = Math.sqrt(dx * dx + dy * dy);
+
+                // Split Partition Logic: Die Halfway
+                if (p.failAtHalfway) {
+                    const totalDist = Math.sqrt(Math.pow(p.target.x - p.startX, 2) + Math.pow(p.target.y - p.startY, 2));
+                    const currentDistFromStart = Math.sqrt(Math.pow(p.x - p.startX, 2) + Math.pow(p.y - p.startY, 2));
+
+                    if (currentDistFromStart >= totalDist / 2) {
+                        // Die here with Red X
+                        effects.push({ x: p.x, y: p.y, life: 30 }); // 30 frames life
+                        packets.splice(i, 1);
+                        continue;
+                    }
+                }
+
                 if (dist < 5) {
                     // Reached destination
-                    if (p.onReach) p.onReach(p);
+                    if (p.onReach && !p.target.isCrashed) { // Only process if target not crashed
+                        p.onReach(p);
+                    } else if (p.onReach && p.target.isCrashed && p.type === 'udp_ping') {
+                        // Packet disappears (lost)
+                    }
+
                     packets.splice(i, 1);
                 } else {
                     p.x += (dx / dist) * p.speed;
                     p.y += (dy / dist) * p.speed;
                     drawPacket(p);
                 }
+            }
+
+            // UDP Simulation Logic
+            if (systemStatus === 'UDP_SIMULATION') {
+                updateUdpLogic();
             }
 
             // Clustering Animation
@@ -337,14 +427,175 @@
             }
             requestAnimationFrame(update);
         }
-        function spawnPacket(fromNode, toNode, onReach, color = '#fff') {
+
+
+        let lastUdpCheck = Date.now();
+
+        function updateUdpLogic() {
+            const now = Date.now();
+            const realDelta = now - lastUdpCheck;
+            const simDelta = realDelta * SIM_SPEED;
+            lastUdpCheck = now;
+
+            // For each server
+            for (let i = 1; i < nodes.length; i++) {
+                const node = nodes[i];
+                if (node.isCrashed) continue;
+
+                // Update Timer
+                node.udpTimer -= simDelta;
+
+                if (node.udpTimer <= 0) {
+                    // Reset Timer (5s + Jitter +/- 1s) -> 4000 to 6000ms
+                    const jitter = (Math.random() * 2000) - 1000;
+                    node.udpTimer = UDP_INTERVAL + jitter;
+
+                    // Broadcast Ping
+                    broadcastHeartbeat(node);
+                }
+
+                // Check for partitions (timeouts)
+                // We check every frame but only update visible status occasionally could be better, 
+                // but checking every frame is fine for simple JS.
+            }
+
+            // Partition Detection Reporting
+            detectPartitions();
+        }
+
+        function drawSplitLine() {
+            ctx.save();
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)'; // Transparent White
+            ctx.lineWidth = 10;
+            ctx.setLineDash([20, 10]); // Dashed
+            // Line equation y = -x + 750 derived from midpoint of links
+            // Point 1: (600, 150)
+            // Point 2: (200, 550)
+            ctx.moveTo(600, 150);
+            ctx.lineTo(200, 550);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawEffects() {
+            for (let i = effects.length - 1; i >= 0; i--) {
+                const e = effects[i];
+                ctx.beginPath();
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = '#f44336'; // Red X
+                const size = 10;
+                ctx.moveTo(e.x - size, e.y - size);
+                ctx.lineTo(e.x + size, e.y + size);
+                ctx.moveTo(e.x + size, e.y - size);
+                ctx.lineTo(e.x - size, e.y + size);
+                ctx.stroke();
+
+                e.life--;
+                if (e.life <= 0) effects.splice(i, 1);
+            }
+        }
+
+        function broadcastHeartbeat(sourceNode) {
+            // Ping all other servers
+            for (let i = 1; i < nodes.length; i++) {
+                const target = nodes[i];
+                if (target === sourceNode) continue;
+
+                // Determine if this packet should fail due to split
+                let shouldFail = false;
+                if (networkSplitActive) {
+                    // Group 1: Node 1, 2
+                    // Group 2: Node 3, 4
+                    // Node 1 is index 1, Node 2 is index 2...
+                    // 1,2 are ID "node1", "node2". 3,4 are "node3", "node4".
+                    const sourceGroup = (sourceNode.id === 'node1' || sourceNode.id === 'node2') ? 1 : 2;
+                    const targetGroup = (target.id === 'node1' || target.id === 'node2') ? 1 : 2;
+                    if (sourceGroup !== targetGroup) {
+                        shouldFail = true;
+                    }
+                }
+
+                // Ping Packet
+                packets.push({
+                    x: sourceNode.x,
+                    y: sourceNode.y,
+                    startX: sourceNode.x,
+                    startY: sourceNode.y,
+                    target: target,
+                    speed: 4,
+                    color: '#4caf50',
+                    type: 'udp_ping',
+                    failAtHalfway: shouldFail,
+                    onReach: (p) => {
+                        // Receiver updates map on receipt of Ping (One-way logic)
+                        // This node (target) knows source is alive because it got a ping.
+                        // We do NOT send an ACK back.
+                        target.peerMap.set(sourceNode.id, Date.now());
+                    }
+                });
+            }
+        }
+
+        function toggleNetworkSplit() {
+            if (systemStatus !== 'UDP_SIMULATION') {
+                alert("Please start UDP Simulation first.");
+                return;
+            }
+            networkSplitActive = !networkSplitActive;
+            if (networkSplitActive) {
+                statusText.innerText = "UDP MONITORING: Network Split Simulated (1,2 | 3,4)";
+                statusText.style.color = '#ff9800';
+            } else {
+                statusText.innerText = "UDP MONITORING: Network Split Resolved";
+            }
+        }
+
+        function detectPartitions() {
+            const now = Date.now();
+            const partitions = [];
+
+            // Only check from perspective of NON-CRASHED nodes
+            for (let i = 1; i < nodes.length; i++) {
+                const observer = nodes[i];
+                if (observer.isCrashed) continue;
+
+                // Check all known peers
+                // In this simplified sim, we expect to see everyone.
+                for (let j = 1; j < nodes.length; j++) {
+                    const target = nodes[j];
+                    if (target === observer) continue;
+
+                    const lastSeen = observer.peerMap.get(target.id);
+                    // Time difference needs to account for SIM_SPEED if we tracked simulator time, 
+                    // but we used Date.now() for map. Let's just use real-time for timeouts for simplicity 
+                    // or scale the timeout check.
+                    // Given we update map with Date.now() on receipt, 10s is 10s real time if we don't scale Time.
+                    // But we are running logic at 2x speed.
+                    // Let's stick to simple: If > 10000ms real time passed since last Ack.
+
+                    if (!lastSeen || (now - lastSeen > UDP_TIMEOUT / SIM_SPEED)) { // Scale timeout so it matches visual speed
+                        // Partition detected
+                        partitions.push(`${observer.label} cannot reach ${target.label}`);
+                    }
+                }
+            }
+
+            // Text updates removed as per user request
+            // We just keep the status text indicating we are in simulation mode
+            // statusText.innerText = "UDP Simulation Active"; 
+            // statusText.style.color = '#aaa';
+        }
+
+        function spawnPacket(fromNode, toNode, onReach, color = '#fff', type = 'standard') {
             packets.push({
                 x: fromNode.x,
                 y: fromNode.y,
                 target: toNode,
                 speed: 5 + Math.random() * 2, // Slight speed variation
                 onReach: onReach,
-                color: color
+                color: color,
+                type: type
             });
         }
         // --- Actions ---
@@ -599,10 +850,54 @@
                 sendQuery();
 
                 count++;
-            }, 1500); // 1.5s interval to allow animation to play out a bit
+            }, 1000); // 1.5s interval to allow animation to play out a bit
+        }
+
+        function startUdpSimulation() {
+            resetSystem();
+            systemStatus = 'UDP_SIMULATION';
+            statusText.innerText = "Initializing UDP Partition Simulation...";
+
+            // Initialize Nodes for UDP
+            const now = Date.now();
+            nodes.forEach(n => {
+                if (n.type === 'server') {
+                    n.load = Math.floor(Math.random() * 100);
+                    n.udpTimer = Math.random() * UDP_INTERVAL; // Random start offset
+                    n.peerMap = new Map(); // Map<NodeID, Timestamp>
+                    n.isCrashed = false;
+                    n.color = '#2196f3'; // Ensure blue
+
+                    // Pre-fill map so we don't error immediately on start
+                    nodes.forEach(peer => {
+                        if (peer.type === 'server' && peer !== n) {
+                            n.peerMap.set(peer.id, now);
+                        }
+                    });
+                }
+            });
+
+            lastUdpCheck = Date.now();
+            networkSplitActive = false;
+            showSplitLine = false;
+
+            // Auto-trigger split in 10 seconds (Packet Failure)
+            networkSplitTimer = setTimeout(() => {
+                networkSplitActive = true;
+            }, 10000);
+
+            // Auto-trigger Visual Line in 15 seconds (5s delay)
+            visualSplitTimer = setTimeout(() => {
+                showSplitLine = true;
+            }, 15000);
         }
 
         function resetSystem() {
+            if (networkSplitTimer) clearTimeout(networkSplitTimer);
+            if (visualSplitTimer) clearTimeout(visualSplitTimer);
+            networkSplitActive = false;
+            showSplitLine = false;
+
             systemStatus = 'BOOTSTRAP';
             statusText.innerText = "System Status: BOOTSTRAP";
             packets = [];
@@ -616,7 +911,10 @@
                 n.hasClusters = false;
                 n.hasIndex = false;
                 n.topics = [];
+                n.isCrashed = false; // Reset crash state
+                if (n.type === 'server') n.color = (n.id === 'node1') ? '#ff9800' : '#2196f3';
             });
+            statusText.style.color = '#aaa';
         }
         update();
     </script>
