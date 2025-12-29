@@ -465,6 +465,47 @@ def get_per_server_summary(per_server_data: Dict[str, Dict]) -> str:
     
     return "\n".join(lines)
 
+def wait_for_all_servers_clustered(urls: List[str], timeout: int = 120):
+    """
+    POLING: Aspetta che tutti i server tornino nello stato 'clustered'.
+    
+    Questo è necessario perché dopo il warmup il sistema potrebbe essere
+    ancora nella fase di 'clustering' (mentre calcola i centroidi o 
+    distribuisce i vettori) e le query fallirebbero o sarebbero incomplete.
+    """
+    logger.info(f"Waiting for all {len(urls)} servers to reach CLUSTERED status (timeout: {timeout}s)...")
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        all_ready = True
+        for url in urls:
+            try:
+                resp = requests.get(url, timeout=5)
+                if resp.status_code == 200:
+                    status_data = resp.json()
+                    # Il server ritorna 'status': 'clustered' nell'endpoint '/'
+                    if status_data.get('is_clustered') != 'clustered':
+                        all_ready = False
+                        break
+                else:
+                    all_ready = False
+                    break
+            except Exception:
+                all_ready = False
+                break
+        
+        if all_ready:
+            logger.info("All servers are CLUSTERED and ready for benchmark.")
+            return True
+        
+        time.sleep(2)
+        elapsed = int(time.time() - start_time)
+        if elapsed % 10 == 0:
+            logger.info(f"Still waiting... ({elapsed}s elapsed)")
+            
+    logger.warning("Timeout reached waiting for servers to cluster. Proceeding anyway...")
+    return False
+
 def populate_and_wait_clustering(client, data, target_vectors=2500):
     """
     FASE DI WARMUP: Prepara il sistema prima dei benchmark
@@ -525,8 +566,8 @@ def populate_and_wait_clustering(client, data, target_vectors=2500):
     print() # Newline
     logger.info(f"Warmup complete. {successful_inserts} vectors inserted.")
     
-    logger.info("Waiting 5s to allow for clustering/stabilization...")
-    time.sleep(5) 
+    # Invece di una sleep fissa, aspettiamo che lo stato sia CLUSTERED
+    wait_for_all_servers_clustered(client.urls)
 
 def run_suite(urls_str, data_path, output_file):
     logger.info(f"Loading data from {data_path}...")
