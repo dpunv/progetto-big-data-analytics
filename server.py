@@ -1,203 +1,1090 @@
-from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict
-import metrics
-import uvicorn
-from typing import List, Tuple, Dict, TypedDict
-from server_logic import ServerApp
-import argparse
+import itertools
+import heapq
 from compound_types import *
-from clustering_module import MetaHNSW
+from sklearn.cluster import KMeans
+import numpy as np
 import threading
-from concurrent import futures
-import grpc
-import p2p_pb2_grpc
-from grpc_handler import P2PNodeServicer
-import logging
-import sys
-import utils
+import queue
+import time
+import concurrent.futures
+from typing import Dict, Set, Optional, TYPE_CHECKING
 
-app = FastAPI()
-server = None
-logger = logging.getLogger(__name__)
-
-class AddVectorsRequest(BaseModel):
-    id: int
-    content: ListOfVectorsWithPayload
-
-class AddVectorsPeerRequest(BaseModel):
-    id: int
-    content: ListOfVectorsComplete
-    type: str
-
-class QueryVectorsRequest(BaseModel):
-    id: int
-    query: ListOfVectors
-    topk: int
-
-class AddPeersRequest(BaseModel):
-    id: int
-    peers: List[Tuple[str, str, str]]
-
-class SetClustersRequest(BaseModel):
-    id: int
-    content: dict 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-@app.get("/")
-async def health_check_endpoint():
-    return {
-        "status": "healthy",
-        "node_id": server.node_id,
-        "is_coordinator": server.i_am_coord(),
-        "is_clustered": server.status.value,
-    }
-
-@app.post("/query")
-async def query_endpoint(query: QueryVectorsRequest):
-    logger.info(f"API: /query called (ReqID: {query.id})")
-    if server is None:
-        logger.error("ServerApp not created")
-        raise Exception("ServerApp not created")
-    results = server.query(query.query, query.topk, query.id)
-    return {
-        "results": results,
-        "status": "success",
-        "count": len(results)
-    }
-
-@app.post("/query_peer")
-async def query_peer_endpoint(query: QueryVectorsRequest):
-    logger.info(f"API: /query_peer called")
-    metrics.QUERY_RECEIVED.labels(query_type='peer', source='peer').inc()
-    if server is None:
-        raise Exception("ServerApp not created")
-    results = server.query_me(query.query, query.topk)
-    logger.debug(f"Query peer results count: {len(results) if results else 0}")
-    return {
-        "results": results,
-        "status": "success",
-        "count": len(results)
-    }
-
-@app.post("/add")
-async def add_vectors_endpoint(vectors: AddVectorsRequest):
-    logger.info(f"API: /add called. ReqID: {vectors.id}, Vectors: {len(vectors.content)}")
-    if server is None:
-        raise Exception("ServerApp not created")
-    server.add_vectors_client(vectors.content, vectors.id)
-    logger.info("API: /add completed")
-
-@app.post("/receive_vectors_peer")
-async def receive_vectors_peer_endpoint(vectors: AddVectorsPeerRequest):
-    logger.info("API: /receive_vectors_peer called")
-    if server is None:
-        raise Exception("ServerApp not created")
-    server.add_vectors(vectors.content, vectors.type, vectors.id)
-    logger.info("vector added via peer endpoint")
-
-@app.post("/register_peers")
-async def register_peers_endpoint(peers: AddPeersRequest):
-    if server is None:
-        raise Exception("ServerApp not created")
-    server.add_peers(peers.peers)
-
-@app.post("/set_clusters")
-async def set_clusters_endpoint(data: SetClustersRequest):
-    logger.info(f"API: /set_clusters called")
-    if server is None:
-        raise Exception("ServerApp not created")
-    data.content["meta_hnsw"] = MetaHNSW.from_serializable_dict(data.content["meta_hnsw"])
-    server.set_clusters(data.content, data.id)
-
-@app.get("/count")
-async def count_endpoint():
-    if server is None:
-        raise Exception("ServerApp not created")
-    return server.get_count_client()
-
-@app.get("/count_peer")
-async def count_peer_endpoint():
-    if server is None:
-        raise Exception("ServerApp not created")
-    return server.get_count()
-
-@app.get("/metrics_snapshot")
-async def metrics_snapshot_endpoint():
-    if server is None:
-        raise Exception("ServerApp not created")
-    return server.metrics_snapshot()
-
-# Add gRPC URL argument
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PBDN Server Node")
-    parser.add_argument("--node-name", type=str, required=True, help="Name of the node")
-    parser.add_argument("--node-url", type=str, required=True, help="URL of this node")
-    parser.add_argument("--qdrant-url", type=str, required=True, help="URL of Qdrant instance")
-    parser.add_argument("--node-grpc-url", type=str, required=True, help="gRPC URL of this node")
-    parser.add_argument("--coordinator-url", type=str, required=True, help="URL of coordinator node")
-    parser.add_argument("--replicas", type=int, default=1, help="Number of replicas")
-    parser.add_argument("--num-before-clustering", type=int, default=10000, help="Number of vectors before triggering clustering")
-    parser.add_argument("--log-file", type=str, default=None, help="Path to log file")
-    parser.add_argument('--metrics-port', type=int, default=8000, help='Port for Prometheus metrics')
-    parser.add_argument('--batch-size', type=int, default=256, help='Batch size for vector insertion')
-    parser.add_argument('--batch-size-retry', type=int, default=64, help='Batch size for vector insertion retries')
-    args = parser.parse_args()
-
-    # Setup Logging
-    handlers = []
-    log_level = logging.WARNING
-
-    if not utils.LOGGING_ENABLED:
-        log_level = logging.CRITICAL
-    elif args.log_file:
-        # If log file is specified, ONLY write to file (keep terminal clean)
-        handlers.append(logging.FileHandler(args.log_file, mode='w'))
+def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+    # Optimized to handle both lists and numpy arrays without redundant conversion
+    if isinstance(v1, np.ndarray) and isinstance(v2, np.ndarray):
+        dot_product = np.dot(v1, v2)
+        norm_a = np.linalg.norm(v1)
+        norm_b = np.linalg.norm(v2)
     else:
-        # Default to stdout if no file provided
-        handlers.append(logging.StreamHandler(sys.stdout))
+        a = np.array(v1)
+        b = np.array(v2)
+        dot_product = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
 
-    # Set WARNING level to reduce log noise - only errors, warnings, and critical info
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(levelname)s - %(threadName)s - %(name)s - %(message)s',
-        handlers=handlers,
-        force=True 
-    )
 
-    logger.info(f"*** SERVER STARTUP: {args.node_name} ***")
-    logger.info(f"Config: URL={args.node_url}, GRPC={args.node_grpc_url}, Qdrant={args.qdrant_url}")
+class HintedHandoff:
+    """
+    Store hints for unreachable nodes. Deliver when connectivity restored.
+    
+    Implements the hinted handoff pattern for partition tolerance:
+    when a target node is unreachable, vectors are stored locally and
+    delivered when the node becomes reachable again.
+    """
+    
+    def __init__(self):
+        self.hints: Dict[int, List] = {}  # target_id -> List[VectorComplete]
+        self.lock = threading.RLock()
+    
+    def store_hint(self, target_id: int, vectors: List):
+        """Store vectors to deliver to target when reachable."""
+        with self.lock:
+            if target_id not in self.hints:
+                self.hints[target_id] = []
+            self.hints[target_id].extend(vectors)
+    
+    def get_hints_for(self, target_id: int) -> List:
+        """Get and clear hints for target."""
+        with self.lock:
+            hints = self.hints.pop(target_id, [])
+            return hints
+    
+    def peek_hints_for(self, target_id: int) -> List:
+        """Get hints for target without clearing."""
+        with self.lock:
+            return list(self.hints.get(target_id, []))
+    
+    def has_hints_for(self, target_id: int) -> bool:
+        """Check if there are pending hints."""
+        with self.lock:
+            return target_id in self.hints and len(self.hints[target_id]) > 0
+    
+    def get_all_targets(self) -> List[int]:
+        """Get all target IDs with pending hints."""
+        with self.lock:
+            return [tid for tid, hints in self.hints.items() if hints]
+    
+    def count(self) -> int:
+        """Get total number of stored hints."""
+        with self.lock:
+            return sum(len(hints) for hints in self.hints.values())
+    
+    def clear(self):
+        """Clear all hints."""
+        with self.lock:
+            self.hints.clear()
 
-    # Initialize ServerApp
-    server = ServerApp(args.node_name, args.node_url, args.qdrant_url, args.node_grpc_url, args.coordinator_url, args.replicas, num_vectors_before_clustering=args.num_before_clustering, batch_size=args.batch_size, batch_size_retry=args.batch_size_retry)
 
-    # --- START GRPC SERVER ---
-    def serve_grpc(server_app, grpc_port):
-        options = [
-            ('grpc.max_send_message_length', 512 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 512 * 1024 * 1024)
-        ]
-        grpc_server = grpc.server(
-            futures.ThreadPoolExecutor(max_workers=10),
-            options=options
+    # ============ Peer & Server Implementation ============
+
+class Peer:
+    def __init__(self, server_instance):
+        self.server = server_instance
+    
+    def get_id(self):
+        return self.server.get_id()
+    
+    def similarity(self, vector):
+        return self.server.similarity(vector)
+    
+    def receive(self, vectors, status):
+        return self.server.receive(vectors, status)
+    
+    def i_am_coord(self):
+        return self.server.i_am_coord()
+    
+    def set_clusters(self, clusters, assignment):
+        return self.server.set_clusters(clusters, assignment)
+        
+    def search_vectors_local(self, vectors, top_k):
+        return self.server.search_vectors_local(vectors, top_k)
+    
+    def query(self, vectors, status):
+        return self.server.query(vectors, status)
+    
+    # New methods for partition tolerance
+    def get_vector_digest(self) -> Dict[int, Tuple[float, int]]:
+        return self.server.get_vector_digest()
+    
+    def get_vectors_by_ids(self, ids: List[int]):
+        return self.server.get_vectors_by_ids(ids)
+    
+    def get_partition_coordinator_id(self):
+        return self.server.partition_coordinator_id
+
+    def ping(self) -> bool:
+        """Check if peer is reachable (simulated)."""
+        return self.server.respond_to_ping()
+
+
+class VectorStore:
+    """
+    Thread-safe vector storage with version tracking and deduplication.
+    
+    Stores vectors organized by cluster ID, with tracking of vector IDs
+    to prevent duplicates and support version-based conflict resolution.
+    """
+    
+    def __init__(self):
+        self.vectors = {}  # map cluster_id -> list of vectors
+        self.vector_ids: Dict[int, Tuple] = {}  # vector_id -> vector tuple (for dedup)
+        self.lock = threading.RLock()
+
+    def insert(self, vector) -> bool:
+        """
+        Insert a vector, handling duplicates via version comparison.
+        
+        Vector format: (Vector, VectorId, VectorPayload, cluster_id, version)
+        where version is (timestamp, node_id) or None for legacy format.
+        
+        Returns True if inserted, False if rejected (older version exists).
+        """
+        with self.lock:
+            vec_id = vector[1]
+            cluster_id = vector[3]
+            
+            # Get version (handle both old 4-tuple and new 5-tuple format)
+            version = vector[4] if len(vector) > 4 else (0, 0)
+            
+            if vec_id in self.vector_ids:
+                # Check version, keep newer
+                existing = self.vector_ids[vec_id]
+                existing_version = existing[4] if len(existing) > 4 else (0, 0)
+                
+                if version <= existing_version:
+                    return False  # Existing is newer or equal
+                
+                # Remove old version
+                self._remove_by_id_internal(vec_id)
+            
+            # Insert new vector
+            # OPTIMIZATION: Convert to numpy array immediately upon insertion
+            # Handle variable tuple length (legacy vs new)
+            v_data = vector[0]
+            if not isinstance(v_data, np.ndarray):
+                v_data = np.array(v_data, dtype=np.float32)
+            
+            # Reconstruct vector tuple with numpy array
+            if len(vector) == 6:
+                vector = (v_data, vector[1], vector[2], vector[3], vector[4], vector[5])
+            elif len(vector) == 5:
+                # Add None for missing destinations if needed, or just keep as is
+                vector = (v_data, vector[1], vector[2], vector[3], vector[4])
+            else:
+                vector = (v_data, vector[1], vector[2], vector[3])
+
+            self.vector_ids[vec_id] = vector
+            if cluster_id not in self.vectors:
+                self.vectors[cluster_id] = []
+            self.vectors[cluster_id].append(vector)
+            return True
+    
+    def _remove_by_id_internal(self, vec_id: int):
+        """Remove vector by ID (internal, assumes lock held)."""
+        if vec_id not in self.vector_ids:
+            return
+        
+        old_vec = self.vector_ids.pop(vec_id)
+        old_cluster = old_vec[3]
+        
+        if old_cluster in self.vectors:
+            self.vectors[old_cluster] = [
+                v for v in self.vectors[old_cluster] if v[1] != vec_id
+            ]
+            if not self.vectors[old_cluster]:
+                del self.vectors[old_cluster]
+    
+    def remove_by_id(self, vec_id: int):
+        """Remove vector by ID."""
+        with self.lock:
+            self._remove_by_id_internal(vec_id)
+    
+    def has_vector(self, vec_id: int) -> bool:
+        """Check if vector exists."""
+        with self.lock:
+            return vec_id in self.vector_ids
+    
+    def get_vector(self, vec_id: int):
+        """Get vector by ID."""
+        with self.lock:
+            return self.vector_ids.get(vec_id)
+
+    def get_all(self):
+        with self.lock:
+            all_vectors = []
+            for v_list in self.vectors.values():
+                all_vectors.extend(v_list)
+            return all_vectors
+
+    def get_by_cluster(self, cluster_id):
+        with self.lock:
+            return list(self.vectors.get(cluster_id, []))
+            
+    def count(self):
+        with self.lock:
+            return len(self.vector_ids)
+    
+    def get_all_ids(self) -> Set[int]:
+        """Get all stored vector IDs."""
+        with self.lock:
+            return set(self.vector_ids.keys())
+
+
+class Server:
+    def __init__(self, id, is_coordinator, before_clustering, replication_factor):
+        self.id = id
+        self.initial_coordinator = is_coordinator
+        self.is_coordinator = is_coordinator
+        self.before_clustering = before_clustering
+        self.replication_factor = replication_factor
+        self.peers = [Peer(self)]
+        self.clusters = []
+        self.status = 'bootstrap'
+        self.store = VectorStore()
+        self.vector_id = 0
+        self.vector_buffer = []
+        self.dropped_vectors = 0
+        
+        # Partition tolerance state
+        self.partition_coordinator_id = id if is_coordinator else None
+        self.hinted_handoff = HintedHandoff()
+        
+        # Network simulation (Client controlled)
+        self.simulated_unreachable_peers: Set[int] = set()
+        self.active_peers: Set[int] = {id} # Initially assume only self is reachable until gossip
+        
+        # Track when reconciliation is in progress
+        self._reconciling = False
+        self._reconcile_lock = threading.Lock()
+        
+        # Track when clustering is in progress
+        self.clustering_in_progress = False
+        
+        # Concurrency control
+        self.lock = threading.RLock()
+        self.queue = queue.Queue()
+        self.running = True
+        
+        # Worker thread
+        self.worker_thread = threading.Thread(target=self.process_queue, daemon=True)
+        self.worker_thread.start()
+
+        # Heartbeat thread
+        self.heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
+        self.heartbeat_thread.start()
+    
+    def stop(self):
+        self.running = False
+        self.queue.put(None)  # Sentinel to unblock queue
+        self.worker_thread.join()
+        # Headerbeat thread is daemon, will die with process
+        
+    def process_queue(self):
+        while self.running:
+            try:
+                task = self.queue.get()
+                if task is None:
+                    break
+                # print(f"DEBUG: Server {self.id} popping task. Method: {task[0].__name__}")
+                method, args = task
+                method(*args)
+                self.queue.task_done()
+            except Exception as e:
+                print(f"Error in server {self.id}: {e}")
+
+    def add_peer(self, peer):
+        with self.lock:
+            self.peers.append(Peer(peer))
+    
+    def i_am_coord(self):
+        return self.is_coordinator
+    
+    def coordinator(self):
+        """Find the coordinator among reachable peers."""
+        with self.lock:
+            reachable = self.get_reachable_peers()
+            for peer in reachable:
+                if peer.i_am_coord():
+                    return peer
+        return None
+    
+    def get_new_vector_id(self):
+        with self.lock:
+            self.vector_id += 1
+            to_mult = 1 if len(self.peers) == 0 else len(str(abs(len(self.peers))))
+            return self.vector_id * (10 ** to_mult) + self.get_id()
+
+    def get_status(self):
+        with self.lock:
+            return self.status
+
+    def get_queue_size(self):
+        return self.queue.qsize()
+
+    def is_clustering(self):
+        return self.clustering_in_progress
+    
+    def set_status(self, status):
+        with self.lock:
+            self.status = status
+    
+    def get_id(self):
+        return self.id
+    
+    def count(self):
+        with self.lock:
+            return self.store.count()
+    
+    # ==================== Network Simulation & Gossip ====================
+    
+    def block_peer(self, peer_id: int):
+        """Simulate a network partition blocking this peer."""
+        with self.lock:
+            self.simulated_unreachable_peers.add(peer_id)
+            
+    def unblock_peer(self, peer_id: int):
+        """Remove simulation block for this peer."""
+        with self.lock:
+            self.simulated_unreachable_peers.discard(peer_id)
+
+    def respond_to_ping(self) -> bool:
+        """Called by other peers to check if I am reachable."""
+        # In a real network, this would just happen. 
+        # Here we simulate 'dropping packets' if the sender is blocked.
+        # But wait, ping is called on the object reference.
+        # The caller (sender) checks its own block list before calling, or we check here?
+        # The logic: Sender checks if it CAN send. 
+        # But 'ping' implies checking if the OTHER side is alive.
+        # So it simply returns True (I am alive).
+        # The connectivity check happens on the SENDER side based on 'simulated_unreachable_peers'.
+        return True
+
+    def heartbeat_loop(self):
+        """Periodically ping peers to update active_peers list."""
+        while self.running:
+            time.sleep(0.5) # Heartbeat interval
+            
+            # Incremental update to prevent race condition where active_peers becomes empty
+            # Copy active peers to modify
+            with self.lock:
+                current_active_snapshot = set(self.active_peers)
+                
+            peers_to_check = list(self.peers)
+            changes_detected = False
+            
+            for peer in peers_to_check:
+                peer_id = peer.get_id()
+                
+                # Check simulated network conditions
+                is_blocked = False
+                with self.lock:
+                    if peer_id in self.simulated_unreachable_peers:
+                        is_blocked = True
+                
+                if is_blocked:
+                    # Simulated partition: cannot reach peer
+                    if peer_id in current_active_snapshot:
+                        current_active_snapshot.discard(peer_id)
+                        changes_detected = True
+                    continue
+                
+                # Try to ping
+                try:
+                    is_reachable = False
+                    if peer_id == self.id:
+                        is_reachable = True
+                    else:
+                        if peer.ping():
+                            is_reachable = True
+                    
+                    if is_reachable:
+                        if peer_id not in current_active_snapshot:
+                            current_active_snapshot.add(peer_id)
+                            changes_detected = True
+                    else:
+                        # Ping failed (returned False?)
+                        if peer_id in current_active_snapshot:
+                            current_active_snapshot.discard(peer_id)
+                            changes_detected = True
+                            
+                except Exception:
+                    # Failed to connect
+                    if peer_id in current_active_snapshot:
+                        current_active_snapshot.discard(peer_id)
+                        changes_detected = True
+            
+            # Update state if changed
+            if changes_detected:
+                with self.lock:
+                    self.active_peers = current_active_snapshot
+                # print(f"DEBUG: Server {self.id} detected network change. Active: {self.active_peers}")
+                self._handle_network_change()
+
+    def _handle_network_change(self):
+        """React to changes in peer connectivity."""
+        # 1. Elect new coordinator for this partition
+        self.elect_partition_coordinator()
+        
+        # 2. If peers appeared (healing), trigger reconciliation
+        # Note: This is a simplified check. Real systems might compare old/new sets.
+        # We always attempt reconciliation on change just to be safe/consistent.
+        self.on_partition_heal()
+
+    def _is_peer_reachable(self, peer: Peer) -> bool:
+        """Check if peer is considered active/reachable by heartbeat."""
+        with self.lock:
+            return peer.get_id() in self.active_peers
+    
+    def get_reachable_peers(self) -> List[Peer]:
+        """Get list of peers reachable according to heartbeat."""
+        with self.lock:
+            return [p for p in self.peers if p.get_id() in self.active_peers]
+    
+    def get_unreachable_peers(self) -> List[Peer]:
+        """Get list of peers NOT reachable according to heartbeat."""
+        with self.lock:
+            return [p for p in self.peers if p.get_id() not in self.active_peers]
+    
+    def _get_peer_by_id(self, peer_id: int) -> Optional[Peer]:
+        """Get peer by ID."""
+        with self.lock:
+            for peer in self.peers:
+                if peer.get_id() == peer_id:
+                    return peer
+        return None
+    
+    def elect_partition_coordinator(self):
+        """
+        Elect coordinator among currently active peers.
+        Highest ID wins.
+        """
+        with self.lock:
+            active = list(self.active_peers)
+        
+        if not active:
+             # Should at least contain self
+             return
+
+        # Elect highest ID as coordinator
+        new_coord_id = max(active)
+        
+        with self.lock:
+            self.partition_coordinator_id = new_coord_id
+            self.is_coordinator = (new_coord_id == self.id)
+            # print(f"DEBUG: Server {self.id} election. Active: {active}, Winner: {new_coord_id}")
+    
+    def on_partition_heal(self):
+        """Called when network topology changes (e.g. heal). Trigger reconciliation."""
+        with self._reconcile_lock:
+            if self._reconciling:
+                return  # Already reconciling
+            self._reconciling = True
+        
+        try:
+            # 1. Deliver any stored hints
+            self.deliver_hints()
+            
+            # 2. If I am coordinator, reconcile with other coordinators
+            if self.is_coordinator:
+                self._reconcile_with_other_coordinators()
+        finally:
+            with self._reconcile_lock:
+                self._reconciling = False
+    
+    def _reconcile_with_other_coordinators(self):
+        """Reconcile with all reachable peers to ensure data consistency."""
+        # Optimization: Only reconcile with other potential coordinators (highest ID in their view)
+        # But we don't know their view. So request reconciliation with reachable peers.
+        # To avoid storm, maybe only reconcile with peers that have ID > self.id? 
+        # Or just all. Let's stick to all reachable for robustness.
+        for peer in self.get_reachable_peers():
+            if peer.get_id() != self.id:
+                try:
+                    self.reconcile_with_peer(peer)
+                except Exception as e:
+                    print(f"Error reconciling with peer {peer.get_id()}: {e}")
+    
+    def deliver_hints(self):
+        """Attempt to deliver stored hints to now-reachable nodes."""
+        targets = self.hinted_handoff.get_all_targets()
+        for target_id in targets:
+            peer = self._get_peer_by_id(target_id)
+            if peer and self._is_peer_reachable(peer):
+                hints = self.hinted_handoff.get_hints_for(target_id)
+                if hints:
+                    try:
+                        peer.receive(hints, 'handoff')
+                    except Exception as e:
+                        # Put hints back if delivery fails
+                        self.hinted_handoff.store_hint(target_id, hints)
+                        print(f"Failed to deliver hints to {target_id}: {e}")
+    
+    # ==================== Vector Versioning & Anti-Entropy ====================
+    
+    def get_vector_digest(self) -> Dict[int, Tuple[float, int]]:
+        """
+        Get digest of all vectors for anti-entropy sync.
+        Returns dict of vector_id -> version tuple.
+        Minimal data transfer: only IDs and versions.
+        """
+        result = {}
+        for v in self.store.get_all():
+            vec_id = v[1]
+            version = v[4] if len(v) > 4 else (0, 0)
+            result[vec_id] = version
+        return result
+    
+    def get_vectors_by_ids(self, ids: List[int]) -> List:
+        """Get specific vectors by ID for sync."""
+        result = []
+        for vec_id in ids:
+            vec = self.store.get_vector(vec_id)
+            if vec:
+                result.append(vec)
+        return result
+    
+    def reconcile_with_peer(self, peer: Peer):
+        """
+        Perform anti-entropy reconciliation with single peer.
+        Only syncs vectors that SHOULD be on peer/self according to routing.
+        This prevents over-replication beyond the intended replication factor.
+        """
+        try:
+            # 1. Exchange digests (minimal network: just ID + version)
+            my_digest = self.get_vector_digest()
+            peer_digest = peer.get_vector_digest()
+            
+            # 2. Find vectors that should be on peer but aren't
+            # Only send vectors that SHOULD be on peer according to routing
+            my_ids = set(my_digest.keys())
+            peer_ids = set(peer_digest.keys())
+            
+            to_send = []
+            to_request = []
+            
+            # Check vectors I have that peer doesn't
+            for vid in (my_ids - peer_ids):
+                vec = self.store.get_vector(vid)
+                if vec and self._should_be_on_peer(vec, peer.get_id()):
+                    to_send.append(vid)
+            
+            # Check vectors peer has that I don't - request if they should be on me
+            for vid in (peer_ids - my_ids):
+                # Request vector from peer to check if it should be on us
+                to_request.append(vid)
+            
+            # For common vectors, compare versions (only if routing matches)
+            for vid in my_ids & peer_ids:
+                if my_digest[vid] > peer_digest[vid]:
+                    vec = self.store.get_vector(vid)
+                    if vec and self._should_be_on_peer(vec, peer.get_id()):
+                        to_send.append(vid)
+            
+            # 3. Send vectors that should be on peer
+            if to_send:
+                vectors_to_send = self.get_vectors_by_ids(to_send)
+                peer.receive(vectors_to_send, 'reconcile')
+            
+            # 4. Request vectors from peer that we might need
+            if to_request:
+                requested_vectors = peer.get_vectors_by_ids(to_request)
+                for vec in requested_vectors:
+                    # Only store if routing says it should be on us
+                    if self._should_be_on_me(vec):
+                        self.store.insert(vec)
+                    
+        except Exception as e:
+            print(f"Reconciliation with peer {peer.get_id()} failed: {e}")
+    
+    def _should_be_on_peer(self, vector, peer_id: int) -> bool:
+        """
+        Check if vector should be replicated to the given peer.
+        Uses stored destinations if available, otherwise calculates.
+        """
+        # Check if vector has stored destinations (index 5)
+        if len(vector) > 5 and vector[5]:
+            return peer_id in vector[5]
+        
+        # No stored destinations - calculate based on routing
+        if not self.clusters:
+            return True  # Before clustering, accept everything
+        
+        # Calculate destinations
+        destinations = self._calculate_destinations(vector)
+        return peer_id in destinations
+    
+    def _should_be_on_me(self, vector) -> bool:
+        """
+        Check if vector should be stored on this server.
+        Uses stored destinations if available, otherwise calculates.
+        """
+        return self._should_be_on_peer(vector, self.id)
+    
+    # ==================== Core Vector Operations ====================
+    
+    def similarity(self, vector):
+        with self.lock:
+            current_clusters = list(self.clusters)
+        if not current_clusters:
+            return 0.0
+        return max([cosine_similarity(vector, cluster_center) for _, cluster_center in current_clusters])
+    
+    def route_vectors(self, vectors, top_k=3, use_all_peers=False):
+        with self.lock:
+            if use_all_peers:
+                current_peers = list(self.peers)
+            else:
+                current_peers = self.get_reachable_peers()  # Only route to reachable peers
+        
+        if not current_peers:
+            return {}
+        
+        results = {}
+        for vector in vectors:
+            peer_similarities = []
+            for peer in current_peers:
+                sim = peer.similarity(vector[0])
+                peer_similarities.append((peer.get_id(), sim, vector))
+            
+            results[vector[1]] = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[:top_k]
+        
+        # DEBUG: Print routing stats for first vector to see if similarities are all 0
+        # if vectors:
+        #     first_res = results[vectors[0][1]]
+        #     print(f"DEBUG: Server {self.id} routing sample. Top sims: {[(x[0], x[1]) for x in first_res]}")
+            
+        return results
+    
+    def send_to_peers(self, vectors: ListOfVectorsComplete):
+        """
+        Send vectors to peers based on routing.
+        Calculates and stores destinations in each vector on first routing,
+        then uses stored destinations for subsequent operations to prevent over-replication.
+        """
+        with self.lock:
+            all_peers = list(self.peers)
+        
+        peer_to_vec = {peer.get_id(): [] for peer in all_peers}
+        
+        for vector in vectors:
+            # Check if vector already has destinations (index 5)
+            if len(vector) > 5 and vector[5]:
+                # Use stored destinations
+                destinations = vector[5]
+            else:
+                # Calculate and attach destinations
+                destinations = self._calculate_destinations(vector)
+                # Create new vector with destinations attached
+                if len(vector) == 5:
+                    vector = (vector[0], vector[1], vector[2], vector[3], vector[4], destinations)
+                elif len(vector) == 4:
+                    vector = (vector[0], vector[1], vector[2], vector[3], (time.time(), self.id), destinations)
+            
+            # Route to intended destinations only
+            for peer_id in destinations:
+                if peer_id in peer_to_vec:
+                    peer_to_vec[peer_id].append(vector)
+        
+        # Send to reachable peers, store hints for unreachable
+        # print(f"DEBUG: Server {self.id} sending to peers. Distribution: {[len(v) for k,v in peer_to_vec.items() if v]}")
+        for peer in all_peers:
+            vecs = peer_to_vec[peer.get_id()]
+            if not vecs:
+                continue
+            
+            
+            reachable = self._is_peer_reachable(peer)
+            # print(f"DEBUG: Server {self.id} -> Peer {peer.get_id()} (reachable={reachable}): {len(vecs)} vectors")
+            
+            if reachable:
+                try:
+                    # print(f"DEBUG: Server {self.id} sending to {peer.get_id()} (Status {self.status})")
+                    peer.receive(vecs, self.status)
+                except Exception as e:
+                    # On failure, store as hint
+                    print(f"DEBUG: Server {self.id} exception sending to {peer.get_id()}: {e}")
+                    self.hinted_handoff.store_hint(peer.get_id(), vecs)
+            else:
+                # Unreachable, store hint
+                print(f"DEBUG: Server {self.id} cannot reach {peer.get_id()} (Active: {self.active_peers}), storing {len(vecs)} hints")
+                self.hinted_handoff.store_hint(peer.get_id(), vecs)
+    
+    def _calculate_destinations(self, vector) -> frozenset:
+        """Calculate intended destination peers for a vector based on similarity routing."""
+        with self.lock:
+            all_peers = list(self.peers)
+        
+        if not all_peers:
+            return frozenset()
+        
+        peer_similarities = []
+        for peer in all_peers:
+            sim = peer.similarity(vector[0])
+            peer_similarities.append((peer.get_id(), sim))
+        
+        # Sort by similarity and get top replication_factor
+        top_peers = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[:self.replication_factor]
+        return frozenset(p[0] for p in top_peers)
+    
+    def receive(self, vectors: ListOfVectorsComplete, sender_status):
+        # Enqueue the task
+        # print(f"DEBUG: Server {self.id} enqueuing {len(vectors)} vectors with status {sender_status}")
+        self.queue.put((self._handle_receive, (vectors, sender_status)))
+
+    def _handle_receive(self, vectors: ListOfVectorsComplete, sender_status):
+        # print(f"DEBUG: Server {self.id} handling receive, status={sender_status}, count={len(vectors)}")
+        if sender_status == 'bootstrap':
+            if not self.i_am_coord():
+                print(f"Error: bootstrap sent to non coordinator node {self.id}")
+            else:
+                status = self.get_status()
+                if status == 'bootstrap':
+                    self.add_to_buffer(vectors)
+                elif status == 'clustered':
+                    self.send_to_peers(vectors)
+                else:
+                    print('error: status corrupted')
+        elif sender_status == 'clustered':
+            self.save_vectors(vectors)
+        elif sender_status == 'client':
+            status = self.get_status()
+            # print(f"DEBUG: Server {self.id} RX from client. Status: {status}")
+            if status == 'bootstrap':
+                if self.i_am_coord():
+                    self.add_to_buffer(vectors)
+                else:
+                    coord = self.coordinator()
+                    if coord:
+                        # print(f"DEBUG: Server {self.id} forwarding to coord {coord.get_id()}")
+                        coord.receive(vectors, 'bootstrap')
+                    else:
+                        print(f"DEBUG: Server {self.id} could not find coordinator to forward to!")
+                        self.dropped_vectors += len(vectors)
+            elif status == 'clustered':
+                self.send_to_peers(vectors)
+            else:
+                print('error: status corrupted')
+        elif sender_status == 'handoff':
+            # Hinted handoff delivery - save vectors directly
+            self.save_vectors(vectors)
+        elif sender_status == 'reconcile':
+            # Anti-entropy reconciliation - save with version checking
+            for v in vectors:
+                self.store.insert(v)
+        else:
+            print('error: status corrupted')
+
+    def save_vectors(self, vectors: ListOfVectorsComplete):
+        # print(f"DEBUG: Server {self.id} saving {len(vectors)} vectors")
+        success_count = 0
+        for vector in vectors:
+            if self.store.insert(vector):
+                success_count += 1
+        if success_count < len(vectors):
+             pass # print(f"DEBUG: Server {self.id} only saved {success_count}/{len(vectors)} vectors (duplicates?)")
+
+    def receive_from_client(self, vectors: ListOfVectorsWithPayload):
+        vectors_with_id = []
+        for v, v_p in vectors:
+            # Add version: (timestamp, node_id)
+            version = (time.time(), self.id)
+            vectors_with_id.append((v, self.get_new_vector_id(), v_p, -1, version))
+        
+        self.receive(vectors_with_id, 'client')
+    
+    def set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId):
+        self.queue.put((self._handle_set_clusters, (vectors_for_clusters, clusters)))
+
+    def _handle_set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId):
+        with self.lock:
+            self.clusters = clusters
+            
+            for cluster_info in self.clusters:
+                cluster_id = cluster_info[0]
+                if cluster_id in vectors_for_clusters:
+                    for v in vectors_for_clusters[cluster_id]['members']:
+                        self.store.insert(v)
+            
+            self.status = 'clustered'
+            print(f"DEBUG: Server {self.id} transitioned to CLUSTERED status")
+            
+            vectors_to_send = []
+            # Process any vectors that arrived during clustering
+            if self.vector_buffer:
+                print(f"DEBUG: Server {self.id}: Processing {len(self.vector_buffer)} buffered vectors after clustering")
+                vectors_to_send = self.vector_buffer[:]
+                self.vector_buffer = []
+            
+            
+        if vectors_to_send:
+            self.send_to_peers(vectors_to_send)
+            
+        with self.lock:
+            self.clustering_in_progress = False
+
+    def add_to_buffer(self, vectors: ListOfVectorsComplete):
+        with self.lock:
+            # print(f"DEBUG: Server {self.id} add_to_buffer {len(vectors)}")
+            if not self.i_am_coord():
+                print("error: not coordinator on add_to_buffer")
+                return
+            self.vector_buffer.extend(vectors)
+            
+            if self.status == 'bootstrap':
+                if len(self.vector_buffer) >= self.before_clustering and not self.clustering_in_progress:
+                    print(f"DEBUG: Server {self.id} starting CLUSTERING")
+                    self.clustering_in_progress = True
+                    v_b = self.vector_buffer[:]
+                    self.vector_buffer = [] # Clear buffer that is being processed for clustering, new vectors will accumulate in buffer
+                    
+                    t = threading.Thread(target=self._run_clustering_background, args=(v_b,))
+                    t.start()
+
+    def _run_clustering_background(self, vectors):
+        clusters = self.clustering(vectors)
+        assignment = self.assign_clusters_to_peers(clusters)
+        
+        # Build cluster_id -> destinations mapping
+        cluster_to_destinations = {}
+        for peer_id, peer_clusters in assignment.items():
+            for cluster_id, _ in peer_clusters:
+                if cluster_id not in cluster_to_destinations:
+                    cluster_to_destinations[cluster_id] = set()
+                cluster_to_destinations[cluster_id].add(peer_id)
+        
+        # Add destinations to all vectors in clusters
+        for cluster_id, cluster_data in clusters.items():
+            destinations = frozenset(cluster_to_destinations.get(cluster_id, set()))
+            updated_members = []
+            for v in cluster_data['members']:
+                # Add destinations (index 5)
+                if len(v) >= 5:
+                    v_with_dest = (v[0], v[1], v[2], v[3], v[4], destinations)
+                else:
+                    v_with_dest = (v[0], v[1], v[2], v[3], (time.time(), self.id), destinations)
+                updated_members.append(v_with_dest)
+            cluster_data['members'] = updated_members
+        
+        for peer in self.get_reachable_peers():
+            peer.set_clusters(clusters, assignment[peer.get_id()])
+    
+    def clustering(self, vectors: ListOfVectorsComplete, num_clusters=10):
+        vects = [v[0] for v in vectors]  # Extract just the vector data
+        X = np.array(vects)
+        n_clusters = max(1, min(num_clusters, X.shape[0]))
+        kmeans = KMeans(n_clusters=n_clusters)
+        kmeans.fit(X)
+        centers = kmeans.cluster_centers_.tolist()
+        labels = kmeans.labels_
+        members = [[] for _ in range(n_clusters)]
+        
+        for vec, lbl in zip(vectors, labels):
+            # Create new tuple with updated cluster index
+            # Handle both old 4-tuple and new 5-tuple format
+            if len(vec) > 4:
+                new_vec = (vec[0], vec[1], vec[2], int(lbl), vec[4])
+            else:
+                new_vec = (vec[0], vec[1], vec[2], int(lbl), (time.time(), self.id))
+            members[lbl].append(new_vec)
+        
+        return {i: {'center': centers[i], 'members': members[i]} for i in range(n_clusters)}
+    
+    def assign_clusters_to_peers(self, clusters, beam_width=50):
+        reachable_peers = self.get_reachable_peers()
+        all_nodes = [peer.get_id() for peer in reachable_peers]
+        
+        if not all_nodes:
+            return {}
+        
+        # Adjust replication factor if fewer peers than factor
+        effective_rep = min(self.replication_factor, len(all_nodes))
+        all_combos = list(itertools.combinations(all_nodes, effective_rep))
+        
+        beam = [(0.0, [], {id: 0.0 for id in all_nodes})]
+        clusters_sorted = sorted(
+            [(id, len(el['members']), el['center']) for id, el in clusters.items()],
+            key=lambda x: x[1], reverse=True
         )
-        p2p_pb2_grpc.add_P2PNodeServicer_to_server(P2PNodeServicer(server_app), grpc_server)
-        grpc_server.add_insecure_port(f'[::]:{grpc_port}')
-        logger.info(f"gRPC server started on port {grpc_port}")
-        grpc_server.start()
-        grpc_server.wait_for_termination()
+        
+        for _, cluster_load, _ in clusters_sorted:
+            potential_states = []
+            for _, current_assignment, current_node_loads in beam:
+                for combo in all_combos:
+                    new_node_loads = dict(current_node_loads)
+                    for node_idx in combo:
+                        new_node_loads[node_idx] += cluster_load
+                    new_assignment = current_assignment + [combo]
+                    partial_score = sum(load**2 for _, load in new_node_loads.items())
+                    potential_states.append(
+                        (partial_score, new_assignment, new_node_loads)
+                    )
+            beam = heapq.nsmallest(beam_width, potential_states, key=lambda x: x[0])
+        
+        _, best_assignment, _ = beam[0]
+        assignment = {node_id: [] for node_id in all_nodes}
+        
+        for index, nodes_tuple in enumerate(best_assignment):
+            for node in nodes_tuple:
+                assignment[node].append((clusters_sorted[index][0], clusters_sorted[index][2]))
+        
+        return assignment
 
-    grpc_port = args.node_grpc_url.split(":")[-1]
+    def get_all_vectors(self):
+        return self.store.get_all()
     
-    # Run gRPC in a background thread
-    grpc_thread = threading.Thread(target=serve_grpc, args=(server, grpc_port), name="GRPC-Thread")
-    grpc_thread.daemon = True
-    grpc_thread.start()
+    def search_vectors(self, vectors: ListOfVectorsWithId, top_k=100, top_look=4):
+        peers_similarity_per_vector = self.route_vectors([(v, v_id) for (v_id, v) in vectors], top_look)
+        reachable_peers = self.get_reachable_peers()
+        peer_to_vec = {peer.get_id(): [] for peer in reachable_peers}
+        
+        for _, p_data in peers_similarity_per_vector.items():
+            for (p_id, _, v) in p_data:
+                if p_id in peer_to_vec:
+                    peer_to_vec[p_id].append(v)
+        
+        found_vectors = []
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for peer in reachable_peers:
+                if peer_to_vec[peer.get_id()]:
+                    futures.append(executor.submit(peer.search_vectors_local, peer_to_vec[peer.get_id()], top_k))
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    found_vectors.extend(future.result())
+                except Exception as e:
+                    print(f"Error searching on peer: {e}")
+        
+        # Deduplicate results based on vector ID (index 1)
+        unique_results = {}
+        for res in found_vectors:
+            v_id = res[1]
+            if v_id not in unique_results:
+                unique_results[v_id] = res
+        
+        # Sort by similarity (index 3) in descending order
+        final_results = sorted(unique_results.values(), key=lambda x: x[3], reverse=True)
+        
+        return final_results[:top_k]
 
-    # --- START FASTAPI (Main Thread) ---
-    http_port = int(args.node_url.split(":")[-1])
-    logger.info(f"Starting Uvicorn HTTP server on port {http_port}")
-    metrics.start_metrics_server(args.metrics_port)
+    def search_vectors_local(self, vectors, top_k=5):
+        current_vectors_data = self.store.get_all()
+        if not current_vectors_data:
+            return []
+            
+        # Database Matrix (N, D)
+        # All stored vectors are guaranteed to be numpy arrays due to insert() logic
+        db_vectors = [v[0] for v in current_vectors_data]
+        
+        # Stack into matrix
+        try:
+            matrix = np.stack(db_vectors)
+        except Exception as e:
+            print(f"Error creating matrix from vectors: {e}")
+            return []
+        
+        # Precompute norms for database vectors (N,)
+        norms_matrix = np.linalg.norm(matrix, axis=1)
+        # Avoid division by zero
+        norms_matrix[norms_matrix == 0] = 1e-10
+        
+        # Query Matrix (M, D)
+        query_vectors = [v[0] for v in vectors]
+        
+        # Convert queries to numpy if needed
+        # Queries usually come from client as lists, or internal as arrays
+        try:
+            if query_vectors and not isinstance(query_vectors[0], np.ndarray):
+                 query_matrix = np.array(query_vectors, dtype=np.float32)
+            else:
+                 query_matrix = np.stack(query_vectors)
+        except Exception as e:
+             print(f"Error creating query matrix: {e}")
+             return []
+             
+        # Compute norms for queries (M,)
+        norms_query = np.linalg.norm(query_matrix, axis=1)
+        norms_query[norms_query == 0] = 1e-10
+        
+        # Dot product: (M, D) @ (D, N) -> (M, N)
+        # transpose matrix to (D, N)
+        dists = np.dot(query_matrix, matrix.T)
+        
+        # Similarities: dists / (norm_q[:, None] * norm_m[None, :])
+        # Broadcasting: (M, 1) * (1, N) -> (M, N)
+        sims = dists / (norms_query[:, np.newaxis] * norms_matrix)
+        
+        found = []
+        
+        # For each query
+        for i in range(len(vectors)):
+            query_sims = sims[i] # (N,)
+            
+            # Top K
+            # We want descending order
+            if len(query_sims) <= top_k:
+                top_indices = np.argsort(query_sims)[::-1]
+            else:
+                # argpartition puts top k at the end
+                top_indices = np.argpartition(query_sims, -top_k)[-top_k:]
+                # Sort the top k
+                top_indices = top_indices[np.argsort(query_sims[top_indices])[::-1]]
+            
+            for idx in top_indices:
+                 # Reconstruct result tuple: (Vector, VectorId, VectorPayload, Similarity)
+                 entry = current_vectors_data[idx]
+                 found.append((entry[0], entry[1], entry[2], float(query_sims[idx])))
+                 
+        return found
+
+    def query(self, vectors: ListOfVectorsWithId, sender_status, top_k=100, top_look=4):
+        if sender_status == 'client':
+            status = self.get_status()
+            if status == 'bootstrap':
+                if self.i_am_coord():
+                    with self.lock:
+                        buffer_snap = list(self.vector_buffer)
+                    return self._search_in_array(vectors, buffer_snap, top_k)
+                else:
+                    coord = self.coordinator()
+                    if coord:
+                        return coord.query(vectors, 'bootstrap')
+                    return []
+            elif status == 'clustered':
+                return self.search_vectors(vectors, top_k, top_look)
+            else:
+                print('error: invalid sender status')
+        elif sender_status == 'bootstrap':
+            if self.i_am_coord():
+                status = self.get_status()
+                if status == 'bootstrap':
+                    with self.lock:
+                        buffer_snap = list(self.vector_buffer)
+                    return self._search_in_array(vectors, buffer_snap, top_k)
+                else:
+                    return self.search_vectors(vectors, top_k, top_look)
+            else:
+                print('error: bootstrap sended to non coordinator node')
+        elif sender_status == 'clustered':
+            return self.search_vectors(vectors, top_k, top_look)
+        else:
+            print('error: invalid sender status')
+            
+    def _search_in_array(self, vectors, array, top_k):
+        found = []
+        for vector_to_query, _ in vectors:
+            found.extend(sorted(
+                [(v, v_id, v_payload, cosine_similarity(v, vector_to_query)) 
+                 for v, v_id, v_payload, *rest in array],
+                key=lambda x: x[3], reverse=True
+            )[:top_k])
+        return found
     
-    # CRITICAL FIX: log_config=None prevents Uvicorn from resetting our logging configuration
-    uvicorn.run(app, host="0.0.0.0", port=http_port, log_config=None)
+    def query_from_client(self, vectors: ListOfVectors):
+        vectors_with_qid = [(self.get_id(), v) for v in vectors]
+        return self.query(vectors_with_qid, 'client')

@@ -1,6 +1,9 @@
-__pycache__/*
-*.json
-qdrant_storage*
-logs/*
-*.log
-rust_p2p_analytics/target/*
+embeddings.json
+embeddings_big.json
+out
+__pycache__
+
+# Coverage reports
+.coverage
+htmlcov/
+benchmark_report.txt
