@@ -202,7 +202,7 @@ class VectorStore:
 
 
 class Server:
-    def __init__(self, id, is_coordinator, before_clustering, replication_factor, port, ip="127.0.0.1", endpoint="GRPC"):
+    def __init__(self, id, is_coordinator, before_clustering, replication_factor, port, ip="127.0.0.1", endpoint="QUIC"):
         self.id = id
         self.ip = ip
         self.port = port

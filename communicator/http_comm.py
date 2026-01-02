@@ -18,7 +18,14 @@ class HTTPCommunicator(BaseCommunicator):
             try:
                 async with session.post(url, data=data) as response:
                     text = await response.text()
-                    return {"status": 0, "error": None, "response": text}
+                    
+                    # Deserialize response from base64 + pickle
+                    try:
+                        resp_bytes = base64.b64decode(text)
+                        resp_obj = pickle.loads(resp_bytes)
+                        return {"status": 0, "error": None, "response": resp_obj}
+                    except Exception as e:
+                        return {"status": -1, "error": f"Deserialization failed: {e}", "response": None}
                             
             except Exception as e:
                 print(f"HTTP Send failed: {e}")

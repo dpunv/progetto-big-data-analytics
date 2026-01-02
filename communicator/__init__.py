@@ -1,5 +1,6 @@
 from .http_comm import HTTPCommunicator
 from .grpc_comm import GRPCCommunicator
+from .quic_comm import QUICCommunicator
 from typing import Union
 
 class Communicator:
@@ -7,13 +8,15 @@ class Communicator:
         """
         Initialize the Communicator with a specific protocol type.
         
-        :param comm_type: "HTTP"
+        :param comm_type: "HTTP", "GRPC", "QUIC"
         """
         self.comm_type = comm_type.upper()
         if self.comm_type == "HTTP":
             self._impl = HTTPCommunicator()
         elif self.comm_type == "GRPC":
             self._impl = GRPCCommunicator()
+        elif self.comm_type == "QUIC":
+            self._impl = QUICCommunicator()
         else:
             raise ValueError(f"Unknown communicator type: {comm_type}")
 

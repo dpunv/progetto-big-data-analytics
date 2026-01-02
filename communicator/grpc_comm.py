@@ -208,21 +208,8 @@ class GRPCCommunicator(BaseCommunicator):
                 else:
                     return {"status": -1, "error": f"Unknown gRPC method: {query}", "response": None}
 
-                # Peer expects base64 encoded pickle string if we want to reuse its logic strictly?
-                # Wait, Peer logic NOW calls communicator.send(...).
-                # Peer._remote_call logic:
-                # resp = communicator.send(...)
-                # response_text = resp["response"]
-                # response_bytes = base64.b64decode(response_text)
-                # result_obj = pickle.loads(...)
-                
-                # We need to MATCH this return format so Peer doesn't break.
-                # serialize result_val to pickle -> base64
-                
-                res_bytes = pickle.dumps(response_val)
-                res_b64 = base64.b64encode(res_bytes).decode('utf-8')
-                
-                return {"status": 0, "error": None, "response": res_b64}
+                # Return response directly (consistent with QUIC and updated HTTP)
+                return {"status": 0, "error": None, "response": response_val}
                 
             except grpc.RpcError as e:
                 # print(f"GRPC Error {query}: {e.code()}")

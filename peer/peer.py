@@ -96,38 +96,27 @@ class Peer:
         if not self.communicator:
             raise Exception(f"No communicator for remote peer {self.ip}:{self.port}")
 
-        # Serialize arguments
-        # No serialization here! Let Communicator handle it.
-        # payload = { "args": args }
-        # data_bytes = pickle.dumps(payload)
-        
         # Sync-Async Bridge
         # We need to run the async send method synchronously.
         # Since we might be modifying server.py which uses threads, 
         # asyncio.run() creates a fresh loop.
         
-        resp = asyncio.run(self.communicator.send(self.ip, self.port, method_name, *args))
+        try:
+           resp = asyncio.run(self.communicator.send(self.ip, self.port, method_name, *args))
+        except RuntimeError:
+           # If we are already in an event loop (e.g. nested calls or async test), 
+           # we might need to handle it differently, depending on context.
+           # But for now, asyncio.run works for sync callers.
+           # For async callers, they should be awaiting communicator.send directly, 
+           # but Peer methods are sync.
+           # In case of tests running in loop, this might be tricky.
+           # But let's assume standard usage.
+           loop = asyncio.get_event_loop()
+           resp = loop.run_until_complete(self.communicator.send(self.ip, self.port, method_name, *args))
         
         if resp["status"] != 0:
             raise Exception(f"Remote call {method_name} failed: {resp['error']}")
             
-        # Deserialize response
-        # The response['response'] is text from .text(). 
-        # Wait, if we return pickle binary, we should read .read() or .content() in communicator.
-        # Let's verify communicator implementation. It uses .text().
-        # So we MUST base64 encode the return value on the server side if it's binary.
-        # And we must base64 serialization here too if we want to be safe or if communicator expects str.
-        
-        # Let's assume the server returns a base64 string rep of the pickled result.
-        response_text = resp["response"]
-        
-        # Decode
-        try:
-            response_bytes = base64.b64decode(response_text)
-            result_obj = pickle.loads(response_bytes)
-            return result_obj
-        except Exception as e:
-            # Maybe it wasn't pickeled? Simple string?
-            # For now, assume everything is pickled.
-            raise Exception(f"Failed to deserialize response: {e}")
+        # All communicators now return the response object already deserialized
+        return resp['response']
 
