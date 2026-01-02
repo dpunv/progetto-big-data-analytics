@@ -1,4 +1,5 @@
 from .http_endpoint import HTTPEndpoint
+from .grpc_endpoint import GRPCEndpoint
 
 class Endpoint:
     def __init__(self, endpoint_type: str, server_instance):
@@ -11,6 +12,8 @@ class Endpoint:
         self.endpoint_type = endpoint_type.upper()
         if self.endpoint_type == "HTTP":
             self._impl = HTTPEndpoint(server_instance)
+        elif self.endpoint_type == "GRPC":
+            self._impl = GRPCEndpoint(server_instance)
         else:
             raise ValueError(f"Unknown endpoint type: {endpoint_type}")
 

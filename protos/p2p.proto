@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package p2p;
+
+service P2PNode {
+    rpc GetId(Empty) returns (IdResponse);
+    rpc Similarity(VectorRequest) returns (SimilarityResponse);
+    rpc Receive(ReceiveRequest) returns (Empty);
+    rpc IAmCoord(Empty) returns (BoolResponse);
+    rpc SetClusters(SetClustersRequest) returns (Empty);
+    rpc SearchVectorsLocal(SearchVectorsContext) returns (SearchResponse);
+    rpc Query(QueryRequest) returns (QueryResponse);
+    rpc GetVectorDigest(Empty) returns (DigestResponse);
+    rpc GetVectorsByIds(IdList) returns (VectorList);
+    rpc GetPartitionCoordinatorId(Empty) returns (IdResponse);
+    rpc RespondToPing(Empty) returns (BoolResponse);
+}
+
+message Empty {}
+
+message IdResponse {
+    int64 id = 1;
+}
+
+message BoolResponse {
+    bool value = 1;
+}
+
+message VectorRequest {
+    repeated float values = 1;
+}
+
+message SimilarityResponse {
+    float score = 1;
+}
+
+// Complex types
+message VectorComplete {
+    repeated float values = 1;
+    int64 id = 2;
+    string payload = 3;
+    int32 cluster_id = 4;
+    // Version and destinations info
+    double timestamp = 5;
+    int64 version_node_id = 6;
+    repeated int64 destinations = 7;
+}
+
+message ReceiveRequest {
+    repeated VectorComplete vectors = 1;
+    string status = 2;
+}
+
+message SetClustersRequest {
+    // Clusters structure is {id: {'center': vec, 'members': [vecs]}}
+    // This is complex. We will use a dedicated message for Cluster
+    map<int32, ClusterData> clusters = 1;
+    // Assignment is map<node_id, list of (cluster_id, center)>
+    // We'll use serialized bytes for assignment or define it fully.
+    // Let's use bytes for the complex assignment map to save time/complexity on proto,
+    // as it is an internal specialized structure.
+    bytes assignment_pickle = 2; 
+}
+
+message ClusterData {
+    repeated float center = 1;
+    repeated VectorComplete members = 2;
+}
+
+message SearchVectorsContext {
+    repeated VectorWithId vectors = 1;
+    int32 top_k = 2;
+}
+
+message VectorWithId {
+    int64 id = 1;
+    repeated float values = 2;
+}
+
+message SearchResponse {
+    // List of (Vector, id, payload, sim)
+    repeated SearchResultItem results = 1;
+}
+
+message SearchResultItem {
+    repeated float vector = 1;
+    int64 id = 2;
+    string payload = 3;
+    float similarity = 4;
+}
+
+message QueryRequest {
+    repeated VectorWithId vectors = 1;
+    string status = 2;
+}
+
+// QueryResponse same as SearchResponse? 
+// server.py: query_from_client returns [(id, payload, distance)]?
+// Actually query() returns list of results similar to search.
+message QueryResponse {
+    repeated SearchResultItem results = 1;
+}
+
+message DigestResponse {
+    // map<vector_id, version_tuple>
+    // Proto map keys must be string or integer. Value cannot be tuple directly.
+    map<int64, VersionInfo> digest = 1;
+}
+
+message VersionInfo {
+    double timestamp = 1;
+    int64 node_id = 2;
+}
+
+message IdList {
+    repeated int64 ids = 1;
+}
+
+message VectorList {
+    repeated VectorComplete vectors = 1;
+}

@@ -1,10 +1,11 @@
 
-import pickle
-import base64
+
 import asyncio
 import threading
 from typing import List, Dict, Tuple, Optional, Any
 import time
+import base64
+import pickle
 
 # Use explicit imports to avoid circular dependency issues if possible, 
 # or use TYPE_CHECKING
@@ -96,22 +97,16 @@ class Peer:
             raise Exception(f"No communicator for remote peer {self.ip}:{self.port}")
 
         # Serialize arguments
-        # We use pickle for complex objects (numpy arrays etc)
-        # and encode to base64 to send as string/bytes safe for HTTP body
-        payload = {
-            "args": args
-        }
-        data_bytes = pickle.dumps(payload)
-        # We can send bytes directly with aiohttp, or base64 if we want text.
-        # Let's send raw bytes if the communicator supports it, 
-        # but the http_comm sends 'data=data'. aiohttp handles bytes.
+        # No serialization here! Let Communicator handle it.
+        # payload = { "args": args }
+        # data_bytes = pickle.dumps(payload)
         
         # Sync-Async Bridge
         # We need to run the async send method synchronously.
         # Since we might be modifying server.py which uses threads, 
         # asyncio.run() creates a fresh loop.
         
-        resp = asyncio.run(self.communicator.send(self.ip, self.port, method_name, data_bytes))
+        resp = asyncio.run(self.communicator.send(self.ip, self.port, method_name, *args))
         
         if resp["status"] != 0:
             raise Exception(f"Remote call {method_name} failed: {resp['error']}")

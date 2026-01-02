@@ -202,7 +202,7 @@ class VectorStore:
 
 
 class Server:
-    def __init__(self, id, is_coordinator, before_clustering, replication_factor, port, ip="127.0.0.1"):
+    def __init__(self, id, is_coordinator, before_clustering, replication_factor, port, ip="127.0.0.1", endpoint="GRPC"):
         self.id = id
         self.ip = ip
         self.port = port
@@ -212,7 +212,7 @@ class Server:
         self.replication_factor = replication_factor
         
         # Initialize communicator first so it can be passed to peers
-        self.communicator = Communicator("HTTP")
+        self.communicator = Communicator(endpoint)
         
         # Local peer (self)
         self.peers = []
@@ -229,7 +229,7 @@ class Server:
         self.partition_coordinator_id = id if is_coordinator else None
         self.hinted_handoff = HintedHandoff()
 
-        self.endpoint = Endpoint("HTTP", self)
+        self.endpoint = Endpoint(endpoint, self)
         
         # Start endpoint in a thread to handle async loop
         self._start_endpoint_thread(port)
