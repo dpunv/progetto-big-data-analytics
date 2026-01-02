@@ -16,17 +16,17 @@ vectors = [(d['embedding'], d['text']) for d in data]
 print("data read")
 
 # configuration
-num_vectors = 65536
+num_vectors = 32768
 num_vectors_before_clustering = 8192
-num_servers = 8
-replication_factor = 4
+num_servers = 3
+replication_factor = 2
 batch_size = 512
 print("configuration defined")
 
 # create servers
 servers = []
 for i in range(num_servers):
-    servers.append(sv.Server(i, i==0, num_vectors_before_clustering, replication_factor))
+    servers.append(sv.Server(i, i==0, num_vectors_before_clustering, replication_factor, 8000+i))
 print("servers started")
 
 # register peers
@@ -36,6 +36,7 @@ for server in servers:
             continue
         server.add_peer(peer)
 print("peers registered")
+time.sleep(5)
 
 # add vectors
 def send_batch(server_idx, batch_vectors, batch_idx, total_batches):
@@ -55,7 +56,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
 print("all batch sent")
 
 # Give some time for async processing on server side to complete
-time.sleep(2) 
+time.sleep(60) 
 
 # query a vector:
 query_vector = [vectors[0][0]]

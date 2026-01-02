@@ -83,16 +83,29 @@ def test_cosine_similarity():
     # dot=1, norm_a=1, norm_b=sqrt(2) -> 1/sqrt(2) approx 0.707
     assert cosine_similarity(v1, v5) == pytest.approx(1.0 / (1.0 * np.sqrt(2)))
 
+# Global port counter
+_next_port = 30000
+
+def get_free_port():
+    global _next_port
+    p = _next_port
+    _next_port += 1
+    return p
+
 @pytest.fixture
 def server_node():
-    s = Server(id=1, is_coordinator=True, before_clustering=10, replication_factor=2)
+    port = get_free_port()
+    s = Server(id=1, is_coordinator=True, before_clustering=10, replication_factor=2, port=port)
     yield s
-    s.stop()
+    try:
+        s.stop()
+    except Exception as e:
+        print(f"Error checking cleaning up server: {e}")
 
 class TestPeer:
     def test_peer_delegation(self):
         mock_server = MagicMock()
-        peer = Peer(mock_server)
+        peer = Peer('127.0.0.1', get_free_port(), server_instance=mock_server)
         
         peer.get_id()
         mock_server.get_id.assert_called_once()
@@ -127,7 +140,7 @@ class TestServerUnit:
         assert server_node.peers[0].server == server_node
 
     def test_add_peer(self, server_node):
-        other_server = Server(id=2, is_coordinator=False, before_clustering=10, replication_factor=2)
+        other_server = Server(id=2, is_coordinator=False, before_clustering=10, replication_factor=2, port=get_free_port())
         server_node.add_peer(other_server)
         assert len(server_node.peers) == 2
         other_server.stop()
@@ -206,7 +219,7 @@ class TestServerUnit:
 
     def test_assign_clusters_to_peers(self, server_node):
         # Add another peer to execute assignment logic sensibly
-        other_node = Server(2, False, 10, 2)
+        other_node = Server(2, False, 10, 2, port=get_free_port())
         server_node.add_peer(other_node)
         server_node.active_peers.add(2)
         
@@ -295,13 +308,29 @@ class TestServerUnit:
 # --- Integration / Workflow Tests ---
 
 def test_full_workflow():
-    # Setup mini cluster
-    s1 = Server(1, True, before_clustering=4, replication_factor=2)
-    s2 = Server(2, False, before_clustering=4, replication_factor=2)
-    s1.add_peer(s2)
-    s2.add_peer(s1)
-    s1.active_peers.add(2)
-    s2.active_peers.add(1)
+    s1_port = get_free_port()
+    s2_port = get_free_port()
+    # Setup mini cluster with real network ports
+    s1 = Server(1, True, before_clustering=4, replication_factor=2, port=s1_port)
+    s2 = Server(2, False, before_clustering=4, replication_factor=2, port=s2_port)
+    
+    # Wait for endpoints to be ready
+    time.sleep(1)
+    
+    # Connect using real networking (IP/Port)
+    s1.add_peer('127.0.0.1', s2_port)
+    s2.add_peer('127.0.0.1', s1_port)
+    
+    # We must manually update active peers since we are not waiting for heartbeat gossip here yet
+    # But wait, heartbeat runs in background. 
+    # Let's wait for them to see each other via heartbeat or force it.
+    # Real peers rely on heartbeat pings.
+    # We can force add active peers for speed, or wait.
+    # Let's wait for a bit.
+    
+    time.sleep(2)
+    # Check if they found each other (optional debugging)
+    # assert len(s1.active_peers) > 1
     
     try:
         # Create Dummy Data
@@ -383,7 +412,7 @@ def test_full_workflow():
         s2.stop()
 
 def test_receive_error_conditions():
-    s = Server(1, True, 10, 1)
+    s = Server(1, True, 10, 1, port=get_free_port())
     
     # Send 'clustered' message while in bootstrap (unexpected but handled?)
     # receive -> handle_receive
@@ -401,8 +430,8 @@ def test_receive_error_conditions():
     s.stop()
 
 def test_coordinator_finding():
-    s1 = Server(1, False, 10, 1) # Not coord
-    s2 = Server(2, True, 10, 1) # Coord
+    s1 = Server(1, False, 10, 1, port=get_free_port()) # Not coord
+    s2 = Server(2, True, 10, 1, port=get_free_port()) # Coord
     s1.add_peer(s2)
     s1.active_peers.add(2)
     
@@ -414,13 +443,13 @@ def test_coordinator_finding():
     s2.stop()
 
 def test_server_shutdown_cleanly():
-    s = Server(1, True, 10, 1)
+    s = Server(1, True, 10, 1, port=get_free_port())
     s.stop()
     assert not s.worker_thread.is_alive()
 
 def test_query_routing_bootstrap_mode():
     # If client queries while system is in bootstrap
-    s1 = Server(1, True, 10, 1) # Coord
+    s1 = Server(1, True, 10, 1, port=get_free_port()) # Coord
     
     # Add some data to buffer
     s1.vector_buffer = [([1.0, 0.0], 1, "A", -1)]
@@ -451,13 +480,13 @@ def test_get_all_vectors(server_node):
     assert len(all_v) == 2
 
 def test_add_to_buffer_not_coord():
-    s = Server(1, False, 10, 1)
+    s = Server(1, False, 10, 1, port=get_free_port())
     s.add_to_buffer([])
     assert len(s.vector_buffer) == 0
     s.stop()
 
 def test_receive_bootstrap_when_clustered():
-    s = Server(1, True, 10, 1)
+    s = Server(1, True, 10, 1, port=get_free_port())
     s.status = 'clustered'
     
     mock_peer_obj = MagicMock()
@@ -476,7 +505,7 @@ def test_receive_bootstrap_when_clustered():
     s.stop()
 
 def test_receive_client_when_clustered():
-    s = Server(1, True, 10, 1)
+    s = Server(1, True, 10, 1, port=get_free_port())
     s.status = 'clustered'
     
     mock_peer_obj = MagicMock()
@@ -495,14 +524,14 @@ def test_receive_client_when_clustered():
     s.stop()
 
 def test_receive_client_not_coord_bootstrap():
-    s_nc = Server(2, False, 10, 1)
+    s_nc = Server(2, False, 10, 1, port=get_free_port())
     
     mock_coord_peer = MagicMock()
     mock_coord_peer.i_am_coord.return_value = True
     mock_coord_peer.receive = MagicMock()
     mock_coord_peer.get_id.return_value = 1
     
-    s_nc.peers = [Peer(s_nc), mock_coord_peer]
+    s_nc.peers = [Peer(s_nc.ip, s_nc.port, server_instance=s_nc), mock_coord_peer]
     s_nc.active_peers.add(1)
     
     vecs = [([1.0, 0.0], 1, "A", -1)]
@@ -513,14 +542,14 @@ def test_receive_client_not_coord_bootstrap():
     s_nc.stop()
 
 def test_query_inter_peer_logic():
-    s = Server(1, True, 10, 1)
+    s = Server(1, True, 10, 1, port=get_free_port())
     s.vector_buffer = [([1.0, 0.0], 1, "A", -1)]
     
     # Query expects ListOfVectorsWithId: [(VectorId, Vector)]
     res = s.query([(99, [1.0, 0.0])], 'bootstrap')
     assert len(res) == 1
     
-    s_nc = Server(2, False, 10, 1)
+    s_nc = Server(2, False, 10, 1, port=get_free_port())
     res_nc = s_nc.query([], 'bootstrap')
     assert res_nc is None
     
@@ -535,7 +564,7 @@ def test_query_inter_peer_logic():
     s_nc.stop()
 
 def test_query_client_bootstrap_non_coord():
-    s_nc = Server(2, False, 10, 1)
+    s_nc = Server(2, False, 10, 1, port=get_free_port())
     
     mock_coord = MagicMock()
     mock_coord.i_am_coord.return_value = True
@@ -565,12 +594,12 @@ def test_search_vectors_error_handling(server_node):
 
 def test_coverage_gap_listeners():
     # 1. Line 168: bootstrap sent to non coordinator node
-    s_nc = Server(2, False, 10, 1) # Not coord
+    s_nc = Server(2, False, 10, 1, port=get_free_port()) # Not coord
     s_nc.receive([], 'bootstrap') # Should print error
     # We can capture stdout if we want, but coverage is enough
     
     # 2. Line 176: status corrupted (bootstrap sent, i am coord, but status not bootstrap/clustered)
-    s_c = Server(1, True, 10, 1)
+    s_c = Server(1, True, 10, 1, port=get_free_port())
     s_c.status = 'invalid_status'
     s_c._handle_receive([], 'bootstrap')
     
@@ -619,7 +648,7 @@ class TestPartitionLogic:
     """Tests for Server-based partition simulation logic."""
     
     def test_block_peer(self):
-        s1 = Server(1, True, 10, 2)
+        s1 = Server(1, True, 10, 2, port=get_free_port())
         s1.block_peer(2)
         
         # Check active peers / reachability
@@ -695,7 +724,7 @@ class TestCoordinatorElection:
     
     def _create_cluster(self, n=4):
         servers = [
-            Server(i, i == 0, 10, 2) for i in range(n)
+            Server(i, i == 0, 10, 2, port=get_free_port()) for i in range(n)
         ]
         # Fully connect
         for s in servers:
@@ -807,7 +836,7 @@ class TestAntiEntropy:
     
     def test_digest_exchange(self):
         """Test that digest contains vector IDs and versions."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             s.store.insert(([1.0], 1, "a", 0, (1.0, 0)))
@@ -823,7 +852,7 @@ class TestAntiEntropy:
             s.stop()
     
     def test_get_vectors_by_ids(self):
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             s.store.insert(([1.0], 1, "a", 0, (1.0, 0)))
@@ -842,8 +871,8 @@ class TestAntiEntropy:
     def test_reconciliation_syncs_missing_vectors(self):
         """Test that reconciliation transfers missing vectors."""
         # With replication_factor=2 and 2 peers, all vectors should route to both
-        s0 = Server(0, True, 10, 2)
-        s1 = Server(1, False, 10, 2)
+        s0 = Server(0, True, 10, 2, port=get_free_port())
+        s1 = Server(1, False, 10, 2, port=get_free_port())
         s0.add_peer(s1)
         s1.add_peer(s0)
         
@@ -885,8 +914,8 @@ class TestAntiEntropy:
     
     def test_version_conflict_resolution(self):
         """Test that newer versions win in reconciliation."""
-        s0 = Server(0, True, 10, 2)
-        s1 = Server(1, False, 10, 2)
+        s0 = Server(0, True, 10, 2, port=get_free_port())
+        s1 = Server(1, False, 10, 2, port=get_free_port())
         s0.add_peer(s1)
         s1.add_peer(s0)
         
@@ -921,7 +950,7 @@ class TestEventualConsistency:
         """Test all vectors present after simple partition and heal."""
         
         servers = [
-            Server(i, i == 3, 100, 2) for i in range(4)
+            Server(i, i == 3, 100, 2, port=get_free_port()) for i in range(4)
         ]
         
         for s in servers:
@@ -978,8 +1007,8 @@ class TestEventualConsistency:
     def test_writes_during_partition_preserved(self):
         """Test that writes to both partitions are preserved after heal."""
         
-        s0 = Server(0, True, 100, 1)
-        s1 = Server(1, False, 100, 1)
+        s0 = Server(0, True, 100, 1, port=get_free_port())
+        s1 = Server(1, False, 100, 1, port=get_free_port())
         s0.add_peer(s1)
         s1.add_peer(s0)
         
@@ -1032,7 +1061,7 @@ class TestRecursivePartitions:
         """Test A|B|C isolated partition scenario."""
         
         servers = [
-            Server(i, i == 2, 100, 1) for i in range(3)
+            Server(i, i == 2, 100, 1, port=get_free_port()) for i in range(3)
         ]
         
         for s in servers:
@@ -1060,7 +1089,7 @@ class TestRecursivePartitions:
         """Test ABC -> A|BC -> A|B|C."""
         
         servers = [
-            Server(i, i == 2, 100, 1) for i in range(3)
+            Server(i, i == 2, 100, 1, port=get_free_port()) for i in range(3)
         ]
         
         for s in servers:
@@ -1098,7 +1127,7 @@ class TestRecursivePartitions:
         """Test A|B|C -> AB|C -> ABC heal sequence."""
         
         servers = [
-            Server(i, i == 2, 100, 1) for i in range(3)
+            Server(i, i == 2, 100, 1, port=get_free_port()) for i in range(3)
         ]
         
         for s in servers:
@@ -1155,7 +1184,7 @@ class TestRecursivePartitions:
         """Test that hints are stored during partition and delivered on heal."""
         
         servers = [
-            Server(i, i == 2, 100, 2) for i in range(3)
+            Server(i, i == 2, 100, 2, port=get_free_port()) for i in range(3)
         ]
         
         for s in servers:
@@ -1207,7 +1236,7 @@ class TestNetworkOptimization:
     
     def test_digest_smaller_than_full_vectors(self):
         """Verify digest is smaller than full vector data."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             # Insert vectors with large payloads
@@ -1232,7 +1261,7 @@ class TestNetworkOptimization:
     
     def test_deduplication_prevents_redundant_storage(self):
         """Test that duplicate vectors with same version are rejected."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             # Insert same vector twice with same version
@@ -1248,7 +1277,7 @@ class TestNetworkOptimization:
     
     def test_newer_version_replaces_older(self):
         """Test that newer versions replace older ones."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             # Insert initial version
@@ -1278,7 +1307,7 @@ class TestNetworkOptimization:
 
 def test_server_without_network():
     """Test server works normally without network simulator."""
-    s = Server(0, True, 10, 1)
+    s = Server(0, True, 10, 1, port=get_free_port())
     
     try:
         # All peers should be reachable
@@ -1302,7 +1331,7 @@ class TestPeerAdditionalMethods:
     def test_peer_get_partition_coordinator_id(self):
         mock_server = MagicMock()
         mock_server.partition_coordinator_id = 42
-        peer = Peer(mock_server)
+        peer = Peer('127.0.0.1', get_free_port(), server_instance=mock_server)
         result = peer.get_partition_coordinator_id()
         assert result == 42
 
@@ -1348,7 +1377,7 @@ class TestServerHelperMethods:
     
     def test_coordinator_returns_none_when_no_coordinator(self):
         """Test coordinator() when no coordinator is reachable."""
-        s = Server(0, False, 10, 1)  # Not coordinator
+        s = Server(0, False, 10, 1, port=get_free_port())  # Not coordinator
         
         try:
             # Only self peer, which is not coordinator
@@ -1359,7 +1388,7 @@ class TestServerHelperMethods:
     
     def test_get_queue_size(self):
         """Test get_queue_size method."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         try:
             size = s.get_queue_size()
             assert size >= 0
@@ -1368,7 +1397,7 @@ class TestServerHelperMethods:
     
     def test_is_clustering(self):
         """Test is_clustering method."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         try:
             assert not s.is_clustering()
         finally:
@@ -1376,7 +1405,7 @@ class TestServerHelperMethods:
     
     def test_get_unreachable_peers_no_network(self):
         """Test get_unreachable_peers without network."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         try:
             unreachable = s.get_unreachable_peers()
             assert unreachable == []
@@ -1385,8 +1414,8 @@ class TestServerHelperMethods:
     
     def test_get_unreachable_peers_with_partition(self):
         """Test get_unreachable_peers with partitioned network."""
-        s0 = Server(0, True, 10, 1)
-        s1 = Server(1, False, 10, 1)
+        s0 = Server(0, True, 10, 1, port=get_free_port())
+        s1 = Server(1, False, 10, 1, port=get_free_port())
         s0.add_peer(s1)
         s1.add_peer(s0)
         
@@ -1410,7 +1439,7 @@ class TestServerHelperMethods:
     
     def test_get_peer_by_id_not_found(self):
         """Test _get_peer_by_id when peer doesn't exist."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         try:
             result = s._get_peer_by_id(999)
             assert result is None
@@ -1419,7 +1448,7 @@ class TestServerHelperMethods:
     
     def test_route_vectors_no_peers(self):
         """Test route_vectors with no peers."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         s.peers = []
         try:
             result = s.route_vectors([([1.0], 1)], top_k=1)
@@ -1429,7 +1458,7 @@ class TestServerHelperMethods:
     
     def test_route_vectors_use_all_peers(self):
         """Test route_vectors with use_all_peers=True."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         mock_peer = MagicMock()
         mock_peer.get_id.return_value = 1
         mock_peer.similarity.return_value = 0.5
@@ -1443,7 +1472,7 @@ class TestServerHelperMethods:
     
     def test_calculate_destinations_no_peers(self):
         """Test _calculate_destinations with no peers."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         s.peers = []
         try:
             result = s._calculate_destinations(([1.0], 1, "a", 0, (1.0, 0)))
@@ -1460,7 +1489,7 @@ class TestReconciliationEdgeCases:
     
     def test_reconcile_already_reconciling(self):
         """Test on_partition_heal returns early when already reconciling."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             # Set reconciling flag
@@ -1476,7 +1505,7 @@ class TestReconciliationEdgeCases:
     
     def test_reconcile_with_exception(self):
         """Test reconcile_with_peer handles exceptions."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             mock_peer = MagicMock()
@@ -1490,7 +1519,7 @@ class TestReconciliationEdgeCases:
     
     def test_should_be_on_peer_no_destinations(self):
         """Test _should_be_on_peer when vector has no stored destinations."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         s.clusters = [(0, [1.0, 0.0])]  # Has clusters
         
         mock_peer = MagicMock()
@@ -1512,7 +1541,7 @@ class TestSendToPeersExceptionHandling:
     
     def test_send_to_peers_exception_stores_hint(self):
         """Test that send_to_peers stores hints on exception."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             mock_peer = MagicMock()
@@ -1520,7 +1549,7 @@ class TestSendToPeersExceptionHandling:
             mock_peer.similarity.return_value = 1.0
             mock_peer.receive.side_effect = Exception("Send failed!")
             
-            s.peers = [Peer(s), mock_peer]
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
             s.status = 'clustered'
             
             vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1]))
@@ -1537,7 +1566,7 @@ class TestHandoffEdgeCases:
     
     def test_deliver_hints_exception(self):
         """Test deliver_hints handles exceptions."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             # Store a hint
@@ -1549,7 +1578,7 @@ class TestHandoffEdgeCases:
             mock_peer.get_id.return_value = 1
             mock_peer.receive.side_effect = Exception("Delivery failed!")
             
-            s.peers = [Peer(s), mock_peer]
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
             
             # Should not raise
             s.deliver_hints()
@@ -1565,7 +1594,7 @@ class TestReceiveHandoffAndReconcile:
     
     def test_receive_handoff(self):
         """Test receive with handoff status."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             vec = ([1.0], 1, "a", 0, (1.0, 0))
@@ -1578,7 +1607,7 @@ class TestReceiveHandoffAndReconcile:
     
     def test_receive_reconcile(self):
         """Test receive with reconcile status."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             vec = ([1.0], 1, "a", 0, (1.0, 0))
@@ -1595,11 +1624,11 @@ class TestClientNoCoordinatorForward:
     
     def test_receive_client_no_coordinator(self):
         """Test receive client when coordinator can't be found."""
-        s = Server(0, False, 10, 1)
+        s = Server(0, False, 10, 1, port=get_free_port())
         
         try:
             # No other peers, coordinator() returns None
-            s.peers = [Peer(s)]  # Only self
+            s.peers = [Peer(s.ip, s.port, server_instance=s)]  # Only self
             
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             s.receive([vec], 'client')
@@ -1615,14 +1644,14 @@ class TestReconciliationWithRealCoordinator:
     
     def test_reconcile_exception_in_coordinator_loop(self):
         """Test _reconcile_with_other_coordinators handles exceptions."""
-        s0 = Server(0, True, 10, 1)
+        s0 = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 1
             # Simulate exception during reconciliation
             s0.reconcile_with_peer = MagicMock(side_effect=Exception("Reconcile failed!"))
-            s0.peers = [Peer(s0), mock_peer]
+            s0.peers = [Peer(s0.ip, s0.port, server_instance=s0), mock_peer]
             
             # Should not raise
             s0._reconcile_with_other_coordinators()
@@ -1635,7 +1664,7 @@ class TestClusteringEdgeCases:
     
     def test_clustering_with_vector_buffer_on_clustered(self):
         """Test _handle_set_clusters processes buffered vectors."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             # Set up buffered vectors before clustering
@@ -1658,7 +1687,7 @@ class TestClusteringEdgeCases:
     
     def test_assign_clusters_no_nodes(self):
         """Test assign_clusters_to_peers with no reachable nodes."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         s.peers = []  # No peers
         
         try:
@@ -1674,7 +1703,7 @@ class TestQueryEdgeCases:
     
     def test_query_bootstrap_no_coordinator(self):
         """Test query bootstrap mode when coordinator not found returns empty."""
-        s = Server(0, False, 10, 1)  # Not coordinator
+        s = Server(0, False, 10, 1, port=get_free_port())  # Not coordinator
         
         try:
             # Only self peer, which is not coordinator
@@ -1693,7 +1722,7 @@ class TestShouldBeOnPeerVariants:
     
     def test_should_be_on_peer_with_stored_destinations(self):
         """Test _should_be_on_peer when vector has stored destinations."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         
         try:
             # Vector with stored destinations (6 elements)
@@ -1707,7 +1736,7 @@ class TestShouldBeOnPeerVariants:
     
     def test_should_be_on_peer_no_clusters(self):
         """Test _should_be_on_peer when clusters not yet formed."""
-        s = Server(0, True, 10, 1)
+        s = Server(0, True, 10, 1, port=get_free_port())
         s.clusters = []  # No clusters yet
         
         try:

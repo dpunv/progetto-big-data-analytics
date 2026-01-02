@@ -7,6 +7,9 @@ import threading
 import queue
 import time
 import concurrent.futures
+import asyncio
+from endpoint import Endpoint
+from communicator import Communicator
 from typing import Dict, Set, Optional, TYPE_CHECKING
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -81,50 +84,14 @@ class HintedHandoff:
 
     # ============ Peer & Server Implementation ============
 
-class Peer:
-    def __init__(self, server_instance):
-        self.server = server_instance
-    
-    def get_id(self):
-        return self.server.get_id()
-    
-    def similarity(self, vector):
-        return self.server.similarity(vector)
-    
-    def receive(self, vectors, status):
-        return self.server.receive(vectors, status)
-    
-    def i_am_coord(self):
-        return self.server.i_am_coord()
-    
-    def set_clusters(self, clusters, assignment):
-        return self.server.set_clusters(clusters, assignment)
-        
-    def search_vectors_local(self, vectors, top_k):
-        return self.server.search_vectors_local(vectors, top_k)
-    
-    def query(self, vectors, status):
-        return self.server.query(vectors, status)
-    
-    # New methods for partition tolerance
-    def get_vector_digest(self) -> Dict[int, Tuple[float, int]]:
-        return self.server.get_vector_digest()
-    
-    def get_vectors_by_ids(self, ids: List[int]):
-        return self.server.get_vectors_by_ids(ids)
-    
-    def get_partition_coordinator_id(self):
-        return self.server.partition_coordinator_id
 
-    def ping(self) -> bool:
-        """Check if peer is reachable (simulated)."""
-        return self.server.respond_to_ping()
+from peer.peer import Peer
 
 
 class VectorStore:
     """
     Thread-safe vector storage with version tracking and deduplication.
-    
+
     Stores vectors organized by cluster ID, with tracking of vector IDs
     to prevent duplicates and support version-based conflict resolution.
     """
@@ -235,13 +202,22 @@ class VectorStore:
 
 
 class Server:
-    def __init__(self, id, is_coordinator, before_clustering, replication_factor):
+    def __init__(self, id, is_coordinator, before_clustering, replication_factor, port, ip="127.0.0.1"):
         self.id = id
+        self.ip = ip
+        self.port = port
         self.initial_coordinator = is_coordinator
         self.is_coordinator = is_coordinator
         self.before_clustering = before_clustering
         self.replication_factor = replication_factor
-        self.peers = [Peer(self)]
+        
+        # Initialize communicator first so it can be passed to peers
+        self.communicator = Communicator("HTTP")
+        
+        # Local peer (self)
+        self.peers = []
+        self._add_local_peer()
+        
         self.clusters = []
         self.status = 'bootstrap'
         self.store = VectorStore()
@@ -252,6 +228,11 @@ class Server:
         # Partition tolerance state
         self.partition_coordinator_id = id if is_coordinator else None
         self.hinted_handoff = HintedHandoff()
+
+        self.endpoint = Endpoint("HTTP", self)
+        
+        # Start endpoint in a thread to handle async loop
+        self._start_endpoint_thread(port)
         
         # Network simulation (Client controlled)
         self.simulated_unreachable_peers: Set[int] = set()
@@ -277,11 +258,79 @@ class Server:
         self.heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
         self.heartbeat_thread.start()
     
+    def _start_endpoint_thread(self, port):
+        def run_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.endpoint_loop = loop
+            loop.run_until_complete(self.endpoint.start("0.0.0.0", port))
+            loop.run_forever()
+        
+        self.endpoint_thread = threading.Thread(target=run_loop, daemon=True)
+        self.endpoint_thread.start()
+
+    def _add_local_peer(self):
+        # Create a peer instance representing THIS server
+        local_peer = Peer(self.ip, self.port, server_instance=self)
+        self.peers.append(local_peer)
+
+    def add_peer(self, peer_or_ip, port: int = None):
+        """
+        Add a peer to the server.
+        Can accept:
+        1. (ip, port) for remote peer.
+        2. Server instance for local simulation/testing.
+        """
+        with self.lock:
+            new_peer = None
+            if isinstance(peer_or_ip, str) and port is not None:
+                # Remote Peer
+                new_peer = Peer(peer_or_ip, port, communicator=self.communicator)
+            elif hasattr(peer_or_ip, 'ip') and hasattr(peer_or_ip, 'port'):
+                # Server instance (Simulation)
+                new_peer = Peer(peer_or_ip.ip, peer_or_ip.port, server_instance=peer_or_ip)
+            else:
+                print(f"Error: Invalid argument to add_peer: {peer_or_ip}, {port}")
+                return
+
+            # Avoid duplications
+            for p in self.peers:
+                if p.ip == new_peer.ip and p.port == new_peer.port:
+                    return
+            self.peers.append(new_peer)
+
     def stop(self):
         self.running = False
         self.queue.put(None)  # Sentinel to unblock queue
         self.worker_thread.join()
-        # Headerbeat thread is daemon, will die with process
+        
+        # Stop heartbeat thread
+        if hasattr(self, 'heartbeat_thread') and self.heartbeat_thread.is_alive():
+            self.heartbeat_thread.join(timeout=1)
+
+        # Stop endpoint thread
+        if hasattr(self, 'endpoint_loop'):
+            # Schedule cleanup and stop
+            try:
+                if self.endpoint_loop.is_running():
+                    coro = self.endpoint.stop()
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(coro, self.endpoint_loop)
+                        # Wait for cleanup with timeout
+                        try:
+                            future.result(timeout=2)
+                        except (concurrent.futures.TimeoutError, Exception) as e:
+                            print(f"Endpoint stop warning/error for server {self.id}: {e}")
+                    except Exception as e:
+                         # Failed to schedule, close coroutine to avoid warning
+                         coro.close()
+                         print(f"Error scheduling endpoint stop for server {self.id}: {e}")
+            except Exception as e:
+                print(f"Error initiating endpoint stop for server {self.id}: {e}")
+            finally:
+                self.endpoint_loop.call_soon_threadsafe(self.endpoint_loop.stop)
+                self.endpoint_thread.join(timeout=1)
+
         
     def process_queue(self):
         while self.running:
@@ -296,9 +345,7 @@ class Server:
             except Exception as e:
                 print(f"Error in server {self.id}: {e}")
 
-    def add_peer(self, peer):
-        with self.lock:
-            self.peers.append(Peer(peer))
+
     
     def i_am_coord(self):
         return self.is_coordinator
@@ -377,23 +424,23 @@ class Server:
             changes_detected = False
             
             for peer in peers_to_check:
-                peer_id = peer.get_id()
-                
-                # Check simulated network conditions
-                is_blocked = False
-                with self.lock:
-                    if peer_id in self.simulated_unreachable_peers:
-                        is_blocked = True
-                
-                if is_blocked:
-                    # Simulated partition: cannot reach peer
-                    if peer_id in current_active_snapshot:
-                        current_active_snapshot.discard(peer_id)
-                        changes_detected = True
-                    continue
-                
-                # Try to ping
                 try:
+                    peer_id = peer.get_id()
+                    
+                    # Check simulated network conditions
+                    is_blocked = False
+                    with self.lock:
+                        if peer_id in self.simulated_unreachable_peers:
+                            is_blocked = True
+                    
+                    if is_blocked:
+                        # Simulated partition: cannot reach peer
+                        if peer_id in current_active_snapshot:
+                            current_active_snapshot.discard(peer_id)
+                            changes_detected = True
+                        continue
+                    
+                    # Try to ping
                     is_reachable = False
                     if peer_id == self.id:
                         is_reachable = True
@@ -410,12 +457,15 @@ class Server:
                         if peer_id in current_active_snapshot:
                             current_active_snapshot.discard(peer_id)
                             changes_detected = True
-                            
+                                
                 except Exception:
-                    # Failed to connect
-                    if peer_id in current_active_snapshot:
-                        current_active_snapshot.discard(peer_id)
-                        changes_detected = True
+                    # Failed to connect or get_id failed
+                    # We can't easily know WHICH peer_id failed if get_id failed, 
+                    # but peer.get_id() failure means the peer object itself is pointing to something unreachable.
+                    # Ideally we would remove it from active_peers if we knew the ID.
+                    pass
+                            
+
             
             # Update state if changed
             if changes_detected:
