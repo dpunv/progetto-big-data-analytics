@@ -7,6 +7,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 
 def generate_self_signed_cert(cert_path="server.crt", key_path="server.key"):
+    """
+    Generates a self-signed certificate for QUIC.
+    
+    :param cert_path: Path to save the certificate.
+    :param key_path: Path to save the private key.
+    """
     if os.path.exists(cert_path) and os.path.exists(key_path):
         return
 
@@ -17,10 +23,10 @@ def generate_self_signed_cert(cert_path="server.crt", key_path="server.key"):
     )
     
     subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COUNTRY_NAME, u"US"),
-        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"California"),
-        x509.NameAttribute(NameOID.LOCALITY_NAME, u"San Francisco"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"My Company"),
+        x509.NameAttribute(NameOID.COUNTRY_NAME, u"IT"),
+        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"Cosenza"),
+        x509.NameAttribute(NameOID.LOCALITY_NAME, u"Rende"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"DeMaCS"),
         x509.NameAttribute(NameOID.COMMON_NAME, u"localhost"),
     ])
     

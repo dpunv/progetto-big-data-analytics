@@ -307,12 +307,13 @@ class TestServerUnit:
 
 # --- Integration / Workflow Tests ---
 
-def test_full_workflow():
+@pytest.mark.parametrize("protocol", ["HTTP", "GRPC", "QUIC"])
+def test_full_workflow(protocol):
     s1_port = get_free_port()
     s2_port = get_free_port()
     # Setup mini cluster with real network ports
-    s1 = Server(1, True, before_clustering=4, replication_factor=2, port=s1_port)
-    s2 = Server(2, False, before_clustering=4, replication_factor=2, port=s2_port)
+    s1 = Server(1, True, before_clustering=4, replication_factor=2, port=s1_port, endpoint=protocol)
+    s2 = Server(2, False, before_clustering=4, replication_factor=2, port=s2_port, endpoint=protocol)
     
     # Wait for endpoints to be ready
     time.sleep(1)
@@ -442,8 +443,9 @@ def test_coordinator_finding():
     s1.stop()
     s2.stop()
 
-def test_server_shutdown_cleanly():
-    s = Server(1, True, 10, 1, port=get_free_port())
+@pytest.mark.parametrize("protocol", ["HTTP", "GRPC", "QUIC"])
+def test_server_shutdown_cleanly(protocol):
+    s = Server(1, True, 10, 1, port=get_free_port(), endpoint=protocol)
     s.stop()
     assert not s.worker_thread.is_alive()
 

@@ -11,6 +11,9 @@ from aioquic.quic.events import StreamDataReceived, QuicEvent
 from utils.cert_utils import generate_self_signed_cert
 
 class QUICServerProtocol(QuicConnectionProtocol):
+    """
+    QUIC protocol handler for server-side requests.
+    """
     def __init__(self, *args, **kwargs):
         # Extract server_instance from kwargs if passed (hacky way because aioquic factory)
         self.server_instance = kwargs.pop('server_instance', None)
@@ -28,6 +31,9 @@ class QUICServerProtocol(QuicConnectionProtocol):
                 self._handle_request(event.stream_id, data)
 
     def _handle_request(self, stream_id: int, data: bytes):
+        """
+        Deserializes the request, invokes the server method, and sends the response.
+        """
         try:
             payload = pickle.loads(data)
             method_name = payload.get('method')
@@ -39,7 +45,7 @@ class QUICServerProtocol(QuicConnectionProtocol):
             
             method = getattr(self.server_instance, method_name)
             
-            # Run method synchronously (or executor)
+            # Execute the method
             try:
                 if isinstance(args, (list, tuple)):
                     result = method(*args)
@@ -58,6 +64,9 @@ class QUICServerProtocol(QuicConnectionProtocol):
             print(f"QUIC Server Error: {e}")
 
 class QUICEndpoint(BaseEndpoint):
+    """
+    Endpoint implementation using QUIC protocol.
+    """
     def __init__(self, server_instance):
         super().__init__(server_instance)
         self.server_instance = server_instance

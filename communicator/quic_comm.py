@@ -9,6 +9,9 @@ from aioquic.quic.events import StreamDataReceived, QuicEvent
 from .base import BaseCommunicator
 
 class OneShotClientProtocol(QuicConnectionProtocol):
+    """
+    QUIC protocol handler for a single request-response cycle.
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._response_data = b""
@@ -22,11 +25,13 @@ class OneShotClientProtocol(QuicConnectionProtocol):
                 self._response_complete.set()
 
     async def query(self, query: str, args: tuple) -> Any:
-        # Create 'payload' consistent with other communicators?
-        # HTTP sends: {'args': args} and puts query in URL.
-        # Here we don't have URL, so we put method in payload.
-        # Wait, the server expects method dispatch.
-        # Let's send a dict: {'method': query, 'args': args}
+        """
+        Sends a query and waits for the response.
+
+        :param query: The method/query name.
+        :param args: Arguments for the query.
+        :return: The response from the server.
+        """
         
         payload = {'method': query, 'args': args}
         data = pickle.dumps(payload)
@@ -42,9 +47,6 @@ class OneShotClientProtocol(QuicConnectionProtocol):
         await self._response_complete.wait()
         
         # Deserialize response
-        # Expecting similar structure to HTTP which returns result directly or wrapped?
-        # HTTP returns {'status': ..., 'response': ...} wrapper from send(), 
-        # but the ENDPOINT returns bytes.
         
         try:
             return pickle.loads(self._response_data)
@@ -52,6 +54,9 @@ class OneShotClientProtocol(QuicConnectionProtocol):
             raise RuntimeError(f"Failed to deserialize response: {e}")
 
 class QUICCommunicator(BaseCommunicator):
+    """
+    Communicator implementation using QUIC protocol.
+    """
     def __init__(self):
         self.configuration = QuicConfiguration(
             is_client=True,
@@ -61,7 +66,6 @@ class QUICCommunicator(BaseCommunicator):
     async def send(self, ip: str, port: int, query: str, *args):
         try:
             # Connect to server
-            # NOTE: aioquic connect context manager handles closing
             async with connect(
                 ip, 
                 port, 
@@ -74,8 +78,6 @@ class QUICCommunicator(BaseCommunicator):
                 # Perform query
                 try:
                     result = await client.query(query, args)
-                    # Result from endpoint should be the return value of function.
-                    # BaseCommunicator expects: {'status': int, 'error': str, 'response': Any}
                     return {"status": 0, "error": None, "response": result}
                 except Exception as e:
                     return {"status": -1, "error": str(e), "response": None}

@@ -56,7 +56,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
 print("all batch sent")
 
 # Give some time for async processing on server side to complete
-time.sleep(60) 
+time.sleep(30) 
 
 # query a vector:
 query_vector = [vectors[0][0]]
