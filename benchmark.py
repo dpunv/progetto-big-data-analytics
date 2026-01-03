@@ -616,7 +616,7 @@ def run_suite(data_path: str, output_file: str, num_servers: int, replication_fa
     servers = []
     for i in range(num_servers):
         # Server with highest ID is initial coordinator
-        servers.append(sv.Server(i, i == num_servers - 1, num_vectors_before_clustering, replication_factor))
+        servers.append(sv.Server(i, i == num_servers - 1, num_vectors_before_clustering, replication_factor, port=8000+i, qdrant_url=":memory:"))
     
     # Register peers
     for server in servers:

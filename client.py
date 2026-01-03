@@ -15,18 +15,40 @@ with open('embeddings.json', 'r') as f:
 vectors = [(d['embedding'], d['text']) for d in data]
 print("data read")
 
+import os
+
 # configuration
-num_vectors = 32768
+num_vectors = 131072
 num_vectors_before_clustering = 8192
-num_servers = 3
-replication_factor = 2
+num_servers = 8
+replication_factor = 3
 batch_size = 512
+# Qdrant Storage Configuration
+# Options: ":memory:" for in-memory, or a local path (e.g., "./qdrant_data") for persistence.
+# qdrant_url = ":memory:" 
+base_qdrant_url = "./qdrant_data"
+# Override for previous hardcoded value
+# base_qdrant_url = ":memory:" 
 print("configuration defined")
+
+# Check for multi-node mode (env var set by run.py)
+multi_node_mode = os.environ.get("MULTI_NODE_MODE", "false").lower() == "true"
+if multi_node_mode:
+    print("Running in MULTI-NODE mode (separate Qdrant instances)")
+else:
+    print(f"Running in SINGLE-INSTANCE mode: {base_qdrant_url}")
 
 # create servers
 servers = []
 for i in range(num_servers):
-    servers.append(sv.Server(i, i==0, num_vectors_before_clustering, replication_factor, 8000+i))
+    if multi_node_mode:
+        # http://localhost:6333, 6335, ...
+        port = 6333 + (i * 2)
+        node_url = f"http://localhost:{port}"
+    else:
+        node_url = base_qdrant_url
+    
+    servers.append(sv.Server(i, i==0, num_vectors_before_clustering, replication_factor, port=8000+i, qdrant_url=node_url))
 print("servers started")
 
 # register peers
@@ -56,7 +78,16 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
 print("all batch sent")
 
 # Give some time for async processing on server side to complete
-time.sleep(30) 
+# Wait for queues to drain
+print("Waiting for servers to process all vectors...")
+while True:
+    total_queue = sum(s.get_queue_size() for s in servers)
+    clustering = any(s.is_clustering() for s in servers)
+    if total_queue == 0 and not clustering:
+        break
+    print(f"\rQueue size: {total_queue} (Clustering: {clustering})", end="")
+    time.sleep(1)
+print("\nProcessing complete")
 
 # query a vector:
 query_vector = [vectors[0][0]]

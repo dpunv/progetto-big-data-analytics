@@ -121,11 +121,17 @@ def cluster_setup():
     # Must be small enough to trigger clustering quickly with test data
     vectors_before_clustering = 10 
     
+    import qdrant_module
+    
     servers = []
     for i in range(num_servers):
+        # Clean up stale collections from previous runs
+        qdrant_module.delete_collection(":memory:", f"node_{i}_vectors")
+        
         # Last server determines initial coordinator
         is_coord = (i == num_servers - 1)
-        s = Server(i, is_coord, vectors_before_clustering, replication_factor)
+        # Use :memory: Qdrant for integration tests
+        s = Server(i, is_coord, vectors_before_clustering, replication_factor, qdrant_url=":memory:")
         servers.append(s)
         
     # Fully connect
@@ -140,6 +146,8 @@ def cluster_setup():
     
     for s in servers:
         s.stop()
+        # Clean up after test
+        qdrant_module.delete_collection(":memory:", f"node_{s.id}_vectors")
 
 def wait_for_network_convergence(servers, timeout=30):
     """Wait for all servers to see each other as active."""
@@ -201,7 +209,11 @@ def test_partition_tolerance_with_verification(cluster_setup):
     for i in range(total_vectors):
         # Evenly spread around the circle to maximize distinctness
         alpha = 2 * np.pi * i / total_vectors
-        vec = [np.sin(alpha), np.cos(alpha)] 
+        # Create 384-dim vector to match Server default
+        vec = np.zeros(384)
+        vec[0] = np.sin(alpha)
+        vec[1] = np.cos(alpha)
+        vec = vec.tolist() 
         payload = f"vec_{i}"
         data.append((vec, payload))
         

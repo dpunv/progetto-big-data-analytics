@@ -12,3 +12,6 @@ benchmark_report.txt
 *.pem
 *.key
 *.crt
+
+compose.yml
+compose.yaml
