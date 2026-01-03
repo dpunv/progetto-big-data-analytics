@@ -6,19 +6,13 @@ import numpy as np
 import threading
 import queue
 import time
-import itertools
-import heapq
-from compound_types import *
-from sklearn.cluster import KMeans
-import numpy as np
-import threading
-import queue
-import time
 import concurrent.futures
 from typing import Dict, Set, Optional, TYPE_CHECKING
 from cluster_index import ClusterIndex
 import qdrant_module
 from qdrant_module import GLOBAL_LOCK
+from qdrant_client import models
+
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     # Optimized to handle both lists and numpy arrays without redundant conversion
@@ -246,24 +240,25 @@ class VectorStore:
 
     def insert_batch(self, vectors) -> int:
         """Insert multiple vectors. Returns number of successes."""
-        count = 0
-        for v in vectors:
-            if self.insert(v):
-                count += 1
-        return count
+        with self.lock:
+            count = 0
+            for v in vectors:
+                if self.insert(v):
+                    count += 1
+            return count
 
 
 class QdrantVectorStore:
     """
     Qdrant-backed vector storage.
     """
-    def __init__(self, url, collection_name):
+    def __init__(self, url, collection_name, vector_dim):
         self.url = url
         self.collection_name = collection_name
         self.lock = threading.RLock()
         self.collection_created = False
-        # Force strict creation for debugging (assuming dim 384 from standard embeddings)
-        self._ensure_collection(384)
+        
+        self._ensure_collection(vector_dim)
 
     def _ensure_collection(self, vector_dim):
         if not self.collection_created:
@@ -347,7 +342,6 @@ class QdrantVectorStore:
             # Let's call client.upload_points directly here since I have logic.
             # Or use qdrant_module.get_client
             
-            from qdrant_client import models
             client = qdrant_module.get_client(self.url)
             
             point = models.PointStruct(
@@ -361,7 +355,6 @@ class QdrantVectorStore:
                 points=[point],
                 wait=True
             )
-            return True
             return True
 
     def insert_batch(self, vectors) -> int:
@@ -532,7 +525,7 @@ class QdrantVectorStore:
 
 
 class Server:
-    def __init__(self, id, is_coordinator, before_clustering, replication_factor, qdrant_url=None):
+    def __init__(self, id, is_coordinator, before_clustering, replication_factor, qdrant_url=None, vector_dim=384):
         self.id = id
         self.initial_coordinator = is_coordinator
         self.is_coordinator = is_coordinator
@@ -543,7 +536,7 @@ class Server:
         self.status = 'bootstrap'
         self.qdrant_url = qdrant_url
         if qdrant_url:
-            self.store = QdrantVectorStore(qdrant_url, f"node_{id}_vectors")
+            self.store = QdrantVectorStore(qdrant_url, f"node_{id}_vectors", vector_dim)
         else:
             self.store = VectorStore()
         self.vector_id = 0
