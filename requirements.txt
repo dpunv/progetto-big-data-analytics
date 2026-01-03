@@ -6,3 +6,7 @@ grpcio-tools
 protobuf
 aiohttp
 cryptography
+aiohttp-cors
+requests
+qdrant-client
+pytest

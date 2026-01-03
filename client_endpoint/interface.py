@@ -3,6 +3,8 @@ import asyncio
 import json
 import logging
 
+import aiohttp_cors
+
 class ClientEndpoint:
     """
     HTTP Endpoint for external Clients to interact with the Server.
@@ -10,13 +12,23 @@ class ClientEndpoint:
     """
     def __init__(self, server_instance):
         self.server = server_instance
-        self.app = web.Application()
+        # Increase max request size to 100MB to handle large vector batches
+        self.app = web.Application(client_max_size=100 * 1024 * 1024)
         self.runner = None
         self.site = None
         
-        # Define routes
-        self.app.router.add_post('/add', self.handle_add)
-        self.app.router.add_post('/query', self.handle_query)
+        # Configure CORS
+        cors = aiohttp_cors.setup(self.app, defaults={
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+            )
+        })
+        
+        # Define routes with CORS
+        cors.add(self.app.router.add_post('/add', self.handle_add))
+        cors.add(self.app.router.add_post('/query', self.handle_query))
     
     async def start(self, ip: str, port: int):
         self.runner = web.AppRunner(self.app)
