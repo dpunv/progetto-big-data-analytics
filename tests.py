@@ -136,6 +136,36 @@ class TestPeer:
         
         peer.query([], 'status')
         mock_server.query.assert_called_once_with([], 'status')
+    
+    def test_peer_delegation_additional_methods(self):
+        """Test delegation of additional Peer methods."""
+        mock_server = MagicMock()
+        mock_server.partition_coordinator_id = 42
+        mock_server.respond_to_ping.return_value = True
+        mock_server.get_vector_digest.return_value = {1: (1.0, 0)}
+        mock_server.get_vectors_by_ids.return_value = []
+        
+        peer = Peer('127.0.0.1', get_free_port(), server_instance=mock_server)
+        
+        # Test get_vector_digest
+        result = peer.get_vector_digest()
+        mock_server.get_vector_digest.assert_called_once()
+        assert result == {1: (1.0, 0)}
+        
+        # Test get_vectors_by_ids
+        result = peer.get_vectors_by_ids([1, 2])
+        mock_server.get_vectors_by_ids.assert_called_once_with([1, 2])
+        
+        # Test get_partition_coordinator_id
+        result = peer.get_partition_coordinator_id()
+        assert result == 42
+        
+        # Test ping
+        result = peer.ping()
+        mock_server.respond_to_ping.assert_called_once()
+        assert result == True
+
+
 
 class TestServerUnit:
     # server_node fixture is now global
@@ -1767,3 +1797,820 @@ class TestShouldBeOnPeerVariants:
             assert s._should_be_on_peer(vec, 1) == True
         finally:
             s.stop()
+
+
+# ==================== ClusterIndex Tests ====================
+
+from cluster_index import ClusterIndex
+import numpy as np
+
+
+class TestClusterIndex:
+    """Tests for ClusterIndex class to improve coverage."""
+    
+    def test_build_empty_clusters(self):
+        """Test build() with empty cluster list triggers warning."""
+        ci = ClusterIndex(dimension=2)
+        ci.build([])  # Should log warning and return early
+        assert ci.hnsw_index is None
+    
+    def test_build_valid_clusters(self):
+        """Test build() with valid clusters creates HNSW index."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [
+            (0, [1.0, 0.0]),
+            (1, [0.0, 1.0]),
+            (2, [1.0, 1.0])
+        ]
+        ci.build(clusters)
+        
+        assert ci.hnsw_index is not None
+        assert ci.hnsw_index.element_count == 3
+    
+    def test_build_with_invalid_cluster_id(self):
+        """Test build() handles non-integer cluster IDs gracefully."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [
+            ("invalid_string", [1.0, 0.0]),  # Non-integer ID
+            (1, [0.0, 1.0])  # Valid
+        ]
+        ci.build(clusters)
+        
+        # Should have only 1 valid item
+        assert ci.hnsw_index.element_count == 1
+    
+    def test_build_all_invalid_ids(self):
+        """Test build() with all invalid IDs triggers warning."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [
+            ("invalid1", [1.0, 0.0]),
+            ("invalid2", [0.0, 1.0])
+        ]
+        ci.build(clusters)
+        # No valid items added
+        assert ci.hnsw_index.element_count == 0
+    
+    def test_find_nearest_clusters_no_index(self):
+        """Test find_nearest_clusters() without built index returns empty."""
+        ci = ClusterIndex(dimension=2)
+        result = ci.find_nearest_clusters([1.0, 0.0], k=3)
+        assert result == []
+    
+    def test_find_nearest_clusters_k_greater_than_count(self):
+        """Test find_nearest_clusters() adjusts k when greater than element count."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
+        ci.build(clusters)
+        
+        # Request k=10 but only 2 elements
+        result = ci.find_nearest_clusters([1.0, 0.0], k=10)
+        assert len(result) == 2
+    
+    def test_find_nearest_clusters_k_zero(self):
+        """Test find_nearest_clusters() with k=0 returns empty."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
+        ci.build(clusters)
+        
+        result = ci.find_nearest_clusters([1.0, 0.0], k=0)
+        assert result == []
+    
+    def test_find_nearest_clusters_ef_adjustment(self):
+        """Test find_nearest_clusters() adjusts ef when k > ef."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [(i, [float(i), float(i)]) for i in range(100)]
+        ci.build(clusters)
+        
+        # Set ef low, then request higher k
+        ci.hnsw_index.set_ef(10)
+        result = ci.find_nearest_clusters([50.0, 50.0], k=20)
+        
+        # ef should have been adjusted
+        assert ci.hnsw_index.ef >= 20
+        assert len(result) == 20
+    
+    def test_find_nearest_clusters_returns_correct_ids(self):
+        """Test find_nearest_clusters() returns correct cluster IDs."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [
+            (0, [1.0, 0.0]),
+            (1, [0.0, 1.0]),
+            (2, [0.5, 0.5])
+        ]
+        ci.build(clusters)
+        
+        # Query for [1.0, 0.0] should return cluster 0 first
+        result = ci.find_nearest_clusters([1.0, 0.0], k=1)
+        assert result[0] == 0
+    
+    def test_search_batch_no_index(self):
+        """Test search_batch() without built index returns empty."""
+        ci = ClusterIndex(dimension=2)
+        query = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        result = ci.search_batch(query, k=1)
+        assert result == []
+    
+    def test_search_batch_k_greater_than_count(self):
+        """Test search_batch() adjusts k when greater than element count."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
+        ci.build(clusters)
+        
+        query = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        result = ci.search_batch(query, k=10)
+        
+        assert len(result) == 2
+        assert len(result[0]) == 2  # Adjusted to element count
+    
+    def test_search_batch_k_zero(self):
+        """Test search_batch() with k=0 returns empty lists."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
+        ci.build(clusters)
+        
+        query = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        result = ci.search_batch(query, k=0)
+        
+        assert len(result) == 2
+        assert result[0] == []
+        assert result[1] == []
+    
+    def test_search_batch_ef_adjustment(self):
+        """Test search_batch() adjusts ef when k > ef."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [(i, [float(i), float(i)]) for i in range(100)]
+        ci.build(clusters)
+        
+        ci.hnsw_index.set_ef(5)
+        query = np.array([[50.0, 50.0]], dtype=np.float32)
+        result = ci.search_batch(query, k=15)
+        
+        assert ci.hnsw_index.ef >= 15
+        assert len(result[0]) == 15
+    
+    def test_to_serializable_no_index(self):
+        """Test to_serializable() without built index."""
+        ci = ClusterIndex(dimension=2, max_clusters=100, ef_construction=100, M=8)
+        data = ci.to_serializable()
+        
+        assert data['dimension'] == 2
+        assert data['max_clusters'] == 100
+        assert data['ef_construction'] == 100
+        assert data['M'] == 8
+        assert data['index_data'] is None
+    
+    def test_to_serializable_with_index(self):
+        """Test to_serializable() with built index."""
+        ci = ClusterIndex(dimension=2)
+        clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
+        ci.build(clusters)
+        
+        data = ci.to_serializable()
+        
+        assert data['index_data'] is not None
+        assert isinstance(data['index_data'], str)  # Base64 string
+    
+    def test_from_serializable_no_index(self):
+        """Test from_serializable() without index data."""
+        data = {
+            'dimension': 2,
+            'max_clusters': 100,
+            'ef_construction': 100,
+            'M': 8,
+            'index_data': None
+        }
+        ci = ClusterIndex.from_serializable(data)
+        
+        assert ci.dimension == 2
+        assert ci.max_clusters == 100
+        assert ci.hnsw_index is None
+    
+    def test_from_serializable_with_index(self):
+        """Test from_serializable() with valid index data."""
+        # Create and serialize
+        ci1 = ClusterIndex(dimension=2)
+        clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
+        ci1.build(clusters)
+        data = ci1.to_serializable()
+        
+        # Deserialize
+        ci2 = ClusterIndex.from_serializable(data)
+        
+        assert ci2.hnsw_index is not None
+        assert ci2.hnsw_index.element_count == 2
+    
+    def test_from_serializable_invalid_data(self):
+        """Test from_serializable() handles corrupt index data."""
+        data = {
+            'dimension': 2,
+            'max_clusters': 100,
+            'ef_construction': 100,
+            'M': 8,
+            'index_data': 'invalid_base64_data_that_is_not_a_valid_pickle'
+        }
+        
+        # Should not raise, but log error and leave index as None
+        ci = ClusterIndex.from_serializable(data)
+        assert ci.hnsw_index is None
+
+
+# ==================== QdrantModule Tests ====================
+
+import qdrant_module
+import os
+import tempfile
+
+
+class TestQdrantModule:
+    """Tests for qdrant_module functions to improve coverage."""
+    
+    def test_get_collection_name(self):
+        """Test get_collection_name() concatenates name and cluster."""
+        result = qdrant_module.get_collection_name("test_collection", 5)
+        assert result == "test_collection_5"
+    
+    def test_get_client_memory(self):
+        """Test get_client() with :memory: URL."""
+        client = qdrant_module.get_client(":memory:")
+        assert client is not None
+        # Clear cache for test isolation
+        qdrant_module._client_cache.clear()
+    
+    def test_get_client_caching(self):
+        """Test get_client() returns cached client."""
+        qdrant_module._client_cache.clear()
+        
+        client1 = qdrant_module.get_client(":memory:")
+        client2 = qdrant_module.get_client(":memory:")
+        
+        assert client1 is client2
+        qdrant_module._client_cache.clear()
+    
+    def test_create_collection_already_exists(self):
+        """Test create_collection() when collection exists."""
+        url = ":memory:"
+        collection = "test_exists"
+        
+        # Create first time
+        result1 = qdrant_module.create_collection(url, collection, 2)
+        assert result1 == True
+        
+        # Create again - should detect exists and return True
+        result2 = qdrant_module.create_collection(url, collection, 2)
+        assert result2 == True
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_create_collection_different_distances(self):
+        """Test create_collection() with different distance metrics."""
+        url = ":memory:"
+        
+        qdrant_module.create_collection(url, "test_cosine", 2, "Cosine")
+        qdrant_module.create_collection(url, "test_euclid", 2, "Euclid")
+        qdrant_module.create_collection(url, "test_dot", 2, "Dot")
+        qdrant_module.create_collection(url, "test_unknown", 2, "Unknown")  # Falls back to Cosine
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_delete_collection_success(self):
+        """Test delete_collection() success case."""
+        url = ":memory:"
+        collection = "test_delete"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        result = qdrant_module.delete_collection(url, collection)
+        
+        assert result == True
+        qdrant_module._client_cache.clear()
+    
+    def test_delete_collection_nonexistent(self):
+        """Test delete_collection() for non-existent collection - Qdrant doesn't throw."""
+        url = ":memory:"
+        
+        # Qdrant's delete_collection doesn't throw on non-existent, just returns True
+        # This test verifies the function handles both cases
+        result = qdrant_module.delete_collection(url, "nonexistent_collection")
+        # In-memory Qdrant returns True even for non-existent collections
+        assert result == True
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_and_count(self):
+        """Test insert_vectors() and count()."""
+        url = ":memory:"
+        collection = "test_insert"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        
+        vectors = [
+            ([1.0, 0.0], 1, "payload_a", 0),
+            ([0.0, 1.0], 2, "payload_b", 0)
+        ]
+        
+        result = qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
+        assert result == True
+        
+        count_result = qdrant_module.count(url, collection)
+        assert count_result == 2
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_count_nonexistent_collection(self):
+        """Test count() on non-existent collection returns 0."""
+        url = ":memory:"
+        
+        result = qdrant_module.count(url, "nonexistent")
+        assert result == 0
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_retrieve_vector_success(self):
+        """Test retrieve_vector() success case."""
+        url = ":memory:"
+        collection = "test_retrieve"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        vectors = [([1.0, 0.0], 1, "payload_a", 0)]
+        qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
+        
+        result = qdrant_module.retrieve_vector(url, collection, 1)
+        assert result is not None
+        assert result.id == 1
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_retrieve_vector_not_found(self):
+        """Test retrieve_vector() returns None when not found."""
+        url = ":memory:"
+        collection = "test_retrieve_none"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        
+        result = qdrant_module.retrieve_vector(url, collection, 999)
+        assert result is None
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_retrieve_vector_error(self):
+        """Test retrieve_vector() handles errors."""
+        url = ":memory:"
+        
+        result = qdrant_module.retrieve_vector(url, "nonexistent", 1)
+        assert result is None
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_delete_vector_success(self):
+        """Test delete_vector() success case."""
+        url = ":memory:"
+        collection = "test_delete_vec"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        vectors = [([1.0, 0.0], 1, "payload_a", 0)]
+        qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
+        
+        result = qdrant_module.delete_vector(url, collection, 1)
+        assert result == True
+        
+        # Verify deleted
+        count = qdrant_module.count(url, collection)
+        assert count == 0
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_delete_vector_error(self):
+        """Test delete_vector() handles errors."""
+        url = ":memory:"
+        
+        result = qdrant_module.delete_vector(url, "nonexistent", 1)
+        assert result == False
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_get_all_vectors(self):
+        """Test get_all_vectors() retrieves all with pagination."""
+        url = ":memory:"
+        collection = "test_scroll"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        
+        # Insert multiple vectors
+        vectors = [([float(i), float(i)], i, f"payload_{i}", 0) for i in range(5)]
+        qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
+        
+        result = qdrant_module.get_all_vectors(url, collection)
+        assert len(result) == 5
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_get_all_vectors_error(self):
+        """Test get_all_vectors() handles errors."""
+        url = ":memory:"
+        
+        result = qdrant_module.get_all_vectors(url, "nonexistent")
+        assert result == []
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_query_vectors(self):
+        """Test query_vectors() returns results."""
+        url = ":memory:"
+        collection = "test_query"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        vectors = [
+            ([1.0, 0.0], 1, "A", 0),
+            ([0.0, 1.0], 2, "B", 0),
+            ([0.5, 0.5], 3, "C", 0)
+        ]
+        qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
+        
+        query = [([1.0, 0.0], 0)]  # Query with cluster_id
+        results = qdrant_module.query_vectors(url, collection, query, topk=2)
+        
+        assert len(results) > 0
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_query_vectors_error(self):
+        """Test query_vectors() handles errors."""
+        url = ":memory:"
+        
+        query = [([1.0, 0.0], 0)]
+        results = qdrant_module.query_vectors(url, "nonexistent", query, topk=2)
+        
+        assert results == []
+        qdrant_module._client_cache.clear()
+    
+    def test_get_client_local_path(self):
+        """Test get_client() with local file path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = os.path.join(tmpdir, "qdrant_data")
+            
+            client = qdrant_module.get_client(local_path)
+            assert client is not None
+            
+            qdrant_module._client_cache.clear()
+    
+    def test_query_vectors_generic(self):
+        """Test query_vectors_generic() groups queries by cluster and routes correctly."""
+        url = ":memory:"
+        base_collection = "test_generic_query"
+        
+        # Create collections for different clusters
+        qdrant_module.create_collection(url, qdrant_module.get_collection_name(base_collection, 0), 2)
+        qdrant_module.create_collection(url, qdrant_module.get_collection_name(base_collection, 1), 2)
+        
+        # Insert vectors into different cluster collections
+        vectors_c0 = [([1.0, 0.0], 1, "A", 0)]
+        vectors_c1 = [([0.0, 1.0], 2, "B", 1)]
+        
+        qdrant_module.insert_vectors(url, qdrant_module.get_collection_name(base_collection, 0), vectors_c0, batch_size_retry=1)
+        qdrant_module.insert_vectors(url, qdrant_module.get_collection_name(base_collection, 1), vectors_c1, batch_size_retry=1)
+        
+        # Query spanning multiple clusters
+        # query format: [(vector, cluster_id), ...]
+        queries = [([1.0, 0.0], 0), ([0.0, 1.0], 1)]
+        
+        results = qdrant_module.query_vectors_generic(url, base_collection, queries, topk=1)
+        
+        assert len(results) > 0
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_vectors_generic(self):
+        """Test insert_vectors_generic() groups vectors by cluster and inserts correctly."""
+        url = ":memory:"
+        base_collection = "test_generic_insert"
+        
+        # Create collections for different clusters
+        qdrant_module.create_collection(url, qdrant_module.get_collection_name(base_collection, 0), 2)
+        qdrant_module.create_collection(url, qdrant_module.get_collection_name(base_collection, 1), 2)
+        
+        # Vectors with different cluster IDs
+        vectors = [
+            ([1.0, 0.0], 1, "A", 0),  # cluster 0
+            ([0.0, 1.0], 2, "B", 1),  # cluster 1
+            ([0.5, 0.5], 3, "C", 0),  # cluster 0
+        ]
+        
+        qdrant_module.insert_vectors_generic(url, base_collection, vectors, batch_size_retry=1)
+        
+        # Verify counts in each cluster collection
+        count_c0 = qdrant_module.count(url, qdrant_module.get_collection_name(base_collection, 0))
+        count_c1 = qdrant_module.count(url, qdrant_module.get_collection_name(base_collection, 1))
+        
+        assert count_c0 == 2
+        assert count_c1 == 1
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_batch_size_adjustment(self):
+        """Test insert_vectors() with batch_size smaller than vector count."""
+        url = ":memory:"
+        collection = "test_batch_size"
+        
+        qdrant_module.create_collection(url, collection, 2)
+        
+        # Insert many vectors with small batch size
+        vectors = [([float(i), float(i)], i, f"payload_{i}", 0) for i in range(10)]
+        
+        # batch_size=3 is smaller than vector count, so effective_batch_size will be 3
+        result = qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1, batch_size=3)
+        assert result == True
+        
+        count = qdrant_module.count(url, collection)
+        assert count == 10
+        
+        qdrant_module._client_cache.clear()
+
+
+
+
+# ==================== Peer Remote Call Tests ====================
+
+from peer.peer import Peer
+import asyncio
+
+
+class TestPeerRemoteCalls:
+    """Tests for Peer class remote call methods to improve coverage."""
+    
+    def test_peer_no_communicator_raises(self):
+        """Test _remote_call() raises when no communicator set."""
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=None)
+        
+        with pytest.raises(Exception) as exc_info:
+            peer._remote_call("get_id")
+        
+        assert "No communicator" in str(exc_info.value)
+    
+    def test_peer_remote_call_success(self):
+        """Test _remote_call() with successful response."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": 42}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer._remote_call("get_id")
+        
+        assert result == 42
+    
+    def test_peer_remote_call_failure(self):
+        """Test _remote_call() raises on failed response status."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": -1, "error": "Connection refused", "response": None}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        
+        with pytest.raises(Exception) as exc_info:
+            peer._remote_call("get_id")
+        
+        assert "Connection refused" in str(exc_info.value)
+    
+    def test_peer_get_id_remote(self):
+        """Test get_id() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": 123}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.get_id()
+        
+        assert result == 123
+    
+    def test_peer_similarity_remote(self):
+        """Test similarity() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": 0.95}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.similarity([1.0, 0.0])
+        
+        assert result == 0.95
+    
+    def test_peer_receive_remote(self):
+        """Test receive() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": None}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.receive([([1.0], 1, "a", 0)], "client")
+        
+        assert result is None
+    
+    def test_peer_i_am_coord_remote(self):
+        """Test i_am_coord() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": True}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.i_am_coord()
+        
+        assert result == True
+    
+    def test_peer_set_clusters_remote(self):
+        """Test set_clusters() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": None}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.set_clusters({0: {'center': [1.0], 'members': []}}, [(0, [1.0])])
+        
+        assert result is None
+    
+    def test_peer_search_vectors_local_remote(self):
+        """Test search_vectors_local() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": [([1.0], 1, "a", 0.99)]}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.search_vectors_local([([1.0], 1)], 5)
+        
+        assert len(result) == 1
+    
+    def test_peer_query_remote(self):
+        """Test query() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": []}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.query([([1.0], 1)], "client")
+        
+        assert result == []
+    
+    def test_peer_get_vector_digest_remote(self):
+        """Test get_vector_digest() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": {1: (1.0, 0)}}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.get_vector_digest()
+        
+        assert 1 in result
+    
+    def test_peer_get_vectors_by_ids_remote(self):
+        """Test get_vectors_by_ids() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": []}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.get_vectors_by_ids([1, 2, 3])
+        
+        assert result == []
+    
+    def test_peer_get_partition_coordinator_id_remote(self):
+        """Test get_partition_coordinator_id() for remote peer."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": 5}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.get_partition_coordinator_id()
+        
+        assert result == 5
+    
+    def test_peer_ping_local(self):
+        """Test ping() for local peer."""
+        mock_server = MagicMock()
+        mock_server.respond_to_ping.return_value = True
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=mock_server)
+        result = peer.ping()
+        
+        assert result == True
+        mock_server.respond_to_ping.assert_called_once()
+    
+    def test_peer_ping_remote_success(self):
+        """Test ping() for remote peer - success."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            return {"status": 0, "error": None, "response": True}
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.ping()
+        
+        assert result == True
+    
+    def test_peer_ping_remote_exception(self):
+        """Test ping() for remote peer - returns False on exception."""
+        mock_comm = MagicMock()
+        
+        async def mock_send(*args):
+            raise Exception("Network error")
+        
+        mock_comm.send = mock_send
+        
+        peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=mock_comm)
+        result = peer.ping()
+        
+        assert result == False
+    
+    def test_peer_is_local(self):
+        """Test is_local() method."""
+        local_peer = Peer('127.0.0.1', 9999, server_instance=MagicMock())
+        remote_peer = Peer('127.0.0.1', 9999, server_instance=None, communicator=MagicMock())
+        
+        assert local_peer.is_local() == True
+        assert remote_peer.is_local() == False
+
+
+# ==================== CertUtils Tests ====================
+
+from utils.cert_utils import generate_self_signed_cert
+
+
+class TestCertUtils:
+    """Tests for cert_utils module to improve coverage."""
+    
+    def test_generate_cert_creates_files(self):
+        """Test generate_self_signed_cert() creates cert and key files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = os.path.join(tmpdir, "test.crt")
+            key_path = os.path.join(tmpdir, "test.key")
+            
+            generate_self_signed_cert(cert_path=cert_path, key_path=key_path)
+            
+            assert os.path.exists(cert_path)
+            assert os.path.exists(key_path)
+            
+            # Verify files have content
+            with open(cert_path, 'rb') as f:
+                cert_content = f.read()
+            with open(key_path, 'rb') as f:
+                key_content = f.read()
+            
+            assert b"CERTIFICATE" in cert_content
+            assert b"PRIVATE KEY" in key_content
+    
+    def test_generate_cert_skips_if_exists(self):
+        """Test generate_self_signed_cert() skips when files already exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = os.path.join(tmpdir, "test.crt")
+            key_path = os.path.join(tmpdir, "test.key")
+            
+            # Create dummy files
+            with open(cert_path, 'w') as f:
+                f.write("existing cert")
+            with open(key_path, 'w') as f:
+                f.write("existing key")
+            
+            # Get modification times
+            cert_mtime_before = os.path.getmtime(cert_path)
+            key_mtime_before = os.path.getmtime(key_path)
+            
+            # Call function - should skip
+            generate_self_signed_cert(cert_path=cert_path, key_path=key_path)
+            
+            # Verify files were not modified
+            cert_mtime_after = os.path.getmtime(cert_path)
+            key_mtime_after = os.path.getmtime(key_path)
+            
+            assert cert_mtime_before == cert_mtime_after
+            assert key_mtime_before == key_mtime_after

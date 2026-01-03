@@ -131,7 +131,7 @@ def cluster_setup():
         # Last server determines initial coordinator
         is_coord = (i == num_servers - 1)
         # Use :memory: Qdrant for integration tests
-        s = Server(i, is_coord, vectors_before_clustering, replication_factor, qdrant_url=":memory:")
+        s = Server(i, is_coord, vectors_before_clustering, replication_factor, port=8000+i, qdrant_url=":memory:")
         servers.append(s)
         
     # Fully connect
