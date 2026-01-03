@@ -15,6 +15,9 @@ from cluster_index import ClusterIndex
 import qdrant_module
 from qdrant_module import GLOBAL_LOCK
 from qdrant_client import models
+from client_endpoint.interface import ClientEndpoint
+import argparse
+import sys
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -492,7 +495,7 @@ class QdrantVectorStore:
 
 
 class Server:
-    def __init__(self, id, is_coordinator, before_clustering, replication_factor, port, ip="127.0.0.1", endpoint="QUIC", qdrant_url=None, vector_dim=384):
+    def __init__(self, id, is_coordinator, before_clustering, replication_factor, port, ip="127.0.0.1", endpoint="QUIC", qdrant_url=None, vector_dim=384, client_port=None):
         self.id = id
         self.ip = ip
         self.port = port
@@ -527,6 +530,12 @@ class Server:
         
         # Start endpoint in a thread to handle async loop
         self._start_endpoint_thread(port)
+        
+        # Client Endpoint (Optional)
+        self.client_endpoint = None
+        if client_port:
+            self.client_endpoint = ClientEndpoint(self)
+            self._start_client_endpoint(client_port)
         
         # Network simulation (Client controlled)
         self.simulated_unreachable_peers: Set[int] = set()
@@ -567,6 +576,17 @@ class Server:
         
         self.endpoint_thread = threading.Thread(target=run_loop, daemon=True)
         self.endpoint_thread.start()
+
+    def _start_client_endpoint(self, port):
+        def run_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.client_loop = loop
+            loop.run_until_complete(self.client_endpoint.start("0.0.0.0", port))
+            loop.run_forever()
+            
+        self.client_thread = threading.Thread(target=run_loop, daemon=True)
+        self.client_thread.start()
 
     def _add_local_peer(self):
         # Create a peer instance representing THIS server
@@ -629,6 +649,22 @@ class Server:
             finally:
                 self.endpoint_loop.call_soon_threadsafe(self.endpoint_loop.stop)
                 self.endpoint_thread.join(timeout=1)
+
+        # Stop client endpoint
+        if hasattr(self, 'client_loop'):
+             try:
+                if self.client_loop.is_running():
+                    coro = self.client_endpoint.stop()
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(coro, self.client_loop)
+                        future.result(timeout=2)
+                    except Exception as e:
+                         pass
+             except Exception:
+                 pass
+             finally:
+                 self.client_loop.call_soon_threadsafe(self.client_loop.stop)
+                 self.client_thread.join(timeout=1)
 
         
     def process_queue(self):
@@ -1497,7 +1533,7 @@ class Server:
             
     def _search_in_array(self, vectors, array, top_k):
         found = []
-        for vector_to_query, _ in vectors:
+        for _, vector_to_query in vectors:
             found.extend(sorted(
                 [(v, v_id, v_payload, cosine_similarity(v, vector_to_query)) 
                  for v, v_id, v_payload, *rest in array],
@@ -1505,6 +1541,57 @@ class Server:
             )[:top_k])
         return found
     
-    def query_from_client(self, vectors: ListOfVectors):
+    def query_from_client(self, vectors: ListOfVectors, top_k=100):
         vectors_with_qid = [(self.get_id(), v) for v in vectors]
-        return self.query(vectors_with_qid, 'client')
+        return self.query(vectors_with_qid, 'client', top_k=top_k)
+
+def main():
+    parser = argparse.ArgumentParser(description="Distributed Vector Store Server")
+    parser.add_argument("--id", type=int, required=True, help="Server ID")
+    parser.add_argument("--intra-port", type=int, required=True, help="Internal port for server-to-server communication")
+    parser.add_argument("--inter-port", type=int, default=None, help="External port for client communication (optional)")
+    parser.add_argument("--qdrant", type=str, default=None, help="Qdrant URL")
+    parser.add_argument("--endpoint", type=str, default="QUIC", help="Endpoint type (QUIC, HTTP, GRPC)")
+    parser.add_argument("--coordinator", action="store_true", help="Is this node the coordinator?")
+    parser.add_argument("--peers", type=str, default=None, help="Coordinator address (ip:port) to join")
+    
+    # These params are hardcoded in startup.py logic or client.py, but server needs them
+    # Server init: before_clustering, replication_factor
+    parser.add_argument("--before-clustering", type=int, default=8192, help="Vectors before clustering")
+    parser.add_argument("--replication-factor", type=int, default=3, help="Replication factor")
+
+    args = parser.parse_args()
+    
+    # startup.py passes '--intra-port' but Server init takes 'port' for internal comms
+    server = Server(
+        id=args.id, 
+        is_coordinator=args.coordinator, 
+        before_clustering=args.before_clustering, 
+        replication_factor=args.replication_factor, 
+        port=args.intra_port, 
+        endpoint=args.endpoint,
+        qdrant_url=args.qdrant,
+        client_port=args.inter_port
+    )
+    
+    print(f"Server {args.id} started. Intra: {args.intra_port}, Inter: {args.inter_port}, Coord: {args.coordinator}")
+    
+    if args.peers and not args.coordinator:
+        # Args.peers comes as "ip:port" of coordinator
+        try:
+            p_ip, p_port = args.peers.split(":")
+            server.add_peer(p_ip, int(p_port))
+            print(f"Added peer {args.peers}")
+        except Exception as e:
+            print(f"Error parsing peer address {args.peers}: {e}")
+            
+    # Keep main thread alive
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Server stopping...")
+        server.stop()
+
+if __name__ == "__main__":
+    main()
