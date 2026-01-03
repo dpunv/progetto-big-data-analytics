@@ -85,9 +85,19 @@ def test_cosine_similarity():
 
 @pytest.fixture
 def server_node():
-    s = Server(id=1, is_coordinator=True, before_clustering=10, replication_factor=2)
+    # Use :memory: Qdrant to test the actual integration path
+    s = Server(id=1, is_coordinator=True, before_clustering=10, replication_factor=2, qdrant_url=":memory:")
+    # Ensure empty collection for test isolation
+    import qdrant_module
+    qdrant_module.delete_collection(s.qdrant_url, s.store.collection_name)
+    # Force recreation for empty state, implicit dim on next insert
+    s.store.collection_created = False
+    
     yield s
+    
     s.stop()
+    # Clean up again
+    qdrant_module.delete_collection(s.qdrant_url, s.store.collection_name)
 
 class TestPeer:
     def test_peer_delegation(self):
@@ -247,18 +257,25 @@ class TestServerUnit:
             ([1.0, 1.0], 3, "C", 1)
         ]
         server_node.save_vectors(vecs)
-        assert len(server_node.store.vectors[0]) == 2
-        assert len(server_node.store.vectors[1]) == 1
-        assert server_node.count() == 3
+        
+        # Verify total count
+        assert server_node.store.count() == 3
+        
+        # Verify clustering (retrieving by cluster ID)
+        c0 = server_node.store.get_by_cluster(0)
+        assert len(c0) == 2
+        
+        c1 = server_node.store.get_by_cluster(1)
+        assert len(c1) == 1
 
     def test_search_vectors_local(self, server_node):
-        server_node.store.vectors = {
-            0: [
+        # Insert via API
+        vecs = [
                 ([1.0, 0.0], 1, "A", 0),
                 ([0.0, 1.0], 2, "B", 0)
-            ]
-        }
-        
+        ]
+        server_node.save_vectors(vecs)
+    
         # Query for [1, 0] should return A first
         query = [([1.0, 0.0], 100)]
         results = server_node.search_vectors_local(query, top_k=2)
@@ -443,10 +460,12 @@ def test_process_queue_exception(server_node):
 
 def test_get_all_vectors(server_node):
     s = server_node
-    s.store.vectors = {
-        0: [([1], 1, "p", 0)],
-        1: [([2], 2, "q", 1)]
-    }
+    vecs = [
+        ([1.0], 1, "p", 0),
+        ([2.0], 2, "q", 1)
+    ]
+    s.save_vectors(vecs)
+    
     all_v = s.get_all_vectors()
     assert len(all_v) == 2
 

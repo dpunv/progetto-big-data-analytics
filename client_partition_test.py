@@ -45,7 +45,7 @@ servers = []
 for i in range(num_servers):
     # Server with highest ID (7) is initial coordinator
     servers.append(sv.Server(i, i == num_servers - 1, num_vectors_before_clustering, 
-                             replication_factor))
+                             replication_factor, qdrant_url=":memory:"))
 
 # register peers
 for server in servers:

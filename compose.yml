@@ -1,0 +1,73 @@
+services:
+  qdrant-0:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage_0:/qdrant/storage
+    restart: unless-stopped
+  qdrant-1:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-1
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - ./qdrant_storage_1:/qdrant/storage
+    restart: unless-stopped
+  qdrant-2:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-2
+    ports:
+      - "6337:6333"
+      - "6338:6334"
+    volumes:
+      - ./qdrant_storage_2:/qdrant/storage
+    restart: unless-stopped
+  qdrant-3:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-3
+    ports:
+      - "6339:6333"
+      - "6340:6334"
+    volumes:
+      - ./qdrant_storage_3:/qdrant/storage
+    restart: unless-stopped
+  qdrant-4:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-4
+    ports:
+      - "6341:6333"
+      - "6342:6334"
+    volumes:
+      - ./qdrant_storage_4:/qdrant/storage
+    restart: unless-stopped
+  qdrant-5:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-5
+    ports:
+      - "6343:6333"
+      - "6344:6334"
+    volumes:
+      - ./qdrant_storage_5:/qdrant/storage
+    restart: unless-stopped
+  qdrant-6:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-6
+    ports:
+      - "6345:6333"
+      - "6346:6334"
+    volumes:
+      - ./qdrant_storage_6:/qdrant/storage
+    restart: unless-stopped
+  qdrant-7:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-7
+    ports:
+      - "6347:6333"
+      - "6348:6334"
+    volumes:
+      - ./qdrant_storage_7:/qdrant/storage
+    restart: unless-stopped

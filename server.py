@@ -6,8 +6,19 @@ import numpy as np
 import threading
 import queue
 import time
+import itertools
+import heapq
+from compound_types import *
+from sklearn.cluster import KMeans
+import numpy as np
+import threading
+import queue
+import time
 import concurrent.futures
 from typing import Dict, Set, Optional, TYPE_CHECKING
+from cluster_index import ClusterIndex
+import qdrant_module
+from qdrant_module import GLOBAL_LOCK
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     # Optimized to handle both lists and numpy arrays without redundant conversion
@@ -233,9 +244,295 @@ class VectorStore:
         with self.lock:
             return set(self.vector_ids.keys())
 
+    def insert_batch(self, vectors) -> int:
+        """Insert multiple vectors. Returns number of successes."""
+        count = 0
+        for v in vectors:
+            if self.insert(v):
+                count += 1
+        return count
+
+
+class QdrantVectorStore:
+    """
+    Qdrant-backed vector storage.
+    """
+    def __init__(self, url, collection_name):
+        self.url = url
+        self.collection_name = collection_name
+        self.lock = threading.RLock()
+        self.collection_created = False
+        # Force strict creation for debugging (assuming dim 384 from standard embeddings)
+        self._ensure_collection(384)
+
+    def _ensure_collection(self, vector_dim):
+        if not self.collection_created:
+            res = qdrant_module.create_collection(self.url, self.collection_name, vector_dim)
+            if res:
+                 self.collection_created = True
+            else:
+                 print(f"Error creating collection {self.collection_name}")
+
+
+    def insert(self, vector) -> bool:
+        """
+        Insert a vector, handling duplicates via version comparison.
+        """
+        # vector format: (Vector, VectorId, VectorPayload, cluster_id, version, destinations)
+        with self.lock:
+            # Check dim
+            v_data = vector[0]
+            if isinstance(v_data, list):
+                dim = len(v_data)
+            else:
+                dim = v_data.shape[0]
+                
+            self._ensure_collection(dim)
+            
+            vec_id = vector[1]
+            cluster_id = vector[3]
+            version = vector[4] if len(vector) > 4 else (0, 0)
+            
+            # Check existing
+            existing_point = qdrant_module.retrieve_vector(self.url, self.collection_name, vec_id)
+            
+            if existing_point:
+                # payload is a dict
+                payload = existing_point.payload
+                # recover version from payload
+                # We need to store version in payload
+                # payload structure in qdrant_module insert: {"string": vector_payload, "cluster_id": cluster_id}
+                # We should add "version_ts" and "version_node"
+                v_ts = payload.get("version_ts", 0)
+                v_node = payload.get("version_node", 0)
+                existing_version = (v_ts, v_node)
+                
+                if version <= existing_version:
+                    return False
+            
+            # Prepare insert
+            # vector payload is stored in vector[2]
+            payload_str = vector[2]
+            
+            # Deconstruct version
+            v_ts, v_node = version
+            
+            # Store everything we need to reconstruct the tuple
+            # We also need 'destinations' if it exists (index 5)
+            destinations = vector[5] if len(vector) > 5 else None
+            
+            # Create special Qdrant payload
+            q_payload = {
+                "string": payload_str, 
+                "cluster_id": cluster_id,
+                "version_ts": v_ts,
+                "version_node": v_node,
+            }
+            if destinations:
+                q_payload["destinations"] = list(destinations)
+
+            # Insert using module (we need to bypass insert_vectors wrapper because it constructs payload differently)
+            # OR we modify insert_vectors to accept full payload?
+            # insert_vectors takes: (vector_content, vector_id, vector_payload, cluster_id)
+            # and constructs payload={"string": vector_payload, "cluster_id": cluster_id}
+            # This is too restrictive.
+            # I should use client directly here or update module?
+            # I'll update module later if needed, but for now I can modify this class to use client directly?
+            # No, better to stick to module abstractions if possible or extend module.
+            # But the 'insert_vectors' function in module is very specific.
+            # I will assume I can modify qdrant_module.py again to support generic payload?
+            # OR I can just use insert_vectors_generic if I pack my payload into 'vector_payload' as a dict?
+            # But insert_vectors creates specific dict structure.
+            
+            # Let's call client.upload_points directly here since I have logic.
+            # Or use qdrant_module.get_client
+            
+            from qdrant_client import models
+            client = qdrant_module.get_client(self.url)
+            
+            point = models.PointStruct(
+                id=vec_id,
+                vector=v_data if isinstance(v_data, list) else v_data.tolist(),
+                payload=q_payload
+            )
+            
+            client.upload_points(
+                collection_name=self.collection_name,
+                points=[point],
+                wait=True
+            )
+            return True
+            return True
+
+    def insert_batch(self, vectors) -> int:
+        """
+        Batch insert vectors with version checking.
+        """
+        if not vectors:
+            return 0
+            
+        with self.lock, GLOBAL_LOCK:
+            # 1. Ensure collection exists (check dimension of first vector)
+            v0_data = vectors[0][0]
+            if isinstance(v0_data, list):
+                dim = len(v0_data)
+            else:
+                dim = v0_data.shape[0]
+            self._ensure_collection(dim)
+            
+            # 2. Retrieve existing versions for all IDs
+            ids = [v[1] for v in vectors]
+            client = qdrant_module.get_client(self.url)
+            from qdrant_client import models
+            
+            # Retrieve existing points to check versions
+            # We use scroll logic or retrieve logic?
+            # retrieve takes generic list of IDs.
+            # qdrant_module.retrieve_vector is single.
+            # client.retrieve() returns list of Record.
+            try:
+                existing_records = client.retrieve(
+                    collection_name=self.collection_name,
+                    ids=ids,
+                    with_payload=True,
+                    with_vectors=False
+                )
+            except Exception as e:
+                print(f"Error retrieving for batch check: {e}")
+                return 0
+
+            existing_map = {rec.id: rec.payload for rec in existing_records}
+            
+            points_to_upload = []
+            
+            for vector in vectors:
+                vec_id = vector[1]
+                version = vector[4] if len(vector) > 4 else (0, 0)
+                
+                # Check version conflict
+                if vec_id in existing_map:
+                    payload = existing_map[vec_id]
+                    v_ts = payload.get("version_ts", 0)
+                    v_node = payload.get("version_node", 0)
+                    existing_version = (v_ts, v_node)
+                    
+                    if version <= existing_version:
+                        continue # Skip old version
+                
+                # Prepare payload
+                payload_str = vector[2]
+                cluster_id = vector[3]
+                v_ts, v_node = version
+                destinations = vector[5] if len(vector) > 5 else None
+                v_data = vector[0]
+                
+                q_payload = {
+                    "string": payload_str, 
+                    "cluster_id": cluster_id,
+                    "version_ts": v_ts,
+                    "version_node": v_node,
+                }
+                if destinations:
+                    q_payload["destinations"] = list(destinations)
+
+                point = models.PointStruct(
+                    id=vec_id,
+                    vector=v_data if isinstance(v_data, list) else v_data.tolist(),
+                    payload=q_payload
+                )
+                points_to_upload.append(point)
+            
+            if not points_to_upload:
+                return 0
+                
+            # 3. Batch upload
+            try:
+                client.upload_points(
+                    collection_name=self.collection_name,
+                    points=points_to_upload,
+                    wait=True
+                )
+                return len(points_to_upload)
+            except Exception as e:
+                print(f"Error in batch upload: {e}")
+                return 0
+    def remove_by_id(self, vec_id: int):
+        qdrant_module.delete_vector(self.url, self.collection_name, vec_id)
+
+    def has_vector(self, vec_id: int) -> bool:
+        return qdrant_module.retrieve_vector(self.url, self.collection_name, vec_id) is not None
+
+    def get_vector(self, vec_id: int):
+        point = qdrant_module.retrieve_vector(self.url, self.collection_name, vec_id)
+        if not point:
+            return None
+        return self._point_to_tuple(point)
+
+    def get_all(self):
+        points = qdrant_module.get_all_vectors(self.url, self.collection_name)
+        return [self._point_to_tuple(p) for p in points]
+
+    def get_by_cluster(self, cluster_id):
+        # We need to filter by cluster_id.
+        # qdrant_module doesn't export filter search.
+        # Implement using scroll with filter
+        client = qdrant_module.get_client(self.url)
+        from qdrant_client import models
+        
+        filter_condition = models.Filter(
+            must=[models.FieldCondition(key="cluster_id", match=models.MatchValue(value=cluster_id))]
+        )
+        
+        all_points = []
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=filter_condition,
+                offset=offset,
+                limit=1000,
+                with_payload=True,
+                with_vectors=True
+            )
+            all_points.extend(points)
+            if offset is None:
+                break
+        
+        return [self._point_to_tuple(p) for p in all_points]
+
+    def count(self):
+        return qdrant_module.count(self.url, self.collection_name)
+
+    def get_all_ids(self) -> Set[int]:
+        points = qdrant_module.get_all_vectors(self.url, self.collection_name)
+        return {p.id for p in points}
+
+    def _point_to_tuple(self, point):
+        # Reconstruct tuple from PointStruct
+        # Tuple: (Vector, VectorId, VectorPayload, cluster_id, version, destinations)
+        payload = point.payload
+        vec_data = point.vector
+        vec_id = point.id
+        
+        p_str = payload.get("string")
+        c_id = payload.get("cluster_id")
+        v_ts = payload.get("version_ts", 0)
+        v_node = payload.get("version_node", 0)
+        dest = payload.get("destinations")
+        
+        version = (v_ts, v_node)
+        
+        # Tuple reconstruction
+        # Handle destinations (frozenset)
+        if dest:
+            dest = frozenset(dest)
+            return (vec_data, vec_id, p_str, c_id, version, dest)
+        else:
+            return (vec_data, vec_id, p_str, c_id, version)
+
 
 class Server:
-    def __init__(self, id, is_coordinator, before_clustering, replication_factor):
+    def __init__(self, id, is_coordinator, before_clustering, replication_factor, qdrant_url=None):
         self.id = id
         self.initial_coordinator = is_coordinator
         self.is_coordinator = is_coordinator
@@ -244,7 +541,11 @@ class Server:
         self.peers = [Peer(self)]
         self.clusters = []
         self.status = 'bootstrap'
-        self.store = VectorStore()
+        self.qdrant_url = qdrant_url
+        if qdrant_url:
+            self.store = QdrantVectorStore(qdrant_url, f"node_{id}_vectors")
+        else:
+            self.store = VectorStore()
         self.vector_id = 0
         self.vector_buffer = []
         self.dropped_vectors = 0
@@ -263,6 +564,11 @@ class Server:
         
         # Track when clustering is in progress
         self.clustering_in_progress = False
+        
+        # HNSW Index
+        self.cluster_index = None
+        self.cluster_to_destinations_cache = None # Map cluster_id -> frozenset(peer_ids)
+
         
         # Concurrency control
         self.lock = threading.RLock()
@@ -715,6 +1021,27 @@ class Server:
     
     def _calculate_destinations(self, vector) -> frozenset:
         """Calculate intended destination peers for a vector based on similarity routing."""
+        # Optimization: Use HNSW Index if available
+        if self.cluster_index:
+            # Find nearest cluster(s)
+            # Route to the nearest cluster's responsible peers
+            # If we want replication factor > 1 for *clusters*, we might search for top 1 cluster
+            # and that cluster is already replicated to N peers.
+            # OR we search for top M clusters?
+            # Existing logic: "top_peers = sorted(peer_similarities ...)" routes to peers that are similar to the VECTOR.
+            # But the vector should go to the peer that HOLDS the cluster it belongs to.
+            # Wait, the current logic calculates similarity between VECTOR and PEER (which usually means max sim with peer's clusters).
+            # Peer.similarity() does exactly that: max(cosine_sim(v, c) for c in peer.clusters).
+            
+            # So, technically, we want to find the nearest CLUSTER, and then see which peers have it.
+            nearest_cluster_ids = self.cluster_index.find_nearest_clusters(vector[0], k=1)
+            
+            if nearest_cluster_ids and self.cluster_to_destinations_cache:
+                best_cluster = nearest_cluster_ids[0]
+                if best_cluster in self.cluster_to_destinations_cache:
+                    return self.cluster_to_destinations_cache[best_cluster]
+        
+        # Fallback to linear search
         with self.lock:
             all_peers = list(self.peers)
         
@@ -780,12 +1107,10 @@ class Server:
 
     def save_vectors(self, vectors: ListOfVectorsComplete):
         # print(f"DEBUG: Server {self.id} saving {len(vectors)} vectors")
-        success_count = 0
-        for vector in vectors:
-            if self.store.insert(vector):
-                success_count += 1
+        # Use batch insert
+        success_count = self.store.insert_batch(vectors)
         if success_count < len(vectors):
-             pass # print(f"DEBUG: Server {self.id} only saved {success_count}/{len(vectors)} vectors (duplicates?)")
+             pass # duplicates skipped defined behavior
 
     def receive_from_client(self, vectors: ListOfVectorsWithPayload):
         vectors_with_id = []
@@ -806,8 +1131,9 @@ class Server:
             for cluster_info in self.clusters:
                 cluster_id = cluster_info[0]
                 if cluster_id in vectors_for_clusters:
-                    for v in vectors_for_clusters[cluster_id]['members']:
-                        self.store.insert(v)
+                    # Batch insert all members
+                    members = vectors_for_clusters[cluster_id]['members']
+                    self.store.insert_batch(members)
             
             self.status = 'clustered'
             print(f"DEBUG: Server {self.id} transitioned to CLUSTERED status")
@@ -871,6 +1197,23 @@ class Server:
         
         for peer in self.get_reachable_peers():
             peer.set_clusters(clusters, assignment[peer.get_id()])
+            
+        # Build HNSW Index
+        print(f"DEBUG: Server {self.id} building HNSW index for {len(clusters)} clusters")
+        # Ensure dimension is consistent. Use length of first center.
+        if clusters:
+            first_center = list(clusters.values())[0]['center']
+            dim = len(first_center)
+            self.cluster_index = ClusterIndex(dimension=dim)
+            
+            # shared types issue: clusters keys are ints, but we need list of (id, vector)
+            cluster_list = [(k, v['center']) for k, v in clusters.items()]
+            self.cluster_index.build(cluster_list)
+            
+            # Cache destinations
+            self.cluster_to_destinations_cache = cluster_to_destinations
+            print(f"DEBUG: Server {self.id} HNSW index built.")
+
     
     def clustering(self, vectors: ListOfVectorsComplete, num_clusters=10):
         vects = [v[0] for v in vectors]  # Extract just the vector data
@@ -934,6 +1277,7 @@ class Server:
         return assignment
 
     def get_all_vectors(self):
+        print(f"DEBUG: get_all_vectors called on Server {self.id}")
         return self.store.get_all()
     
     def search_vectors(self, vectors: ListOfVectorsWithId, top_k=100, top_look=4):
@@ -973,6 +1317,39 @@ class Server:
         return final_results[:top_k]
 
     def search_vectors_local(self, vectors, top_k=5):
+        if self.qdrant_url:
+             # Use Qdrant search
+             query_vectors_only = [v[0] for v in vectors]
+             # qdrant_module.query_vectors takes (url, collection, query_list, topk)
+             results = qdrant_module.query_vectors(self.qdrant_url, self.store.collection_name, query_vectors_only, top_k)
+             # Map Qdrant results to internal format: (Vector, VectorId, VectorPayload, Similarity)
+             mapped = []
+             # qdrant_module returns list of dicts: {'id', 'score', 'payload': {'string', 'vector'}}
+             # EXCEPT: query_vectors handles BATCH query.
+             # qdrant_module.query_vectors -> query_batch_points -> returns list of lists? 
+             # Wait, qdrant_module.query_vectors docstring says: "Returns a list of lists of ScoredPoint objects."
+             # BUT implementation says:
+             # final_results = [] (flat list)
+             # for response in results: for point in response.points: append
+             # It flattens the results?? This is WRONG for batch query if we want to distinguish results per query vector.
+             # But search_vectors_local is expected to return a single list of results (top k overall? or per vector?)
+             # The existing implementation:
+             # "found = [] ... for i in range(len(vectors)): found.append(...)"
+             # It seems to flatten everything into one list of results?
+             # Yes: "return found".
+             # So flattening is actually desired behavior for this specific method signature in existing server.py?
+             # Let's verify existing implementation logic.
+             # It returns 'found' which accumulates top-k for EACH query vector.
+             # So if I send 2 query vectors, I get top-k for vec1 AND top-k for vec2 in one list.
+             # qdrant_module.query_vectors (as I modified) DOES flatten.
+             # So it matches!
+             
+             for res in results:
+                 v_data = res['payload']['vector']
+                 p_str = res['payload']['string']
+                 mapped.append((v_data, res['id'], p_str, res['score']))
+             return mapped
+
         current_vectors_data = self.store.get_all()
         if not current_vectors_data:
             return []
