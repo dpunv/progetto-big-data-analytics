@@ -1,5 +1,8 @@
 import itertools
 import heapq
+import math
+import random
+from collections import deque
 from compound_types import *
 from sklearn.cluster import KMeans
 import numpy as np
@@ -541,6 +544,16 @@ class Server:
         self.simulated_unreachable_peers: Set[int] = set()
         self.active_peers: Set[int] = {id} # Initially assume only self is reachable until gossip
         
+        # Phi Accrual Failure Detectors (one per peer)
+        # Configuration: threshold=8 (99.9999% certainty), sliding window of 500 samples
+        self.failure_detectors: Dict[int, PhiAccrualFailureDetector] = {}
+        self.phi_threshold = 8.0  # Industrial standard threshold
+        self.phi_window_size = 500  # Sliding window size
+        
+        # Heartbeat configuration
+        self.heartbeat_interval = 3.0  # Base interval in seconds
+        self.heartbeat_jitter = 0.5  # Jitter: ±0.5 seconds (uniform random)
+        
         # Track when reconciliation is in progress
         self._reconciling = False
         self._reconcile_lock = threading.Lock()
@@ -745,18 +758,41 @@ class Server:
         # The connectivity check happens on the SENDER side based on 'simulated_unreachable_peers'.
         return True
 
+    def _get_or_create_failure_detector(self, peer_id: int) -> PhiAccrualFailureDetector:
+        """Get or create a failure detector for a peer."""
+        with self.lock:
+            if peer_id not in self.failure_detectors:
+                self.failure_detectors[peer_id] = PhiAccrualFailureDetector(
+                    threshold=self.phi_threshold,
+                    max_sample_size=self.phi_window_size,
+                    first_heartbeat_estimate_ms=self.heartbeat_interval * 1000
+                )
+            return self.failure_detectors[peer_id]
+
+    def _calculate_sleep_with_jitter(self) -> float:
+        """Calculate sleep time with jitter to prevent synchronized heartbeats."""
+        # Base interval + uniform random jitter in range [-jitter, +jitter]
+        jitter = random.uniform(-self.heartbeat_jitter, self.heartbeat_jitter)
+        return max(0.1, self.heartbeat_interval + jitter)
+
     def heartbeat_loop(self):
-        """Periodically ping peers to update active_peers list."""
+        """
+        Periodically ping peers and use Phi Accrual Failure Detector to determine availability.
+        
+        Uses a 3-second base interval with jitter to prevent thundering herd.
+        Phi Accrual provides probabilistic failure detection based on heartbeat history.
+        """
         while self.running:
-            time.sleep(0.5) # Heartbeat interval
+            # Sleep with jitter to avoid synchronized heartbeats
+            sleep_time = self._calculate_sleep_with_jitter()
+            time.sleep(sleep_time)
             
-            # Incremental update to prevent race condition where active_peers becomes empty
-            # Copy active peers to modify
+            # Copy current state for comparison
             with self.lock:
-                current_active_snapshot = set(self.active_peers)
+                previous_active_snapshot = set(self.active_peers)
                 
             peers_to_check = list(self.peers)
-            changes_detected = False
+            current_active_snapshot = set()
             
             for peer in peers_to_check:
                 try:
@@ -808,6 +844,19 @@ class Server:
                     self.active_peers = current_active_snapshot
                 # print(f"DEBUG: Server {self.id} detected network change. Active: {self.active_peers}")
                 self._handle_network_change()
+
+    def get_peer_phi(self, peer_id: int) -> float:
+        """
+        Get the current phi value for a peer.
+        Useful for debugging and monitoring.
+        
+        Returns:
+            Phi value (suspicion level). Higher = more likely dead.
+        """
+        with self.lock:
+            if peer_id in self.failure_detectors:
+                return self.failure_detectors[peer_id].phi()
+        return 0.0
 
     def _handle_network_change(self):
         """React to changes in peer connectivity."""
