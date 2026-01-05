@@ -1,5 +1,8 @@
 import itertools
 import heapq
+import math
+import random
+from collections import deque
 from compound_types import *
 from sklearn.cluster import KMeans
 import numpy as np
@@ -12,6 +15,140 @@ from cluster_index import ClusterIndex
 import qdrant_module
 from qdrant_module import GLOBAL_LOCK
 from qdrant_client import models
+
+
+# ============ Phi Accrual Failure Detector ============
+
+class PhiAccrualFailureDetector:
+    """
+    Phi Accrual Failure Detector implementation.
+    
+    Instead of binary alive/dead, calculates a suspicion level (phi) based on
+    the statistical distribution of heartbeat arrival times.
+    
+    Reference: "The φ Accrual Failure Detector" by Hayashibara et al.
+    """
+    
+    def __init__(self, threshold: float = 8.0, max_sample_size: int = 500, 
+                 min_std_deviation_ms: float = 100.0, first_heartbeat_estimate_ms: float = 3000.0):
+        """
+        Args:
+            threshold: Phi value above which a node is considered down (8 = 99.9999% certainty)
+            max_sample_size: Size of the sliding window for heartbeat samples
+            min_std_deviation_ms: Minimum standard deviation to prevent division issues
+            first_heartbeat_estimate_ms: Estimated interval for first heartbeat (before real data)
+        """
+        self.threshold = threshold
+        self.max_sample_size = max_sample_size
+        self.min_std_deviation_ms = min_std_deviation_ms
+        self.first_heartbeat_estimate_ms = first_heartbeat_estimate_ms
+        
+        # Sliding window of heartbeat intervals (in milliseconds)
+        self.heartbeat_intervals: deque = deque(maxlen=max_sample_size)
+        
+        # Timestamp of last heartbeat received
+        self.last_heartbeat_time: Optional[float] = None
+        
+        # Lock for thread safety
+        self.lock = threading.Lock()
+        
+        # Cached statistics (updated on each heartbeat)
+        self._cached_mean: float = first_heartbeat_estimate_ms
+        self._cached_variance: float = 0.0
+    
+    def heartbeat_received(self):
+        """
+        Record a heartbeat arrival.
+        Updates the sliding window with the interval since last heartbeat.
+        """
+        with self.lock:
+            now = time.time() * 1000  # Convert to milliseconds
+            
+            if self.last_heartbeat_time is not None:
+                interval = now - self.last_heartbeat_time
+                self.heartbeat_intervals.append(interval)
+                self._update_statistics()
+            
+            self.last_heartbeat_time = now
+    
+    def _update_statistics(self):
+        """Update cached mean and variance from the sliding window."""
+        if not self.heartbeat_intervals:
+            return
+        
+        n = len(self.heartbeat_intervals)
+        total = sum(self.heartbeat_intervals)
+        self._cached_mean = total / n
+        
+        if n > 1:
+            squared_diff_sum = sum((x - self._cached_mean) ** 2 for x in self.heartbeat_intervals)
+            self._cached_variance = squared_diff_sum / n
+        else:
+            self._cached_variance = 0.0
+    
+    def phi(self) -> float:
+        """
+        Calculate current phi (suspicion level).
+        
+        Returns:
+            Float representing suspicion level. Higher = more likely dead.
+            Returns 0.0 if no heartbeat has ever been received.
+        """
+        with self.lock:
+            if self.last_heartbeat_time is None:
+                return 0.0
+            
+            now = time.time() * 1000
+            time_since_last = now - self.last_heartbeat_time
+            
+            return self._calculate_phi(time_since_last)
+    
+    def _calculate_phi(self, time_diff_ms: float) -> float:
+        """
+        Calculate phi using the normal distribution assumption.
+        
+        phi = -log10(P_later(time_diff))
+        
+        where P_later is the probability that a heartbeat will arrive
+        AFTER the given time difference, assuming normal distribution.
+        """
+        mean = self._cached_mean
+        std_dev = max(math.sqrt(self._cached_variance), self.min_std_deviation_ms)
+        
+        # Calculate probability using the complementary CDF of normal distribution
+        # P(X > t) = 1 - CDF(t) = 1 - 0.5 * (1 + erf((t - mean) / (std * sqrt(2))))
+        # = 0.5 * erfc((t - mean) / (std * sqrt(2)))
+        
+        y = (time_diff_ms - mean) / std_dev
+        
+        # Using approximation for log10(1 - CDF) for numerical stability
+        # For large y, phi ≈ y^2 / 2 * log10(e) + constant terms
+        
+        # Calculate using erfc for better numerical stability
+        try:
+            p = 0.5 * math.erfc(y / math.sqrt(2))
+            if p < 1e-100:  # Avoid log(0)
+                return 100.0  # Cap phi at very high value
+            return -math.log10(p)
+        except (ValueError, OverflowError):
+            return 100.0  # On any math error, assume highly suspicious
+    
+    def is_available(self) -> bool:
+        """
+        Check if the node should be considered available.
+        
+        Returns:
+            True if phi < threshold, False otherwise.
+        """
+        return self.phi() < self.threshold
+    
+    def reset(self):
+        """Reset the detector state (e.g., when a node is known to be starting fresh)."""
+        with self.lock:
+            self.heartbeat_intervals.clear()
+            self.last_heartbeat_time = None
+            self._cached_mean = self.first_heartbeat_estimate_ms
+            self._cached_variance = 0.0
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -551,6 +688,16 @@ class Server:
         self.simulated_unreachable_peers: Set[int] = set()
         self.active_peers: Set[int] = {id} # Initially assume only self is reachable until gossip
         
+        # Phi Accrual Failure Detectors (one per peer)
+        # Configuration: threshold=8 (99.9999% certainty), sliding window of 500 samples
+        self.failure_detectors: Dict[int, PhiAccrualFailureDetector] = {}
+        self.phi_threshold = 8.0  # Industrial standard threshold
+        self.phi_window_size = 500  # Sliding window size
+        
+        # Heartbeat configuration
+        self.heartbeat_interval = 3.0  # Base interval in seconds
+        self.heartbeat_jitter = 0.5  # Jitter: ±0.5 seconds (uniform random)
+        
         # Track when reconciliation is in progress
         self._reconciling = False
         self._reconcile_lock = threading.Lock()
@@ -662,66 +809,95 @@ class Server:
         # The connectivity check happens on the SENDER side based on 'simulated_unreachable_peers'.
         return True
 
+    def _get_or_create_failure_detector(self, peer_id: int) -> PhiAccrualFailureDetector:
+        """Get or create a failure detector for a peer."""
+        with self.lock:
+            if peer_id not in self.failure_detectors:
+                self.failure_detectors[peer_id] = PhiAccrualFailureDetector(
+                    threshold=self.phi_threshold,
+                    max_sample_size=self.phi_window_size,
+                    first_heartbeat_estimate_ms=self.heartbeat_interval * 1000
+                )
+            return self.failure_detectors[peer_id]
+
+    def _calculate_sleep_with_jitter(self) -> float:
+        """Calculate sleep time with jitter to prevent synchronized heartbeats."""
+        # Base interval + uniform random jitter in range [-jitter, +jitter]
+        jitter = random.uniform(-self.heartbeat_jitter, self.heartbeat_jitter)
+        return max(0.1, self.heartbeat_interval + jitter)
+
     def heartbeat_loop(self):
-        """Periodically ping peers to update active_peers list."""
+        """
+        Periodically ping peers and use Phi Accrual Failure Detector to determine availability.
+        
+        Uses a 3-second base interval with jitter to prevent thundering herd.
+        Phi Accrual provides probabilistic failure detection based on heartbeat history.
+        """
         while self.running:
-            time.sleep(0.5) # Heartbeat interval
+            # Sleep with jitter to avoid synchronized heartbeats
+            sleep_time = self._calculate_sleep_with_jitter()
+            time.sleep(sleep_time)
             
-            # Incremental update to prevent race condition where active_peers becomes empty
-            # Copy active peers to modify
+            # Copy current state for comparison
             with self.lock:
-                current_active_snapshot = set(self.active_peers)
+                previous_active_snapshot = set(self.active_peers)
                 
             peers_to_check = list(self.peers)
-            changes_detected = False
+            current_active_snapshot = set()
             
             for peer in peers_to_check:
                 peer_id = peer.get_id()
                 
-                # Check simulated network conditions
+                # Self is always reachable
+                if peer_id == self.id:
+                    current_active_snapshot.add(peer_id)
+                    continue
+                
+                # Check simulated network conditions (for testing)
                 is_blocked = False
                 with self.lock:
                     if peer_id in self.simulated_unreachable_peers:
                         is_blocked = True
                 
                 if is_blocked:
-                    # Simulated partition: cannot reach peer
-                    if peer_id in current_active_snapshot:
-                        current_active_snapshot.discard(peer_id)
-                        changes_detected = True
+                    # Simulated partition: don't record heartbeat, let phi rise
+                    # Don't add to active set - phi will naturally increase
                     continue
                 
-                # Try to ping
+                # Try to ping and update failure detector
+                detector = self._get_or_create_failure_detector(peer_id)
+                
                 try:
-                    is_reachable = False
-                    if peer_id == self.id:
-                        is_reachable = True
-                    else:
-                        if peer.ping():
-                            is_reachable = True
-                    
-                    if is_reachable:
-                        if peer_id not in current_active_snapshot:
-                            current_active_snapshot.add(peer_id)
-                            changes_detected = True
-                    else:
-                        # Ping failed (returned False?)
-                        if peer_id in current_active_snapshot:
-                            current_active_snapshot.discard(peer_id)
-                            changes_detected = True
-                            
+                    if peer.ping():
+                        # Successful ping - record heartbeat arrival
+                        detector.heartbeat_received()
                 except Exception:
-                    # Failed to connect
-                    if peer_id in current_active_snapshot:
-                        current_active_snapshot.discard(peer_id)
-                        changes_detected = True
+                    # Failed to ping - don't record heartbeat, let phi rise
+                    pass
+                
+                # Check if peer is available based on Phi Accrual
+                if detector.is_available():
+                    current_active_snapshot.add(peer_id)
             
-            # Update state if changed
-            if changes_detected:
+            # Detect changes and update state
+            if current_active_snapshot != previous_active_snapshot:
                 with self.lock:
                     self.active_peers = current_active_snapshot
                 # print(f"DEBUG: Server {self.id} detected network change. Active: {self.active_peers}")
                 self._handle_network_change()
+
+    def get_peer_phi(self, peer_id: int) -> float:
+        """
+        Get the current phi value for a peer.
+        Useful for debugging and monitoring.
+        
+        Returns:
+            Phi value (suspicion level). Higher = more likely dead.
+        """
+        with self.lock:
+            if peer_id in self.failure_detectors:
+                return self.failure_detectors[peer_id].phi()
+        return 0.0
 
     def _handle_network_change(self):
         """React to changes in peer connectivity."""
