@@ -845,13 +845,12 @@ class Server:
             peers_to_check = list(self.peers)
             current_active_snapshot = set()
             
-            for peer in peers_to_check:
+            def check_peer(peer):
                 peer_id = peer.get_id()
                 
                 # Self is always reachable
                 if peer_id == self.id:
-                    current_active_snapshot.add(peer_id)
-                    continue
+                    return peer_id
                 
                 # Check simulated network conditions (for testing)
                 is_blocked = False
@@ -861,8 +860,7 @@ class Server:
                 
                 if is_blocked:
                     # Simulated partition: don't record heartbeat, let phi rise
-                    # Don't add to active set - phi will naturally increase
-                    continue
+                    return None
                 
                 # Try to ping and update failure detector
                 detector = self._get_or_create_failure_detector(peer_id)
@@ -877,7 +875,15 @@ class Server:
                 
                 # Check if peer is available based on Phi Accrual
                 if detector.is_available():
-                    current_active_snapshot.add(peer_id)
+                    return peer_id
+                return None
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                results = executor.map(check_peer, peers_to_check)
+            
+            for res in results:
+                if res is not None:
+                    current_active_snapshot.add(res)
             
             # Detect changes and update state
             if current_active_snapshot != previous_active_snapshot:
@@ -976,12 +982,17 @@ class Server:
         # But we don't know their view. So request reconciliation with reachable peers.
         # To avoid storm, maybe only reconcile with peers that have ID > self.id? 
         # Or just all. Let's stick to all reachable for robustness.
-        for peer in self.get_reachable_peers():
-            if peer.get_id() != self.id:
-                try:
-                    self.reconcile_with_peer(peer)
-                except Exception as e:
-                    print(f"Error reconciling with peer {peer.get_id()}: {e}")
+        
+        peers_to_reconcile = [p for p in self.get_reachable_peers() if p.get_id() != self.id]
+        
+        def reconcile_single(peer):
+            try:
+                self.reconcile_with_peer(peer)
+            except Exception as e:
+                print(f"Error reconciling with peer {peer.get_id()}: {e}")
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            executor.map(reconcile_single, peers_to_reconcile)
     
     def deliver_hints(self):
         """Attempt to deliver stored hints to now-reachable nodes."""
@@ -1120,10 +1131,11 @@ class Server:
         
         results = {}
         for vector in vectors:
-            peer_similarities = []
-            for peer in current_peers:
-                sim = peer.similarity(vector[0])
-                peer_similarities.append((peer.get_id(), sim, vector))
+            def get_sim(peer):
+                return (peer.get_id(), peer.similarity(vector[0]), vector)
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                peer_similarities = list(executor.map(get_sim, current_peers))
             
             results[vector[1]] = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[:top_k]
         
@@ -1166,12 +1178,12 @@ class Server:
         
         # Send to reachable peers, store hints for unreachable
         # print(f"DEBUG: Server {self.id} sending to peers. Distribution: {[len(v) for k,v in peer_to_vec.items() if v]}")
-        for peer in all_peers:
+        
+        def send_to_single_peer(peer):
             vecs = peer_to_vec[peer.get_id()]
             if not vecs:
-                continue
-            
-            
+                return
+
             reachable = self._is_peer_reachable(peer)
             # print(f"DEBUG: Server {self.id} -> Peer {peer.get_id()} (reachable={reachable}): {len(vecs)} vectors")
             
@@ -1187,6 +1199,10 @@ class Server:
                 # Unreachable, store hint
                 print(f"DEBUG: Server {self.id} cannot reach {peer.get_id()} (Active: {self.active_peers}), storing {len(vecs)} hints")
                 self.hinted_handoff.store_hint(peer.get_id(), vecs)
+
+        # Parallelize sending to peers
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            executor.map(send_to_single_peer, all_peers)
     
     def _calculate_destinations(self, vector) -> frozenset:
         """Calculate intended destination peers for a vector based on similarity routing."""
@@ -1217,10 +1233,11 @@ class Server:
         if not all_peers:
             return frozenset()
         
-        peer_similarities = []
-        for peer in all_peers:
-            sim = peer.similarity(vector[0])
-            peer_similarities.append((peer.get_id(), sim))
+        def get_sim(peer):
+            return (peer.get_id(), peer.similarity(vector[0]))
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            peer_similarities = list(executor.map(get_sim, all_peers))
         
         # Sort by similarity and get top replication_factor
         top_peers = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[:self.replication_factor]
