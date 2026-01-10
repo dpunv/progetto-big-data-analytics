@@ -1232,21 +1232,60 @@ class Server:
         if not current_peers:
             return {}
         
+        candidates_map = {}
+        # Optimization: Use HNSW Index if available to filter peers
+        if self.cluster_index and self.cluster_to_destinations_cache:
+            try:
+                # Extract vectors for batch search
+                query_data = [v[0] for v in vectors]
+                query_matrix = np.array(query_data, dtype=np.float32)
+
+                # Search for nearest clusters. 
+                # We ask for top_k clusters to ensure we find enough candidate peers.
+                # Since each cluster typically has 'reptication_factor' peers (e.g. 3),
+                # finding the single nearest cluster is often enough to get 3 peers.
+                # But to be safe and support higher top_k (e.g. 4), we search for top_k clusters.
+                nearest_clusters_batch = self.cluster_index.search_batch(query_matrix, k=top_k)
+                
+                for i, nearest_clusters in enumerate(nearest_clusters_batch):
+                    vec_id = vectors[i][1]
+                    candidates = set()
+                    for c_id in nearest_clusters:
+                        dests = self.cluster_to_destinations_cache.get(c_id, set())
+                        candidates.update(dests)
+                    candidates_map[vec_id] = candidates
+            except Exception as e:
+                print(f"Error using cluster index for routing: {e}")
+                # Fallback to no filtering (empty map treated as 'use all')
+
+        # Map for fast peer lookup
+        current_peers_map = {p.get_id(): p for p in current_peers}
+
         results = {}
         for vector in vectors:
-            def get_sim(peer):
-                return (peer.get_id(), peer.similarity(vector[0]), vector)
+            vec_data = vector[0]
+            vec_id = vector[1]
+            
+            peers_to_check = []
+            if vec_id in candidates_map:
+                candidate_ids = candidates_map[vec_id]
+                for pid in candidate_ids:
+                    if pid in current_peers_map:
+                        peers_to_check.append(current_peers_map[pid])
+                
+                # If filtering yielded no reachable peers (e.g. all candidates down), fallback to all reachable
+                if not peers_to_check:
+                    peers_to_check = current_peers
+            else:
+                peers_to_check = current_peers
 
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                peer_similarities = list(executor.map(get_sim, current_peers))
+            peer_similarities = []
+            for peer in peers_to_check:
+                sim = peer.similarity(vec_data)
+                peer_similarities.append((peer.get_id(), sim, vector))
             
-            results[vector[1]] = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[:top_k]
+            results[vec_id] = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[:top_k]
         
-        # DEBUG: Print routing stats for first vector to see if similarities are all 0
-        # if vectors:
-        #     first_res = results[vectors[0][1]]
-        #     print(f"DEBUG: Server {self.id} routing sample. Top sims: {[(x[0], x[1]) for x in first_res]}")
-            
         return results
     
     def send_to_peers(self, vectors: ListOfVectorsComplete):

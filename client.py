@@ -12,17 +12,19 @@ print("starting client")
 data = []
 with open('embeddings.json', 'r') as f:
     data = json.load(f)
-vectors = [(d['embedding'], d['text']) for d in data]
+
+# configuration
+num_vectors = 16000
+num_vectors_before_clustering = 5000
+num_servers = 8
+replication_factor = 3
+batch_size = 512
+vectors = [(d['embedding'], d['text']) for d in data[:num_vectors]]
 print("data read")
 
 import os
 
-# configuration
-num_vectors = 131072
-num_vectors_before_clustering = 8192
-num_servers = 8
-replication_factor = 3
-batch_size = 512
+
 # Qdrant Storage Configuration
 # Options: ":memory:" for in-memory, or a local path (e.g., "./qdrant_data") for persistence.
 # qdrant_url = ":memory:" 
@@ -65,7 +67,9 @@ def send_batch(server_idx, batch_vectors, batch_idx, total_batches):
     servers[server_idx].receive_from_client(batch_vectors)
     print(f"batch {batch_idx}/{total_batches} sent")
 
-total_batches = int(num_vectors/batch_size)
+import math
+total_batches = math.ceil(num_vectors/batch_size)
+
 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
     futures = []
     for i in range(total_batches):
