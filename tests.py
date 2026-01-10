@@ -48,7 +48,10 @@ def partition_network(servers, groups):
 def heal_network(servers):
     """Restore full connectivity."""
     for s in servers:
-        s.simulated_unreachable_peers.clear()
+        # Use unblock_peer to properly restore active_peers and trigger handlers
+        for other in servers:
+            if s.id != other.id:
+                s.unblock_peer(other.id)
     time.sleep(1.0)
 
 def wait_for_full_connectivity(servers):
