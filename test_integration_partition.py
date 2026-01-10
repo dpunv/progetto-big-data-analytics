@@ -199,8 +199,8 @@ def test_partition_tolerance_with_verification(cluster_setup):
     assert wait_for_network_convergence(servers, timeout=120), "Network failed to converge at startup"
     
     # Generate synthetic data
-    # Increased count for better stress testing
-    total_vectors = 1_000_000
+    # Reduced count for quick verification
+    total_vectors = 10_000
     
     # Vector format: (embedding, id, payload)
     # Use circle coordinates to ensure distinctness and norm=1

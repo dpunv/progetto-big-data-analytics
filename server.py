@@ -738,13 +738,29 @@ class Server:
     
     def block_peer(self, peer_id: int):
         """Simulate a network partition blocking this peer."""
+        changed = False
         with self.lock:
             self.simulated_unreachable_peers.add(peer_id)
+            # Immediately remove from active peers for faster partition detection
+            if peer_id in self.active_peers:
+                self.active_peers.discard(peer_id)
+                changed = True
+        # Trigger network change handler outside of lock to avoid deadlock
+        if changed:
+            self._handle_network_change()
             
     def unblock_peer(self, peer_id: int):
         """Remove simulation block for this peer."""
+        changed = False
         with self.lock:
             self.simulated_unreachable_peers.discard(peer_id)
+            # Immediately add back to active_peers if peer exists
+            if any(p.get_id() == peer_id for p in self.peers):
+                if peer_id not in self.active_peers:
+                    self.active_peers.add(peer_id)
+                    changed = True
+        if changed:
+            self._handle_network_change()
 
     def respond_to_ping(self) -> bool:
         """Called by other peers to check if I am reachable."""
@@ -783,10 +799,6 @@ class Server:
         Phi Accrual provides probabilistic failure detection based on heartbeat history.
         """
         while self.running:
-            # Sleep with jitter to avoid synchronized heartbeats
-            sleep_time = self._calculate_sleep_with_jitter()
-            time.sleep(sleep_time)
-            
             # Copy current state for comparison
             with self.lock:
                 previous_active_snapshot = set(self.active_peers)
@@ -883,6 +895,10 @@ class Server:
                     self.active_peers = current_active_snapshot
                 # print(f"DEBUG: Server {self.id} detected network change. Active: {self.active_peers}")
                 self._handle_network_change()
+            
+            # Sleep with jitter at the end, so first check happens immediately
+            sleep_time = self._calculate_sleep_with_jitter()
+            time.sleep(sleep_time)
 
     def get_peer_phi(self, peer_id: int) -> float:
         """

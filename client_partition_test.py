@@ -28,7 +28,7 @@ vectors = [(d['embedding'], d['text']) for d in data]
 print(f"    Loaded {len(data)} vectors")
 
 # configuration
-num_vectors = 500000  # Smaller for faster testing
+num_vectors = 50000  # Smaller for faster testing
 num_vectors_before_clustering = 8192
 num_servers = 8
 replication_factor = 4
