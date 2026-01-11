@@ -5,6 +5,12 @@ import random
 from collections import deque
 from compound_types import *
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+
+# Clustering configuration
+SILHOUETTE_SUBSAMPLE_SIZE = 2000  # Max sample size for silhouette score calculation
+MIN_K = 5   # Minimum number of clusters to try
+MAX_K = 30  # Maximum number of clusters to try
 import numpy as np
 import threading
 import queue
@@ -1543,17 +1549,80 @@ class Server:
             print(f"DEBUG: Server {self.id} HNSW index built.")
 
     
-    def clustering(self, vectors: ListOfVectorsComplete, num_clusters=10):
+    def clustering(self, vectors: ListOfVectorsComplete, min_k=MIN_K, max_k=MAX_K):
+        """
+        Performs K-Means clustering with automatic k selection using silhouette score.
+        Tries k values from min_k to max_k and selects the one with the best silhouette score.
+        """
         vects = [v[0] for v in vectors]  # Extract just the vector data
-        X = np.array(vects)
-        n_clusters = max(1, min(num_clusters, X.shape[0]))
-        kmeans = KMeans(n_clusters=n_clusters)
-        kmeans.fit(X)
-        centers = kmeans.cluster_centers_.tolist()
-        labels = kmeans.labels_
-        members = [[] for _ in range(n_clusters)]
+        X = np.array(vects, dtype=np.float32)
+        n_samples = X.shape[0]
         
-        for vec, lbl in zip(vectors, labels):
+        # Adjust k range based on available samples
+        effective_min_k = max(2, min_k)  # Silhouette requires at least 2 clusters
+        effective_max_k = min(max_k, n_samples - 1)  # Can't have more clusters than samples
+        
+        if effective_max_k < effective_min_k:
+            # Not enough samples for proper clustering, use single cluster
+            print(f"DEBUG: Server {self.id} - Not enough samples ({n_samples}) for clustering, using single cluster")
+            members = [list(vectors)]
+            centers = [np.mean(X, axis=0).tolist()]
+            for i, vec in enumerate(members[0]):
+                if len(vec) > 4:
+                    members[0][i] = (vec[0], vec[1], vec[2], 0, vec[4])
+                else:
+                    members[0][i] = (vec[0], vec[1], vec[2], 0, (time.time(), self.id))
+            return {0: {'center': centers[0], 'members': members[0]}}
+        
+        k_range = range(effective_min_k, effective_max_k + 1)
+        
+        # Prepare subsampling for silhouette score calculation (for efficiency)
+        if n_samples > SILHOUETTE_SUBSAMPLE_SIZE:
+            sample_indices = np.random.choice(n_samples, SILHOUETTE_SUBSAMPLE_SIZE, replace=False)
+            X_sample = X[sample_indices]
+            print(f"DEBUG: Server {self.id} - Using subsampling for silhouette: {SILHOUETTE_SUBSAMPLE_SIZE}/{n_samples}")
+        else:
+            sample_indices = None
+            X_sample = X
+        
+        best_score = -2
+        best_k = effective_min_k
+        best_labels = None
+        best_centers = None
+        
+        print(f"DEBUG: Server {self.id} - Evaluating k from {effective_min_k} to {effective_max_k}")
+        
+        for k in k_range:
+            try:
+                kmeans = KMeans(n_clusters=k, n_init=1, max_iter=150, random_state=42)
+                kmeans.fit(X)
+                labels = kmeans.labels_
+                
+                # Calculate silhouette score (using subsample if needed)
+                if sample_indices is not None:
+                    labels_sample = labels[sample_indices]
+                    score = silhouette_score(X_sample, labels_sample)
+                else:
+                    score = silhouette_score(X, labels)
+                
+                print(f"DEBUG: Server {self.id} - k={k:2d} | Silhouette Score: {score:+.4f}")
+                
+                if score > best_score:
+                    best_score = score
+                    best_k = k
+                    best_labels = labels
+                    best_centers = kmeans.cluster_centers_.tolist()
+                    
+            except Exception as e:
+                print(f"DEBUG: Server {self.id} - Failed to compute clustering for k={k}: {e}")
+                continue
+        
+        print(f"DEBUG: Server {self.id} - Best k={best_k} with silhouette score={best_score:.4f}")
+        
+        # Use the best clustering result
+        members = [[] for _ in range(best_k)]
+        
+        for vec, lbl in zip(vectors, best_labels):
             # Create new tuple with updated cluster index
             # Handle both old 4-tuple and new 5-tuple format
             if len(vec) > 4:
@@ -1562,7 +1631,7 @@ class Server:
                 new_vec = (vec[0], vec[1], vec[2], int(lbl), (time.time(), self.id))
             members[lbl].append(new_vec)
         
-        return {i: {'center': centers[i], 'members': members[i]} for i in range(n_clusters)}
+        return {i: {'center': best_centers[i], 'members': members[i]} for i in range(best_k)}
     
     def assign_clusters_to_peers(self, clusters, beam_width=50):
         reachable_peers = self.get_reachable_peers()

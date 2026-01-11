@@ -246,7 +246,7 @@ class TestServerUnit:
              noisy = [base[0] + np.random.uniform(-0.1, 0.1), base[1] + np.random.uniform(-0.1, 0.1)]
              vectors.append((noisy, i, "p", -1))
         
-        clusters_dict = server_node.clustering(vectors, num_clusters=2)
+        clusters_dict = server_node.clustering(vectors, min_k=2, max_k=2)
         assert len(clusters_dict) == 2
         
         # Verify format of output
