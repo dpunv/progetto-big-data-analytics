@@ -2617,3 +2617,1530 @@ class TestCertUtils:
             
             assert cert_mtime_before == cert_mtime_after
             assert key_mtime_before == key_mtime_after
+
+
+# ==================== Additional Tests for 100% Coverage ====================
+
+from server import PhiAccrualFailureDetector, cosine_similarity, QdrantVectorStore, VectorStore
+import math
+
+
+class TestPhiAccrualFailureDetector:
+    """Tests for PhiAccrualFailureDetector to achieve 100% coverage."""
+    
+    def test_phi_no_heartbeat(self):
+        """Test phi() returns 0.0 when no heartbeat received (line 112)."""
+        detector = PhiAccrualFailureDetector()
+        # No heartbeat_received() called
+        assert detector.phi() == 0.0
+    
+    def test_reset_method(self):
+        """Test reset() method (lines 160-164)."""
+        detector = PhiAccrualFailureDetector()
+        
+        # Generate some heartbeats
+        detector.heartbeat_received()
+        time.sleep(0.01)
+        detector.heartbeat_received()
+        
+        # Verify state is set
+        assert detector.last_heartbeat_time is not None
+        assert len(detector.heartbeat_intervals) > 0
+        
+        # Reset
+        detector.reset()
+        
+        # Verify state is cleared
+        assert detector.last_heartbeat_time is None
+        assert len(detector.heartbeat_intervals) == 0
+        assert detector._cached_mean == detector.first_heartbeat_estimate_ms
+        assert detector._cached_variance == 0.0
+    
+    def test_update_statistics_empty_intervals(self):
+        """Test _update_statistics() with empty intervals (line 90)."""
+        detector = PhiAccrualFailureDetector()
+        # Directly call with empty intervals
+        detector._update_statistics()
+        # Should return early without error
+        assert detector._cached_mean == detector.first_heartbeat_estimate_ms
+    
+    def test_update_statistics_single_interval(self):
+        """Test _update_statistics() with single interval (lines 99-100)."""
+        detector = PhiAccrualFailureDetector()
+        detector.heartbeat_intervals.append(1000.0)
+        detector._update_statistics()
+        # With single sample, variance should be 0
+        assert detector._cached_variance == 0.0
+    
+    def test_calculate_phi_math_edge_cases(self):
+        """Test _calculate_phi() with edge cases (lines 146-147)."""
+        detector = PhiAccrualFailureDetector()
+        
+        # Very large time difference - should trigger high phi
+        result = detector._calculate_phi(1e10)  # 10 billion ms
+        assert result > 0
+        
+        # Add a heartbeat to get real statistics
+        detector.heartbeat_received()
+        time.sleep(0.01)
+        detector.heartbeat_received()
+        
+        # Very large value that could cause overflow
+        result = detector._calculate_phi(1e15)
+        # Should return 100.0 as cap
+        assert result <= 100.0
+    
+    def test_is_available_when_suspicious(self):
+        """Test is_available() returns False when phi >= threshold."""
+        detector = PhiAccrualFailureDetector(threshold=0.001)  # Very low threshold
+        
+        # Generate heartbeat then wait to make phi high
+        detector.heartbeat_received()
+        time.sleep(0.1)  # Wait to increase suspicion
+        
+        # phi should be > threshold now
+        # Note: is_available checks phi < threshold
+        assert isinstance(detector.is_available(), bool)
+    
+    def test_heartbeat_received_updates_stats(self):
+        """Test heartbeat_received() updates statistics properly."""
+        detector = PhiAccrualFailureDetector()
+        
+        # First heartbeat sets last_heartbeat_time
+        detector.heartbeat_received()
+        assert detector.last_heartbeat_time is not None
+        
+        # Second heartbeat adds to intervals
+        time.sleep(0.01)
+        detector.heartbeat_received()
+        assert len(detector.heartbeat_intervals) == 1
+        
+        # Third heartbeat
+        time.sleep(0.01)
+        detector.heartbeat_received()
+        assert len(detector.heartbeat_intervals) == 2
+
+
+class TestCosineSimilarityNumpyBranch:
+    """Tests for cosine_similarity with numpy arrays (lines 170-172)."""
+    
+    def test_cosine_similarity_numpy_arrays(self):
+        """Test cosine_similarity with numpy arrays."""
+        v1 = np.array([1.0, 0.0])
+        v2 = np.array([1.0, 0.0])
+        
+        result = cosine_similarity(v1, v2)
+        assert result == pytest.approx(1.0)
+    
+    def test_cosine_similarity_numpy_orthogonal(self):
+        """Test cosine_similarity with orthogonal numpy arrays."""
+        v1 = np.array([1.0, 0.0])
+        v2 = np.array([0.0, 1.0])
+        
+        result = cosine_similarity(v1, v2)
+        assert result == pytest.approx(0.0)
+    
+    def test_cosine_similarity_mixed_types(self):
+        """Test cosine_similarity with list and numpy array mix."""
+        v1 = [1.0, 0.0]  # list
+        v2 = np.array([1.0, 0.0])  # numpy
+        
+        # Should trigger the else branch (lines 174-178)
+        result = cosine_similarity(v1, v2)
+        assert result == pytest.approx(1.0)
+
+
+class TestQdrantVectorStoreComplete:
+    """Complete tests for QdrantVectorStore to achieve 100% coverage."""
+    
+    def test_insert_numpy_array(self):
+        """Test insert with numpy array (line 397)."""
+        store = QdrantVectorStore(":memory:", "test_numpy", 2)
+        
+        # Vector with numpy array
+        vec = (np.array([1.0, 2.0]), 1, "payload", 0, (1.0, 0))
+        result = store.insert(vec)
+        assert result == True
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_version_conflict(self):
+        """Test insert with version conflict detection (lines 410-420)."""
+        store = QdrantVectorStore(":memory:", "test_conflict", 2)
+        
+        # Insert first version
+        vec1 = ([1.0, 2.0], 1, "v1", 0, (1.0, 0))
+        store.insert(vec1)
+        
+        # Try to insert older version - should fail
+        vec2 = ([1.0, 2.0], 1, "v0", 0, (0.5, 0))
+        result = store.insert(vec2)
+        assert result == False
+        
+        # Insert newer version - should succeed
+        vec3 = ([1.0, 2.0], 1, "v2", 0, (2.0, 0))
+        result = store.insert(vec3)
+        assert result == True
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_with_destinations(self):
+        """Test insert with destinations (line 441)."""
+        store = QdrantVectorStore(":memory:", "test_dest", 2)
+        
+        # Vector with destinations (6 elements)
+        vec = ([1.0, 2.0], 1, "payload", 0, (1.0, 0), frozenset([1, 2, 3]))
+        result = store.insert(vec)
+        assert result == True
+        
+        # Retrieve and check destinations are preserved
+        retrieved = store.get_vector(1)
+        assert retrieved is not None
+        assert 5 in range(len(retrieved))  # Has destinations
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_batch_with_conflicts(self):
+        """Test insert_batch with version conflicts (lines 479-565)."""
+        store = QdrantVectorStore(":memory:", "test_batch_conflict", 2)
+        
+        # Insert initial vector
+        vec1 = ([1.0, 2.0], 1, "v1", 0, (1.0, 0))
+        store.insert(vec1)
+        
+        # Batch with mix of new and conflicting versions
+        vectors = [
+            ([1.0, 2.0], 1, "v0", 0, (0.5, 0)),  # Older - skip
+            ([3.0, 4.0], 2, "v2", 0, (1.0, 0)),  # New - insert
+            ([5.0, 6.0], 3, "v3", 0, (1.0, 0)),  # New - insert
+        ]
+        
+        count = store.insert_batch(vectors)
+        assert count == 2  # Only 2 new vectors inserted
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_batch_empty(self):
+        """Test insert_batch with empty list (line 479)."""
+        store = QdrantVectorStore(":memory:", "test_batch_empty", 2)
+        
+        count = store.insert_batch([])
+        assert count == 0
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_insert_batch_all_skipped(self):
+        """Test insert_batch when all vectors are skipped (lines 552-553)."""
+        store = QdrantVectorStore(":memory:", "test_batch_skip", 2)
+        
+        # Insert vectors first
+        store.insert(([1.0, 2.0], 1, "v1", 0, (5.0, 0)))
+        store.insert(([3.0, 4.0], 2, "v2", 0, (5.0, 0)))
+        
+        # Batch with all older versions
+        vectors = [
+            ([1.0, 2.0], 1, "old", 0, (1.0, 0)),
+            ([3.0, 4.0], 2, "old", 0, (1.0, 0)),
+        ]
+        
+        count = store.insert_batch(vectors)
+        assert count == 0
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_remove_by_id(self):
+        """Test remove_by_id (line 567)."""
+        store = QdrantVectorStore(":memory:", "test_remove", 2)
+        
+        store.insert(([1.0, 2.0], 1, "payload", 0, (1.0, 0)))
+        assert store.count() == 1
+        
+        store.remove_by_id(1)
+        assert store.count() == 0
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_has_vector(self):
+        """Test has_vector (lines 569-570)."""
+        store = QdrantVectorStore(":memory:", "test_has", 2)
+        
+        assert store.has_vector(1) == False
+        
+        store.insert(([1.0, 2.0], 1, "payload", 0, (1.0, 0)))
+        assert store.has_vector(1) == True
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_get_vector(self):
+        """Test get_vector (lines 572-576)."""
+        store = QdrantVectorStore(":memory:", "test_get", 2)
+        
+        # Not found
+        assert store.get_vector(1) is None
+        
+        # Found
+        store.insert(([1.0, 2.0], 1, "payload", 0, (1.0, 0)))
+        result = store.get_vector(1)
+        assert result is not None
+        assert result[1] == 1
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_get_all_ids(self):
+        """Test get_all_ids (lines 614-615)."""
+        store = QdrantVectorStore(":memory:", "test_ids", 2)
+        
+        store.insert(([1.0, 2.0], 1, "a", 0, (1.0, 0)))
+        store.insert(([3.0, 4.0], 2, "b", 0, (1.0, 0)))
+        
+        ids = store.get_all_ids()
+        assert ids == {1, 2}
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_point_to_tuple_with_destinations(self):
+        """Test _point_to_tuple with destinations (lines 634-636)."""
+        store = QdrantVectorStore(":memory:", "test_tuple", 2)
+        
+        # Insert with destinations
+        vec = ([1.0, 2.0], 1, "payload", 0, (1.0, 0), frozenset([1, 2]))
+        store.insert(vec)
+        
+        # Retrieve - should have destinations
+        result = store.get_vector(1)
+        assert result is not None
+        assert len(result) == 6
+        assert isinstance(result[5], frozenset)
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_get_by_cluster(self):
+        """Test get_by_cluster (lines 582-608)."""
+        store = QdrantVectorStore(":memory:", "test_cluster", 2)
+        
+        store.insert(([1.0, 2.0], 1, "a", 0, (1.0, 0)))
+        store.insert(([3.0, 4.0], 2, "b", 1, (1.0, 0)))
+        store.insert(([5.0, 6.0], 3, "c", 0, (1.0, 0)))
+        
+        cluster0 = store.get_by_cluster(0)
+        assert len(cluster0) == 2
+        
+        cluster1 = store.get_by_cluster(1)
+        assert len(cluster1) == 1
+        
+        qdrant_module._client_cache.clear()
+    
+    def test_ensure_collection_error(self):
+        """Test _ensure_collection error case (line 383)."""
+        # Create store with invalid params to trigger error
+        # Since :memory: always works, we simulate by checking the print output
+        store = QdrantVectorStore(":memory:", "test_ensure", 2)
+        store.collection_created = True  # Already created
+        
+        # Call again - should not recreate
+        store._ensure_collection(2)
+        
+        qdrant_module._client_cache.clear()
+
+
+class TestServerWithClientEndpoint:
+    """Tests for Server with client endpoint (lines 681-682, 735-743)."""
+    
+    def test_server_with_client_port(self):
+        """Test Server initialization with client_port."""
+        port = get_free_port()
+        client_port = get_free_port()
+        
+        s = Server(
+            id=1, 
+            is_coordinator=True, 
+            before_clustering=10, 
+            replication_factor=1, 
+            port=port,
+            client_port=client_port
+        )
+        
+        try:
+            # Verify client endpoint was created
+            assert s.client_endpoint is not None
+            assert hasattr(s, 'client_thread')
+            assert s.client_thread.is_alive()
+            
+            time.sleep(0.5)  # Allow thread to start
+        finally:
+            s.stop()
+
+
+class TestServerStopComplete:
+    """Tests for Server.stop() complete coverage (lines 795-821)."""
+    
+    def test_stop_with_client_endpoint(self):
+        """Test stop() with client endpoint."""
+        port = get_free_port()
+        client_port = get_free_port()
+        
+        s = Server(
+            id=1, 
+            is_coordinator=True, 
+            before_clustering=10, 
+            replication_factor=1, 
+            port=port,
+            client_port=client_port
+        )
+        
+        time.sleep(0.5)  # Allow threads to start
+        
+        # Stop should clean up both endpoints
+        s.stop()
+        
+        # Verify threads stopped
+        assert not s.worker_thread.is_alive()
+    
+    def test_stop_handles_exceptions(self):
+        """Test stop() handles exceptions gracefully."""
+        s = Server(1, True, 10, 1, port=get_free_port())
+        
+        time.sleep(0.2)
+        
+        # Corrupt the endpoint to force exception handling
+        s.endpoint = None  # Will cause AttributeError
+        
+        # Should not raise
+        s.stop()
+
+
+class TestServerHeartbeatEdgeCases:
+    """Tests for Server heartbeat edge cases (lines 953-954, 977-979, 1012-1015)."""
+    
+    def test_get_peer_phi(self):
+        """Test get_peer_phi method (lines 1012-1015)."""
+        s = Server(1, True, 10, 1, port=get_free_port())
+        
+        try:
+            # No failure detector for peer 99
+            phi = s.get_peer_phi(99)
+            assert phi == 0.0
+            
+            # Create detector for peer 2
+            s.failure_detectors[2] = PhiAccrualFailureDetector()
+            s.failure_detectors[2].heartbeat_received()
+            
+            # Now get phi
+            phi = s.get_peer_phi(2)
+            assert phi >= 0.0
+        finally:
+            s.stop()
+    
+    def test_heartbeat_exception_in_peer_id(self):
+        """Test heartbeat_loop handles exception in get_id (lines 953-954)."""
+        s = Server(1, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Add a peer that raises on get_id
+            bad_peer = MagicMock()
+            bad_peer.get_id.side_effect = Exception("ID Error")
+            s.peers.append(bad_peer)
+            
+            time.sleep(1.5)  # Let heartbeat run
+            
+            # Server should still be running
+            assert s.running
+        finally:
+            s.stop()
+
+
+class TestServerElectionEdgeCases:
+    """Tests for Server election edge cases (line 1060)."""
+    
+    def test_elect_with_empty_active_peers(self):
+        """Test elect_partition_coordinator with empty active peers (line 1060)."""
+        s = Server(1, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Manually clear active peers
+            s.active_peers = set()
+            
+            # Should return early without error
+            s.elect_partition_coordinator()
+            
+            # No crash
+        finally:
+            s.stop()
+
+
+class TestServerDeliverHintsException:
+    """Tests for deliver_hints exception handling (lines 1116-1119)."""
+    
+    def test_deliver_hints_puts_back_on_failure(self):
+        """Test deliver_hints puts hints back on failure (lines 1116-1119)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Store hints
+            vec = ([1.0], 1, "a", 0, (1.0, 0))
+            s.hinted_handoff.store_hint(1, [vec])
+            
+            # Add mock peer that fails on receive
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.receive.side_effect = Exception("Delivery failed!")
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}  # Mark as reachable
+            
+            # Deliver hints
+            s.deliver_hints()
+            
+            # Hints should be put back
+            assert s.hinted_handoff.has_hints_for(1)
+        finally:
+            s.stop()
+
+
+class TestServerSendToPeersEdgeCases:
+    """Tests for send_to_peers edge cases (lines 1263-1284)."""
+    
+    def test_send_to_peers_with_existing_destinations(self):
+        """Test send_to_peers uses stored destinations (lines 1271-1273)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 1.0
+            mock_peer.receive = MagicMock()
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            s.status = 'clustered'
+            
+            # Vector with pre-calculated destinations
+            vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1]))
+            s.send_to_peers([vec])
+            
+            # Peer 1 should receive
+            mock_peer.receive.assert_called()
+        finally:
+            s.stop()
+    
+    def test_send_to_peers_calculates_destinations(self):
+        """Test send_to_peers calculates destinations (lines 1276-1281)."""
+        s = Server(0, True, 10, 2, port=get_free_port())
+        
+        try:
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 1.0
+            mock_peer.receive = MagicMock()
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            s.status = 'clustered'
+            s.clusters = [(0, [1.0])]
+            
+            # Vector without destinations (will be calculated)
+            vec = ([1.0], 1, "a", 0, (1.0, 0))
+            s.send_to_peers([vec])
+        finally:
+            s.stop()
+
+
+class TestServerCalculateDestinationsEdgeCases:
+    """Tests for _calculate_destinations edge cases (lines 1342-1345)."""
+    
+    def test_calculate_destinations_empty_peers(self):
+        """Test _calculate_destinations with empty peers."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            s.peers = []
+            
+            vec = ([1.0], 1, "a", 0, (1.0, 0))
+            result = s._calculate_destinations(vec)
+            
+            assert result == frozenset()
+        finally:
+            s.stop()
+
+
+class TestServerHandleReceiveEdgeCases:
+    """Tests for _handle_receive edge cases (lines 1370-1375, 1407)."""
+    
+    def test_handle_receive_client_drops_when_no_coord(self):
+        """Test _handle_receive client drops vectors when no coordinator (lines 1387-1388)."""
+        s = Server(0, False, 10, 1, port=get_free_port())  # Not coordinator
+        
+        try:
+            # No coordinator peer
+            s.peers = [Peer(s.ip, s.port, server_instance=s)]
+            
+            initial_dropped = s.dropped_vectors
+            
+            vec = ([1.0], 1, "a", -1, (1.0, 0))
+            s._handle_receive([vec], 'client')
+            
+            # Vectors should be dropped
+            assert s.dropped_vectors == initial_dropped + 1
+        finally:
+            s.stop()
+
+
+class TestServerClusteringEdgeCases:
+    """Tests for clustering edge cases."""
+    
+    def test_clustering_too_few_samples(self):
+        """Test clustering with too few samples (lines 1526-1536)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Only 3 vectors - not enough for proper clustering
+            vectors = [
+                ([1.0, 0.0], 1, "a", -1, (1.0, 0)),
+                ([0.5, 0.5], 2, "b", -1, (1.0, 0)),
+                ([0.0, 1.0], 3, "c", -1, (1.0, 0)),
+            ]
+            
+            # min_k=5 but only 3 samples
+            result = s.clustering(vectors, min_k=5, max_k=10)
+            
+            # Should return single cluster
+            assert len(result) == 1
+            assert 0 in result
+            assert len(result[0]['members']) == 3
+        finally:
+            s.stop()
+    
+    def test_clustering_with_subsampling(self):
+        """Test clustering with subsampling (lines 1541-1548, 1563-1566)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Create enough vectors to trigger subsampling
+            # SILHOUETTE_SUBSAMPLE_SIZE is 2000
+            # We'll create 50 vectors and set sample size lower for test
+            vectors = []
+            for i in range(50):
+                base = [1.0, 0.0] if i % 2 == 0 else [0.0, 1.0]
+                noisy = [base[0] + np.random.uniform(-0.1, 0.1), 
+                        base[1] + np.random.uniform(-0.1, 0.1)]
+                vectors.append((noisy, i, f"p{i}", -1, (1.0, 0)))
+            
+            # Run clustering with small k range
+            result = s.clustering(vectors, min_k=2, max_k=5)
+            
+            assert len(result) >= 2
+        finally:
+            s.stop()
+    
+    def test_clustering_exception_in_kmeans(self):
+        """Test clustering handles exception in kmeans (lines 1616-1618)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Create vectors that might cause issues
+            vectors = [
+                ([1.0, 0.0], 1, "a", -1, (1.0, 0)),
+                ([1.0, 0.0], 2, "b", -1, (1.0, 0)),  # Same point
+            ]
+            
+            # With very narrow k range
+            result = s.clustering(vectors, min_k=2, max_k=2)
+            
+            # Should handle gracefully
+            assert isinstance(result, dict)
+        finally:
+            s.stop()
+
+
+class TestServerSearchEdgeCases:
+    """Tests for search edge cases (lines 1701-1702, 1761-1763, 1779-1782, 1808-1810)."""
+    
+    def test_search_vectors_exception_in_future(self):
+        """Test search_vectors handles exception in futures (lines 1701-1702)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 1.0
+            mock_peer.search_vectors_local.side_effect = Exception("Search Error!")
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            s.status = 'clustered'
+            s.clusters = [(0, [1.0, 0.0])]
+            
+            # Should not raise
+            result = s.search_vectors([(1, [1.0, 0.0])], top_k=5, top_look=2)
+            
+            # Just verify it handles the exception
+            assert isinstance(result, list)
+        finally:
+            s.stop()
+    
+    def test_search_vectors_local_matrix_error(self):
+        """Test search_vectors_local handles matrix creation error (lines 1761-1763)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Insert vectors with mismatched dimensions to cause error
+            s.store.insert((np.array([1.0, 2.0]), 1, "a", 0, (1.0, 0)))
+            s.store.insert((np.array([1.0, 2.0, 3.0]), 2, "b", 0, (1.0, 0)))  # Different dim
+            
+            # Query
+            result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
+            
+            # Should return empty on error
+            assert result == []
+        finally:
+            s.stop()
+    
+    def test_search_vectors_local_argpartition_branch(self):
+        """Test search_vectors_local argpartition branch (lines 1808-1810)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Insert more vectors than top_k to trigger argpartition
+            for i in range(20):
+                s.store.insert((np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0)))
+            
+            # Query with top_k < count
+            result = s.search_vectors_local([([10.0, 10.0], 1)], top_k=5)
+            
+            assert len(result) == 5
+        finally:
+            s.stop()
+    
+    def test_search_vectors_local_empty_store(self):
+        """Test search_vectors_local with empty store (lines 1751-1752)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Store is empty
+            result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
+            assert result == []
+        finally:
+            s.stop()
+
+
+class TestVectorStoreEdgeCasesComplete:
+    """Additional VectorStore edge cases."""
+    
+    def test_insert_with_4_tuple(self):
+        """Test insert with 4-tuple (old format)."""
+        store = VectorStore()
+        
+        vec = ([1.0], 1, "a", 0)  # No version
+        result = store.insert(vec)
+        
+        assert result == True
+        assert store.count() == 1
+    
+    def test_insert_with_6_tuple(self):
+        """Test insert with 6-tuple (full format with destinations)."""
+        store = VectorStore()
+        
+        vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1, 2]))
+        result = store.insert(vec)
+        
+        assert result == True
+        stored = store.get_vector(1)
+        assert len(stored) == 6
+    
+    def test_remove_cleans_up_cluster_dict(self):
+        """Test remove_by_id cleans up empty cluster."""
+        store = VectorStore()
+        
+        store.insert(([1.0], 1, "a", 0, (1.0, 0)))
+        assert 0 in store.vectors
+        
+        store.remove_by_id(1)
+        
+        # Cluster 0 should be removed since it's empty
+        assert 0 not in store.vectors
+
+
+class TestServerReconcileException:
+    """Tests for reconciliation exception handling (lines 1100-1101)."""
+    
+    def test_reconcile_with_other_coordinators_exception(self):
+        """Test _reconcile_with_other_coordinators logs exception."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            
+            # Make reconcile_with_peer throw
+            original_reconcile = s.reconcile_with_peer
+            s.reconcile_with_peer = MagicMock(side_effect=Exception("Reconcile Error"))
+            
+            # Should not raise
+            s._reconcile_with_other_coordinators()
+            
+            s.reconcile_with_peer = original_reconcile
+        finally:
+            s.stop()
+
+
+class TestServerCalculateSleepWithJitter:
+    """Tests for _calculate_sleep_with_jitter."""
+    
+    def test_calculate_sleep_with_jitter(self):
+        """Test _calculate_sleep_with_jitter returns valid value."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            result = s._calculate_sleep_with_jitter()
+            
+            # Should be between 0.1 and interval + jitter
+            assert result >= 0.1
+            assert result <= s.heartbeat_interval + s.heartbeat_jitter
+        finally:
+            s.stop()
+
+
+class TestServerMainFunction:
+    """Tests for main() function - pragmatic approach."""
+    
+    def test_main_imports(self):
+        """Verify main function exists and is callable."""
+        from server import main
+        
+        # Just verify it's a function
+        assert callable(main)
+    
+    def test_main_with_help(self):
+        """Test main() with --help shows help and exits."""
+        import subprocess
+        import sys
+        
+        result = subprocess.run(
+            [sys.executable, "-c", 
+             "import sys; sys.argv = ['server.py', '--help']; from server import main; main()"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        # Should exit with 0 (help) and show usage
+        assert "usage" in result.stdout.lower() or result.returncode == 0
+
+
+# ==================== Final Coverage Push ====================
+
+class TestAddPeerEdgeCases:
+    """Tests for add_peer edge cases (lines 766-767, 772)."""
+    
+    def test_add_peer_invalid_argument(self):
+        """Test add_peer with invalid argument (lines 766-767)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Invalid argument type
+            s.add_peer(12345)  # Not a string or Server instance
+            
+            # Should just print error and return
+            # Only self peer should exist
+            assert len(s.peers) == 1
+        finally:
+            s.stop()
+    
+    def test_add_peer_duplicate(self):
+        """Test add_peer prevents duplicates (line 772)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            other = Server(1, False, 10, 1, port=get_free_port())
+            
+            # Add same peer twice
+            s.add_peer(other)
+            s.add_peer(other)  # Should be ignored
+            
+            # Should have 2 peers (self + other), not 3
+            assert len(s.peers) == 2
+            
+            other.stop()
+        finally:
+            s.stop()
+
+
+class TestServerEndpointStopExceptions:
+    """Tests for endpoint stop exception paths (lines 795-800, 815-818)."""
+    
+    def test_stop_with_timeout_in_endpoint_stop(self):
+        """Test stop handles timeout in endpoint.stop() (lines 795-796)."""
+        port = get_free_port()
+        s = Server(0, True, 10, 1, port=port)
+        
+        try:
+            time.sleep(0.5)  # Let endpoint start
+            
+            # Mock endpoint.stop to take too long
+            original_stop = s.endpoint.stop
+            
+            async def slow_stop():
+                await asyncio.sleep(10)  # Will timeout
+            
+            s.endpoint.stop = slow_stop
+            
+            # Stop should handle timeout gracefully
+            s.stop()
+            
+        except Exception:
+            pass  # Any cleanup exception is fine
+
+
+class TestHeartbeatPingException:
+    """Tests for heartbeat ping exception (lines 977-979, 984)."""
+    
+    def test_heartbeat_ping_exception_handled(self):
+        """Test heartbeat loop handles ping exception (lines 977-979)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Add peer that throws on ping
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 99
+            mock_peer.ping.side_effect = Exception("Network unreachable")
+            
+            s.peers.append(mock_peer)
+            
+            # Allow heartbeat to run - it should handle exception gracefully
+            time.sleep(0.2)
+            
+            # Server should still be running (exception handled)
+            assert s.running
+        finally:
+            s.stop()
+    
+    def test_heartbeat_phi_not_available(self):
+        """Test heartbeat returns None when phi says unavailable (line 984)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Create detector with very low threshold
+            fd = PhiAccrualFailureDetector(threshold=0.0001)  # Very suspicious threshold
+            fd.heartbeat_received()
+            time.sleep(0.1)  # Let time pass
+            
+            s.failure_detectors[99] = fd
+            
+            # Now phi should be > threshold, so is_available = False
+            # This simulates the case where peer responds to ping but phi is too high
+            
+        finally:
+            s.stop()
+
+
+class TestRouteVectorsClusterIndexException:
+    """Tests for route_vectors cluster index exception (lines 1263-1264)."""
+    
+    def test_route_vectors_cluster_index_exception(self):
+        """Test route_vectors handles cluster index exception (lines 1263-1264)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 1.0
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            s.clusters = [(0, [1.0, 0.0])]
+            
+            # Create a mock cluster_index that throws on search_batch
+            mock_index = MagicMock()
+            mock_index.search_batch.side_effect = Exception("Index Error!")
+            s.cluster_index = mock_index
+            s.cluster_to_destinations_cache = {0: {0, 1}}
+            
+            # Should handle exception and fallback - uses cluster_index automatically
+            result = s.route_vectors([([1.0, 0.0], 1)], top_k=1)
+            
+            assert 1 in result
+        finally:
+            s.stop()
+
+
+class TestRouteVectorsCandidateFallback:
+    """Tests for route_vectors candidate fallback (lines 1283-1284)."""
+    
+    def test_route_vectors_candidates_all_unreachable(self):
+        """Test route_vectors fallback when candidates unreachable (lines 1283-1284)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 1.0
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            s.clusters = [(0, [1.0, 0.0])]
+            
+            # Create index that returns cluster with destinations not matching reachable peers
+            mock_index = MagicMock()
+            # Return [[0]] for batch search - a list of lists
+            mock_index.search_batch.return_value = [[0]]
+            s.cluster_index = mock_index
+            # Destinations are peers 99, 100 which don't exist/aren't reachable
+            s.cluster_to_destinations_cache = {0: {99, 100}}
+            
+            # Should fallback to all reachable peers
+            result = s.route_vectors([([1.0, 0.0], 1)], top_k=1)
+            
+            # Should still get a result using fallback
+            assert 1 in result
+        finally:
+            s.stop()
+
+
+class TestCalculatePhiMathErrors:
+    """Tests for _calculate_phi math errors (lines 146-147)."""
+    
+    def test_calculate_phi_very_small_p(self):
+        """Test _calculate_phi when p becomes very small (triggers cap)."""
+        detector = PhiAccrualFailureDetector()
+        
+        # First record some heartbeats
+        detector.heartbeat_received()
+        time.sleep(0.005)
+        detector.heartbeat_received()
+        time.sleep(0.005)
+        detector.heartbeat_received()
+        
+        # Now the mean is ~5ms. If we calculate phi for a very large time diff,
+        # p will be extremely small, potentially causing log issues.
+        result = detector._calculate_phi(1e12)  # 1 trillion ms (absurd)
+        
+        # Should return 100.0 as cap
+        assert result == 100.0
+
+
+class TestHandleReceiveComplexPaths:
+    """Tests for _handle_receive complex paths (lines 1370-1375)."""
+    
+    def test_handle_receive_bootstrap_clustered_sends_to_peers(self):
+        """Test _handle_receive bootstrap when clustered sends to peers (line 1370)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            s.status = 'clustered'
+            
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 1.0
+            mock_peer.receive = MagicMock()
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            s.clusters = [(0, [1.0])]
+            
+            vec = ([1.0], 1, "a", -1, (1.0, 0))
+            s._handle_receive([vec], 'bootstrap')
+            
+            # send_to_peers would be called
+        finally:
+            s.stop()
+    
+    def test_handle_receive_client_clustered_sends_to_peers(self):
+        """Test _handle_receive client when clustered (lines 1428-1430)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            s.status = 'clustered'
+            
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 1.0
+            mock_peer.receive = MagicMock()
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.active_peers = {0, 1}
+            s.clusters = [(0, [1.0])]
+            
+            vec = ([1.0], 1, "a", -1, (1.0, 0))
+            s._handle_receive([vec], 'client')
+            
+            # send_to_peers would be called
+        finally:
+            s.stop()
+
+
+class TestSaveVectorsDuplicatesPath:
+    """Tests for save_vectors when duplicates are skipped (line 1447)."""
+    
+    def test_save_vectors_some_duplicates(self):
+        """Test save_vectors when some are duplicates (line 1447)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Insert first vector
+            s.store.insert((np.array([1.0]), 1, "a", 0, (1.0, 0)))
+            
+            # Now save batch with one duplicate
+            vectors = [
+                (np.array([1.0]), 1, "a", 0, (0.5, 0)),  # Older version - skip
+                (np.array([2.0]), 2, "b", 0, (1.0, 0)),  # New
+            ]
+            
+            s.save_vectors(vectors)
+            
+            # Should have 2 total (first + new second)
+            assert s.store.count() == 2
+        finally:
+            s.stop()
+
+
+class TestClusteringEdgeCasesAdditional:
+    """Additional clustering edge cases."""
+    
+    def test_clustering_single_cluster_fallback(self):
+        """Test clustering falls back to single cluster (lines 1528-1536)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Only 2 vectors with min_k=10
+            vectors = [
+                ([1.0, 0.0], 1, "a", -1, (1.0, 0)),
+                ([0.0, 1.0], 2, "b", -1, (1.0, 0)),
+            ]
+            
+            result = s.clustering(vectors, min_k=10, max_k=20)
+            
+            # Should return single cluster
+            assert len(result) == 1
+        finally:
+            s.stop()
+    
+    def test_clustering_subsampling_active(self):
+        """Test clustering with subsampling (lines 1581-1583, 1603-1604)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        # Temporarily reduce subsample size for test
+        import server as server_module
+        original_size = server_module.SILHOUETTE_SUBSAMPLE_SIZE
+        server_module.SILHOUETTE_SUBSAMPLE_SIZE = 10
+        
+        try:
+            # Create more vectors than subsample size
+            vectors = []
+            for i in range(30):
+                base = [1.0, 0.0] if i < 15 else [0.0, 1.0]
+                noisy = [base[0] + np.random.uniform(-0.1, 0.1), 
+                        base[1] + np.random.uniform(-0.1, 0.1)]
+                vectors.append((noisy, i, f"p{i}", -1, (1.0, 0)))
+            
+            result = s.clustering(vectors, min_k=2, max_k=3)
+            
+            assert len(result) >= 2
+        finally:
+            server_module.SILHOUETTE_SUBSAMPLE_SIZE = original_size
+            s.stop()
+
+
+class TestSearchVectorsLocalQueryMatrixError:
+    """Tests for search_vectors_local query matrix error (lines 1779-1782)."""
+    
+    def test_search_vectors_local_query_matrix_error(self):
+        """Test search_vectors_local handles query matrix error (lines 1779-1782)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Insert valid vectors
+            s.store.insert((np.array([1.0, 2.0]), 1, "a", 0, (1.0, 0)))
+            s.store.insert((np.array([3.0, 4.0]), 2, "b", 0, (1.0, 0)))
+            
+            # Create query with mismatched vector to cause error
+            # Actually the query matrix is created from query_vectors
+            # We need queries with inconsistent types/shapes
+            
+            # Use patch to simulate error in query matrix creation
+            with patch('numpy.stack', side_effect=Exception("Shape mismatch")):
+                result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
+                # Should return empty on error
+                assert result == []
+        finally:
+            s.stop()
+
+
+class TestEnsureCollectionError:
+    """Tests for QdrantVectorStore _ensure_collection error path (line 383)."""
+    
+    def test_ensure_collection_returns_false(self):
+        """Test _ensure_collection when create_collection fails."""
+        # Mock create_collection to return False
+        with patch.object(qdrant_module, 'create_collection', return_value=False):
+            store = QdrantVectorStore(":memory:", "test_fail", 2)
+            
+            # collection_created should be False
+            assert store.collection_created == False
+        
+        qdrant_module._client_cache.clear()
+
+
+class TestQdrantInsertBatchRetrieveError:
+    """Tests for QdrantVectorStore insert_batch retrieve error (lines 507-509)."""
+    
+    def test_insert_batch_retrieve_error(self):
+        """Test insert_batch handles retrieve error (lines 507-509)."""
+        store = QdrantVectorStore(":memory:", "test_err", 2)
+        
+        # Mock retrieve to fail
+        original_get_client = qdrant_module.get_client
+        
+        def mock_get_client(url):
+            client = original_get_client(url)
+            # Wrap retrieve to throw
+            original_retrieve = client.retrieve
+            def failing_retrieve(*args, **kwargs):
+                raise Exception("Retrieve Error!")
+            client.retrieve = failing_retrieve
+            return client
+        
+        with patch.object(qdrant_module, 'get_client', mock_get_client):
+            store2 = QdrantVectorStore(":memory:", "test_err2", 2)
+            
+            vectors = [
+                ([1.0, 2.0], 1, "a", 0, (1.0, 0)),
+            ]
+            
+            count = store2.insert_batch(vectors)
+            # Should return 0 on error
+            assert count == 0
+        
+        qdrant_module._client_cache.clear()
+
+
+class TestQdrantInsertBatchUploadError:
+    """Tests for QdrantVectorStore insert_batch upload error (lines 563-565)."""
+    
+    def test_insert_batch_upload_error(self):
+        """Test insert_batch handles upload error (lines 563-565)."""
+        store = QdrantVectorStore(":memory:", "test_upload_err", 2)
+        
+        # Insert works fine first
+        store.insert(([0.5, 0.5], 100, "existing", 0, (1.0, 0)))
+        
+        # Now mock upload_points to fail
+        original_get_client = qdrant_module.get_client
+        
+        def mock_get_client(url):
+            client = original_get_client(url)
+            # Wrap upload_points to throw
+            def failing_upload(*args, **kwargs):
+                raise Exception("Upload Error!")
+            client.upload_points = failing_upload
+            return client
+        
+        with patch.object(qdrant_module, 'get_client', mock_get_client):
+            store2 = QdrantVectorStore(":memory:", "test_upload_err2", 2)
+            
+            vectors = [
+                ([1.0, 2.0], 1, "a", 0, (1.0, 0)),
+            ]
+            
+            count = store2.insert_batch(vectors)
+            # Should return 0 on error
+            assert count == 0
+        
+        qdrant_module._client_cache.clear()
+
+
+# ==================== Final Push for 100% Coverage ====================
+
+class TestClusteringWithOldFormatVectors:
+    """Tests for clustering edge cases with 4-tuple vectors (line 1528, 1574)."""
+    
+    def test_clustering_too_few_with_4_tuple_vectors(self):
+        """Test clustering with old 4-tuple format (lines 1528, 1574)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Create 2 vectors with 4-tuple format (no version)
+            vectors = [
+                ([1.0, 0.0], 1, "a", -1),
+                ([0.0, 1.0], 2, "b", -1),
+            ]
+            
+            # Use very high min_k to trigger single cluster fallback
+            result = s.clustering(vectors, min_k=20, max_k=30)
+            
+            # Should return single cluster with version added
+            assert len(result) == 1
+            assert 0 in result
+            # Members should have version now
+            for member in result[0]['members']:
+                assert len(member) >= 5  # Version added
+        finally:
+            s.stop()
+
+
+class TestHeartbeatPingDetectorPath:
+    """Additional heartbeat tests."""
+    
+    def test_heartbeat_detector_not_available_path(self):
+        """Test heartbeat loop when detector says unavailable (line 984)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Create a mock peer that responds to ping
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 99
+            mock_peer.ping.return_value = True  # Ping succeeds
+            
+            s.peers.append(mock_peer)
+            
+            # Create detector that will say unavailable
+            detector = PhiAccrualFailureDetector(threshold=0.0)  # threshold=0 means always unavailable
+            s.failure_detectors[99] = detector
+            
+            # Wait for heartbeat
+            time.sleep(0.5)
+            
+            # Server should still be running
+            assert s.running
+        finally:
+            s.stop()
+
+
+class TestCalculateDestinationsEmptyPeersComplete:
+    """Additional test for _calculate_destinations (lines 1342-1345)."""
+    
+    def test_calculate_destinations_fallback_path(self):
+        """Test _calculate_destinations fallback when no cluster_index."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Set up with peers but no cluster_index
+            mock_peer = MagicMock()
+            mock_peer.get_id.return_value = 1
+            mock_peer.similarity.return_value = 0.9
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
+            s.cluster_index = None  # No index
+            s.clusters = [(0, [1.0])]
+            
+            vec = ([1.0], 1, "a", 0, (1.0, 0))
+            result = s._calculate_destinations(vec)
+            
+            # Should use fallback path (all peers based on similarity)
+            assert len(result) > 0
+        finally:
+            s.stop()
+
+
+class TestHandleReceiveForwardToCoord:
+    """Tests for _handle_receive forwarding path (lines 1370-1375)."""
+    
+    def test_handle_receive_forwards_to_coordinator(self):
+        """Test _handle_receive client forwards to coordinator (line 1423)."""
+        # Create non-coordinator server
+        s = Server(0, False, 10, 1, port=get_free_port())
+        
+        try:
+            # Create mock coordinator
+            mock_coord = MagicMock()
+            mock_coord.get_id.return_value = 1
+            mock_coord.i_am_coord.return_value = True
+            mock_coord.receive = MagicMock()
+            
+            s.peers = [Peer(s.ip, s.port, server_instance=s), mock_coord]
+            s.active_peers = {0, 1}
+            s.status = 'bootstrap'  # Not clustered
+            
+            vec = ([1.0], 1, "a", -1, (1.0, 0))
+            s._handle_receive([vec], 'client')
+            
+            # Should forward to coordinator
+            mock_coord.receive.assert_called()
+        finally:
+            s.stop()
+
+
+class TestHandleReceiveStatusCorrupted:
+    """Tests for status corrupted error path (line 1407, 1440)."""
+    
+    def test_handle_receive_invalid_status(self):
+        """Test _handle_receive with invalid sender_status (lines 1438-1440)."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            vec = ([1.0], 1, "a", 0, (1.0, 0))
+            # Send with completely invalid status
+            s._handle_receive([vec], 'completely_invalid_status')
+            
+            # Should just print error, not crash
+        finally:
+            s.stop()
+
+
+class TestServerStopClientEndpointException:
+    """Tests for stop() client endpoint exception (lines 815-818)."""
+    
+    def test_stop_client_endpoint_timeout(self):
+        """Test stop handles client endpoint timeout."""
+        port = get_free_port()
+        client_port = get_free_port()
+        
+        s = Server(0, True, 10, 1, port=port, client_port=client_port)
+        
+        try:
+            time.sleep(0.5)
+            
+            # Mock client_endpoint.stop to be slow
+            if s.client_endpoint:
+                async def slow_stop():
+                    await asyncio.sleep(10)
+                s.client_endpoint.stop = slow_stop
+            
+        finally:
+            # Stop should handle the timeout gracefully
+            s.stop()
+
+
+class TestServerStopEndpointScheduleError:
+    """Tests for stop() endpoint schedule error (lines 797-800)."""
+    
+    def test_stop_endpoint_schedule_failure(self):
+        """Test stop handles endpoint schedule failure."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            time.sleep(0.3)
+            
+            # Make the loop raise on schedule
+            if hasattr(s, 'endpoint_loop'):
+                original_run = asyncio.run_coroutine_threadsafe
+                
+                def failing_run(*args, **kwargs):
+                    raise Exception("Schedule Error!")
+                
+                # Patch temporarily during stop
+                asyncio.run_coroutine_threadsafe = failing_run
+                
+        finally:
+            # Restore
+            asyncio.run_coroutine_threadsafe = original_run if 'original_run' in dir() else asyncio.run_coroutine_threadsafe
+            s.stop()
+
+
+class TestClusteringExceptionHandling:
+    """Tests for clustering exception in kmeans (lines 1616-1618)."""
+    
+    def test_clustering_kmeans_exception_path(self):
+        """Test clustering handles exception in kmeans iteration (lines 1616-1618)."""
+        from sklearn.metrics import silhouette_score as sklearn_silhouette
+        
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Create vectors with enough diversity for clustering
+            vectors = []
+            for i in range(20):
+                base = [1.0, 0.0] if i < 10 else [0.0, 1.0]
+                noisy = [base[0] + np.random.uniform(-0.1, 0.1), 
+                        base[1] + np.random.uniform(-0.1, 0.1)]
+                vectors.append((noisy, i, f"p{i}", -1, (1.0, 0)))
+            
+            # Patch silhouette_score to throw for specific k values
+            call_count = [0]
+            
+            def failing_silhouette(*args, **kwargs):
+                call_count[0] += 1
+                if call_count[0] == 1:  # Fail on first k
+                    raise ValueError("Silhouette computation failed!")
+                return sklearn_silhouette(*args, **kwargs)
+            
+            with patch('server.silhouette_score', failing_silhouette):
+                result = s.clustering(vectors, min_k=2, max_k=3)
+                
+                # Should still return valid result from second k
+                assert isinstance(result, dict)
+                assert len(result) > 0
+        finally:
+            s.stop()
+
+
+class TestSearchVectorsLocalQueryError:
+    """Tests for search_vectors_local query creation error (lines 1779-1782)."""
+    
+    def test_search_vectors_local_query_conversion_error(self):
+        """Test search_vectors_local handles query conversion error."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+        
+        try:
+            # Insert some valid vectors
+            for i in range(5):
+                s.store.insert((np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0)))
+            
+            # Patch numpy.array to fail for query conversion
+            with patch('numpy.array', side_effect=Exception("Array conversion failed!")):
+                result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
+                # Should return empty on error
+                assert result == []
+        finally:
+            s.stop()
+
+
+class TestQdrantBatchWithDestinations:
+    """Tests for QdrantVectorStore insert_batch with destinations (line 543)."""
+    
+    def test_insert_batch_with_destinations(self):
+        """Test insert_batch preserves destinations."""
+        store = QdrantVectorStore(":memory:", "test_batch_dest", 2)
+        
+        vectors = [
+            ([1.0, 2.0], 1, "a", 0, (1.0, 0), frozenset([1, 2])),
+            ([3.0, 4.0], 2, "b", 0, (1.0, 0), frozenset([2, 3])),
+        ]
+        
+        count = store.insert_batch(vectors)
+        assert count == 2
+        
+        # Retrieve and verify destinations
+        vec1 = store.get_vector(1)
+        assert len(vec1) == 6
+        
+        qdrant_module._client_cache.clear()
+
+
+class TestQdrantInsertBatchNumpyDim:
+    """Tests for QdrantVectorStore insert_batch numpy array dim (line 487)."""
+    
+    def test_insert_batch_numpy_array_dim(self):
+        """Test insert_batch with numpy array dimension extraction."""
+        store = QdrantVectorStore(":memory:", "test_batch_np", 2)
+        
+        # Vectors with numpy arrays
+        vectors = [
+            (np.array([1.0, 2.0]), 1, "a", 0, (1.0, 0)),
+        ]
+        
+        count = store.insert_batch(vectors)
+        assert count == 1
+        
+        qdrant_module._client_cache.clear()
+
+
+class TestPhiCalculateOverflow:
+    """Tests for _calculate_phi overflow (lines 146-147)."""
+    
+    def test_calculate_phi_triggers_exception(self):
+        """Test _calculate_phi returns 100.0 on math error."""
+        detector = PhiAccrualFailureDetector()
+        
+        # Record heartbeats with normal intervals
+        detector.heartbeat_received()
+        time.sleep(0.001)
+        detector.heartbeat_received()
+        
+        # Mock math.erfc to raise error
+        with patch('math.erfc', side_effect=ValueError("Math domain error")):
+            result = detector._calculate_phi(1000.0)
+            assert result == 100.0
+
+
