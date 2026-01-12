@@ -1,16 +1,16 @@
-import server as sv
+import concurrent.futures
 import json
 import sys
-from typing import List
-import concurrent.futures
 import time
+
+import server as sv
 
 start_time = time.time()
 
 print("starting client")
 # read the data
 data = []
-with open('embeddings.json', 'r') as f:
+with open("embeddings.json", "r") as f:
     data = json.load(f)
 
 # configuration
@@ -19,18 +19,17 @@ num_vectors_before_clustering = 5000
 num_servers = 8
 replication_factor = 3
 batch_size = 512
-vectors = [(d['embedding'], d['text']) for d in data[:num_vectors]]
+vectors = [(d["embedding"], d["text"]) for d in data[:num_vectors]]
 print("data read")
 
 import os
 
-
 # Qdrant Storage Configuration
 # Options: ":memory:" for in-memory, or a local path (e.g., "./qdrant_data") for persistence.
-# qdrant_url = ":memory:" 
+# qdrant_url = ":memory:"
 base_qdrant_url = "./qdrant_data"
 # Override for previous hardcoded value
-# base_qdrant_url = ":memory:" 
+# base_qdrant_url = ":memory:"
 print("configuration defined")
 
 # Check for multi-node mode (env var set by run.py)
@@ -49,8 +48,17 @@ for i in range(num_servers):
         node_url = f"http://localhost:{port}"
     else:
         node_url = base_qdrant_url
-    
-    servers.append(sv.Server(i, i==0, num_vectors_before_clustering, replication_factor, port=8000+i, qdrant_url=node_url))
+
+    servers.append(
+        sv.Server(
+            i,
+            i == 0,
+            num_vectors_before_clustering,
+            replication_factor,
+            port=8000 + i,
+            qdrant_url=node_url,
+        )
+    )
 print("servers started")
 
 # register peers
@@ -62,21 +70,26 @@ for server in servers:
 print("peers registered")
 time.sleep(5)
 
+
 # add vectors
 def send_batch(server_idx, batch_vectors, batch_idx, total_batches):
     servers[server_idx].receive_from_client(batch_vectors)
     print(f"batch {batch_idx}/{total_batches} sent")
 
+
 import math
-total_batches = math.ceil(num_vectors/batch_size)
+
+total_batches = math.ceil(num_vectors / batch_size)
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
     futures = []
     for i in range(total_batches):
-        batch_vectors = vectors[batch_size*i:batch_size*(i+1)]
+        batch_vectors = vectors[batch_size * i : batch_size * (i + 1)]
         server_idx = i % len(servers)
-        futures.append(executor.submit(send_batch, server_idx, batch_vectors, i+1, total_batches))
-    
+        futures.append(
+            executor.submit(send_batch, server_idx, batch_vectors, i + 1, total_batches)
+        )
+
     concurrent.futures.wait(futures)
 
 print("all batch sent")
@@ -95,11 +108,31 @@ print("\nProcessing complete")
 
 # query a vector:
 query_vector = [vectors[0][0]]
-results = [(id, payload, distance) for _, id, payload, distance in servers[0].query_from_client(query_vector)]
-print("vector queried:\n", "\n".join([' -> '.join([str(distance), payload]) for _, payload, distance in results]))
+results = [
+    (id, payload, distance)
+    for _, id, payload, distance in servers[0].query_from_client(query_vector)
+]
+print(
+    "vector queried:\n",
+    "\n".join(
+        [" -> ".join([str(distance), payload]) for _, payload, distance in results]
+    ),
+)
 
-correspondence = sorted([(sv.cosine_similarity(v, query_vector[0]), payload) for v, payload in vectors[:num_vectors]], key=lambda x: x[0], reverse=True)[:5]
-print("correspondence:\n", "\n".join([' -> '.join([str(distance), payload]) for distance, payload in correspondence]))
+correspondence = sorted(
+    [
+        (sv.cosine_similarity(v, query_vector[0]), payload)
+        for v, payload in vectors[:num_vectors]
+    ],
+    key=lambda x: x[0],
+    reverse=True,
+)[:5]
+print(
+    "correspondence:\n",
+    "\n".join(
+        [" -> ".join([str(distance), payload]) for distance, payload in correspondence]
+    ),
+)
 
 print("counting vectors per server:")
 total = 0

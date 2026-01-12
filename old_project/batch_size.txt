@@ -5,10 +5,10 @@ Il calcolo deriva dalla struttura del vettore:
 -   Peso in byte: 392 float x 4 byte (32-bit) = 1.568 byte (~1.53 KB).
 -   Payload: Aggiungendo il testo associato e l'overhead JSON, arrotondiamo a 1.6 KB/record.
 
-2. Strategia di Invio (Vincolo gRPC: 4 MB) Per massimizzare il throughput restando sotto il 
+2. Strategia di Invio (Vincolo gRPC: 4 MB) Per massimizzare il throughput restando sotto il
 limite critico di 4 MB imposto dalla comunicazione tra server (gRPC), abbiamo definito:
 -   Batch Size Ottimale: 1800 Genera un payload di ~2.88 MB (1800 x 1.6KB).
     Giustificazione: Lascia un margine di sicurezza di oltre 1 MB rispetto al limite.
 -   Fallback Size: 500 In caso di errore, il sistema riduce il batch a ~0.8 MB.
-    Giustificazione: Garantisce la consegna anche in condizioni critiche, mantenendo comunque 
+    Giustificazione: Garantisce la consegna anche in condizioni critiche, mantenendo comunque
     una velocità doppia rispetto a valori conservativi standard (es. 256).

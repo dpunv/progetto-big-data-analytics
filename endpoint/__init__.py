@@ -2,11 +2,12 @@ from .http_endpoint import HTTPEndpoint
 from .grpc_endpoint import GRPCEndpoint
 from .quic_endpoint import QUICEndpoint
 
+
 class Endpoint:
     def __init__(self, endpoint_type: str, server_instance):
         """
         Initialize the Endpoint with a specific type.
-        
+
         :param endpoint_type: "HTTP", "GRPC", "QUIC"
         :param server_instance: The server instance to handle requests.
         """

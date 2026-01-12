@@ -59,7 +59,7 @@ message SetClustersRequest {
     // We'll use serialized bytes for assignment or define it fully.
     // Let's use bytes for the complex assignment map to save time/complexity on proto,
     // as it is an internal specialized structure.
-    bytes assignment_pickle = 2; 
+    bytes assignment_pickle = 2;
 }
 
 message ClusterData {
@@ -94,7 +94,7 @@ message QueryRequest {
     string status = 2;
 }
 
-// QueryResponse same as SearchResponse? 
+// QueryResponse same as SearchResponse?
 // server.py: query_from_client returns [(id, payload, distance)]?
 // Actually query() returns list of results similar to search.
 message QueryResponse {

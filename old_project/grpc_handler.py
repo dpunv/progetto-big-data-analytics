@@ -1,18 +1,23 @@
+import logging
+import pickle
+
 import grpc
 import p2p_pb2
 import p2p_pb2_grpc
-import pickle
-import logging
+
 from compound_types import *
 
 logger = logging.getLogger(__name__)
+
 
 class P2PNodeServicer(p2p_pb2_grpc.P2PNodeServicer):
     def __init__(self, server_app):
         self.server_app = server_app
 
     def ReceiveVectors(self, request, context):
-        logger.info(f"[GRPC IN] ReceiveVectors called. ReqID: {request.req_id}, Type: {request.type}, Count: {len(request.content)}")
+        logger.info(
+            f"[GRPC IN] ReceiveVectors called. ReqID: {request.req_id}, Type: {request.type}, Count: {len(request.content)}"
+        )
         # Convert Proto messages back to Python Tuples for ServerApp
         converted_content = []
         for vp in request.content:
@@ -21,30 +26,32 @@ class P2PNodeServicer(p2p_pb2_grpc.P2PNodeServicer):
             converted_content.append((list(vp.vector), vp.id, vp.payload, vp.cluster))
 
         self.server_app.add_vectors(converted_content, request.type, request.req_id)
-        logger.info(f"[GRPC IN] ReceiveVectors processed successfully.")
+        logger.info("[GRPC IN] ReceiveVectors processed successfully.")
         return p2p_pb2.Empty()
 
     def QueryPeer(self, request, context):
-        logger.info(f"[GRPC IN] QueryPeer called. ReqID: {request.req_id}, TopK: {request.topk}, Vectors: {len(request.query_vectors)}")
+        logger.info(
+            f"[GRPC IN] QueryPeer called. ReqID: {request.req_id}, TopK: {request.topk}, Vectors: {len(request.query_vectors)}"
+        )
         # Convert Proto vectors to Python lists of tuples (vector, cluster_id)
         queries = [(list(q.values), q.cluster_id) for q in request.query_vectors]
-        
+
         results = self.server_app.query_me(queries, request.topk)
-        
+
         # Convert Python dict results back to Proto ScoredPoints
         response_points = []
         for r in results:
             sp = p2p_pb2.ScoredPoint(
-                id=r['id'],
-                score=r['score'],
+                id=r["id"],
+                score=r["score"],
                 payload=p2p_pb2.VectorPoint(
-                    vector=r['payload']['vector'],
-                    id=r['id'],
-                    payload=r['payload']['string']
-                )
+                    vector=r["payload"]["vector"],
+                    id=r["id"],
+                    payload=r["payload"]["string"],
+                ),
             )
             response_points.append(sp)
-            
+
         logger.info(f"[GRPC IN] QueryPeer returning {len(response_points)} results.")
         return p2p_pb2.QueryResponse(results=response_points)
 
@@ -54,11 +61,11 @@ class P2PNodeServicer(p2p_pb2_grpc.P2PNodeServicer):
         try:
             content = pickle.loads(request.content_pickle)
             self.server_app.set_clusters(content, request.req_id)
-            logger.info(f"[GRPC IN] SetClusters applied successfully.")
+            logger.info("[GRPC IN] SetClusters applied successfully.")
         except Exception as e:
             logger.error(f"[GRPC IN] Error deserializing clusters: {e}")
             context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details('Failed to deserialize cluster data')
+            context.set_details("Failed to deserialize cluster data")
             return p2p_pb2.Empty()
-            
+
         return p2p_pb2.Empty()

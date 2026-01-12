@@ -1,13 +1,15 @@
-from .http_comm import HTTPCommunicator
-from .grpc_comm import GRPCCommunicator
-from .quic_comm import QUICCommunicator
 from typing import Union
+
+from .grpc_comm import GRPCCommunicator
+from .http_comm import HTTPCommunicator
+from .quic_comm import QUICCommunicator
+
 
 class Communicator:
     def __init__(self, comm_type: str):
         """
         Initialize the Communicator with a specific protocol type.
-        
+
         :param comm_type: "HTTP", "GRPC", "QUIC"
         """
         self.comm_type = comm_type.upper()

@@ -1,63 +1,88 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vector Query Client</title>
-    <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body>
-    <div class="app-container">
-        <header>
-            <h1>Vector Query</h1>
-            <button id="settings-btn" class="icon-btn" title="Settings">
-                <i class="fa-solid fa-gear"></i>
-            </button>
-        </header>
-
-        <main>
-            <div id="model-status" class="status-indicator">
-                <span class="status-dot"></span>
-                <span id="status-text">Initializing Model...</span>
-            </div>
-
-            <div class="input-section">
-                <textarea id="query-input" placeholder="Enter text to query..." rows="3"></textarea>
-                <button id="query-btn" disabled>
-                    <i class="fa-solid fa-search"></i> Query
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Vector Query Client</title>
+        <link rel="stylesheet" href="style.css" />
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+        />
+    </head>
+    <body>
+        <div class="app-container">
+            <header>
+                <h1>Vector Query</h1>
+                <button id="settings-btn" class="icon-btn" title="Settings">
+                    <i class="fa-solid fa-gear"></i>
                 </button>
-            </div>
+            </header>
 
-            <div id="results-section" class="results-container">
-                <!-- Results will be injected here -->
-            </div>
-        </main>
-    </div>
+            <main>
+                <div id="model-status" class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span id="status-text">Initializing Model...</span>
+                </div>
 
-    <!-- Settings Modal -->
-    <div id="settings-modal" class="modal hidden">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>Settings</h2>
-                <button id="close-settings" class="icon-btn"><i class="fa-solid fa-times"></i></button>
-            </div>
-            <div class="modal-body">
-                <label for="server-url">Server Address</label>
-                <input type="text" id="server-url" placeholder="http://localhost:8001">
-                <p class="hint">Enter the full URL of the server Client Endpoint.</p>
-                
-                <label for="topk-input" style="margin-top: 15px;">Number of Results</label>
-                <input type="number" id="topk-input" value="10" min="1" max="100">
-                <p class="hint">Maximum number of results to return per query (1-100).</p>
-            </div>
-            <div class="modal-footer">
-                <button id="save-settings" class="primary-btn">Save</button>
+                <div class="input-section">
+                    <textarea
+                        id="query-input"
+                        placeholder="Enter text to query..."
+                        rows="3"
+                    ></textarea>
+                    <button id="query-btn" disabled>
+                        <i class="fa-solid fa-search"></i> Query
+                    </button>
+                </div>
+
+                <div id="results-section" class="results-container">
+                    <!-- Results will be injected here -->
+                </div>
+            </main>
+        </div>
+
+        <!-- Settings Modal -->
+        <div id="settings-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Settings</h2>
+                    <button id="close-settings" class="icon-btn">
+                        <i class="fa-solid fa-times"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <label for="server-url">Server Address</label>
+                    <input
+                        type="text"
+                        id="server-url"
+                        placeholder="http://localhost:8001"
+                    />
+                    <p class="hint">
+                        Enter the full URL of the server Client Endpoint.
+                    </p>
+
+                    <label for="topk-input" style="margin-top: 15px"
+                        >Number of Results</label
+                    >
+                    <input
+                        type="number"
+                        id="topk-input"
+                        value="10"
+                        min="1"
+                        max="100"
+                    />
+                    <p class="hint">
+                        Maximum number of results to return per query (1-100).
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button id="save-settings" class="primary-btn">Save</button>
+                </div>
             </div>
         </div>
-    </div>
 
-    <script src="config.js"></script>
-    <script type="module" src="app.js"></script>
-</body>
+        <script src="config.js"></script>
+        <script type="module" src="app.js"></script>
+    </body>
 </html>

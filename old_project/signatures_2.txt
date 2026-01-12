@@ -18,4 +18,3 @@ Args:
 
 Returns:
     List of query responses
-

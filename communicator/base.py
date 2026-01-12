@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Any, Union
+
 
 class BaseCommunicator(ABC):
     """
     Abstract base class for all communicators.
     """
+
     @abstractmethod
     async def send(self, ip: str, port: int, query: str, *args):
         """

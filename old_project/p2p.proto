@@ -55,9 +55,9 @@ message RegisterPeersRequest {
     repeated PeerInfo peers = 1;
 }
 
-// For complex clustering structures, we serialize the dict/object to JSON/bytes 
+// For complex clustering structures, we serialize the dict/object to JSON/bytes
 // to avoid over-engineering the proto file for internal python logic.
 message SetClustersRequest {
     int64 req_id = 1;
-    bytes content_pickle = 2; 
+    bytes content_pickle = 2;
 }

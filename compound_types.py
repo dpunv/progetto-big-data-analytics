@@ -1,4 +1,4 @@
-from typing import List, Tuple, Set, FrozenSet
+from typing import FrozenSet, List, Tuple
 
 Vector = List[float]
 VectorId = int
@@ -17,7 +17,9 @@ VectorDestinations = FrozenSet[int]  # Set of intended destination node IDs
 
 # Full vector with version and destinations:
 # (vector, id, payload, cluster_id, version, destinations)
-VectorFull = Tuple[Vector, VectorId, VectorPayload, int, VectorVersion, VectorDestinations]
+VectorFull = Tuple[
+    Vector, VectorId, VectorPayload, int, VectorVersion, VectorDestinations
+]
 ListOfVectorsFull = List[VectorFull]
 
 # Legacy type for backwards compatibility

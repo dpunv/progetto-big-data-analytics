@@ -1,46 +1,53 @@
-from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict
-import metrics
-import uvicorn
-from typing import List, Tuple, Dict, TypedDict
-from server_logic import ServerApp
 import argparse
-from compound_types import *
-from clustering_module import MetaHNSW
-import threading
-from concurrent import futures
-import grpc
-import p2p_pb2_grpc
-from grpc_handler import P2PNodeServicer
 import logging
 import sys
+import threading
+from concurrent import futures
+from typing import List, Tuple
+
+import grpc
+import metrics
+import p2p_pb2_grpc
+import uvicorn
+from clustering_module import MetaHNSW
+from fastapi import FastAPI
+from grpc_handler import P2PNodeServicer
+from pydantic import BaseModel, ConfigDict
+from server_logic import ServerApp
+
 import utils
+from compound_types import *
 
 app = FastAPI()
 server = None
 logger = logging.getLogger(__name__)
 
+
 class AddVectorsRequest(BaseModel):
     id: int
     content: ListOfVectorsWithPayload
+
 
 class AddVectorsPeerRequest(BaseModel):
     id: int
     content: ListOfVectorsComplete
     type: str
 
+
 class QueryVectorsRequest(BaseModel):
     id: int
     query: ListOfVectors
     topk: int
 
+
 class AddPeersRequest(BaseModel):
     id: int
     peers: List[Tuple[str, str, str]]
 
+
 class SetClustersRequest(BaseModel):
     id: int
-    content: dict 
+    content: dict
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -53,6 +60,7 @@ async def health_check_endpoint():
         "is_clustered": server.status.value,
     }
 
+
 @app.post("/query")
 async def query_endpoint(query: QueryVectorsRequest):
     logger.info(f"API: /query called (ReqID: {query.id})")
@@ -60,33 +68,30 @@ async def query_endpoint(query: QueryVectorsRequest):
         logger.error("ServerApp not created")
         raise Exception("ServerApp not created")
     results = server.query(query.query, query.topk, query.id)
-    return {
-        "results": results,
-        "status": "success",
-        "count": len(results)
-    }
+    return {"results": results, "status": "success", "count": len(results)}
+
 
 @app.post("/query_peer")
 async def query_peer_endpoint(query: QueryVectorsRequest):
-    logger.info(f"API: /query_peer called")
-    metrics.QUERY_RECEIVED.labels(query_type='peer', source='peer').inc()
+    logger.info("API: /query_peer called")
+    metrics.QUERY_RECEIVED.labels(query_type="peer", source="peer").inc()
     if server is None:
         raise Exception("ServerApp not created")
     results = server.query_me(query.query, query.topk)
     logger.debug(f"Query peer results count: {len(results) if results else 0}")
-    return {
-        "results": results,
-        "status": "success",
-        "count": len(results)
-    }
+    return {"results": results, "status": "success", "count": len(results)}
+
 
 @app.post("/add")
 async def add_vectors_endpoint(vectors: AddVectorsRequest):
-    logger.info(f"API: /add called. ReqID: {vectors.id}, Vectors: {len(vectors.content)}")
+    logger.info(
+        f"API: /add called. ReqID: {vectors.id}, Vectors: {len(vectors.content)}"
+    )
     if server is None:
         raise Exception("ServerApp not created")
     server.add_vectors_client(vectors.content, vectors.id)
     logger.info("API: /add completed")
+
 
 @app.post("/receive_vectors_peer")
 async def receive_vectors_peer_endpoint(vectors: AddVectorsPeerRequest):
@@ -96,19 +101,24 @@ async def receive_vectors_peer_endpoint(vectors: AddVectorsPeerRequest):
     server.add_vectors(vectors.content, vectors.type, vectors.id)
     logger.info("vector added via peer endpoint")
 
+
 @app.post("/register_peers")
 async def register_peers_endpoint(peers: AddPeersRequest):
     if server is None:
         raise Exception("ServerApp not created")
     server.add_peers(peers.peers)
 
+
 @app.post("/set_clusters")
 async def set_clusters_endpoint(data: SetClustersRequest):
-    logger.info(f"API: /set_clusters called")
+    logger.info("API: /set_clusters called")
     if server is None:
         raise Exception("ServerApp not created")
-    data.content["meta_hnsw"] = MetaHNSW.from_serializable_dict(data.content["meta_hnsw"])
+    data.content["meta_hnsw"] = MetaHNSW.from_serializable_dict(
+        data.content["meta_hnsw"]
+    )
     server.set_clusters(data.content, data.id)
+
 
 @app.get("/count")
 async def count_endpoint():
@@ -116,11 +126,13 @@ async def count_endpoint():
         raise Exception("ServerApp not created")
     return server.get_count_client()
 
+
 @app.get("/count_peer")
 async def count_peer_endpoint():
     if server is None:
         raise Exception("ServerApp not created")
     return server.get_count()
+
 
 @app.get("/metrics_snapshot")
 async def metrics_snapshot_endpoint():
@@ -128,20 +140,41 @@ async def metrics_snapshot_endpoint():
         raise Exception("ServerApp not created")
     return server.metrics_snapshot()
 
+
 # Add gRPC URL argument
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PBDN Server Node")
     parser.add_argument("--node-name", type=str, required=True, help="Name of the node")
     parser.add_argument("--node-url", type=str, required=True, help="URL of this node")
-    parser.add_argument("--qdrant-url", type=str, required=True, help="URL of Qdrant instance")
-    parser.add_argument("--node-grpc-url", type=str, required=True, help="gRPC URL of this node")
-    parser.add_argument("--coordinator-url", type=str, required=True, help="URL of coordinator node")
+    parser.add_argument(
+        "--qdrant-url", type=str, required=True, help="URL of Qdrant instance"
+    )
+    parser.add_argument(
+        "--node-grpc-url", type=str, required=True, help="gRPC URL of this node"
+    )
+    parser.add_argument(
+        "--coordinator-url", type=str, required=True, help="URL of coordinator node"
+    )
     parser.add_argument("--replicas", type=int, default=1, help="Number of replicas")
-    parser.add_argument("--num-before-clustering", type=int, default=10000, help="Number of vectors before triggering clustering")
+    parser.add_argument(
+        "--num-before-clustering",
+        type=int,
+        default=10000,
+        help="Number of vectors before triggering clustering",
+    )
     parser.add_argument("--log-file", type=str, default=None, help="Path to log file")
-    parser.add_argument('--metrics-port', type=int, default=8000, help='Port for Prometheus metrics')
-    parser.add_argument('--batch-size', type=int, default=256, help='Batch size for vector insertion')
-    parser.add_argument('--batch-size-retry', type=int, default=64, help='Batch size for vector insertion retries')
+    parser.add_argument(
+        "--metrics-port", type=int, default=8000, help="Port for Prometheus metrics"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=256, help="Batch size for vector insertion"
+    )
+    parser.add_argument(
+        "--batch-size-retry",
+        type=int,
+        default=64,
+        help="Batch size for vector insertion retries",
+    )
     args = parser.parse_args()
 
     # Setup Logging
@@ -152,7 +185,7 @@ if __name__ == "__main__":
         log_level = logging.CRITICAL
     elif args.log_file:
         # If log file is specified, ONLY write to file (keep terminal clean)
-        handlers.append(logging.FileHandler(args.log_file, mode='w'))
+        handlers.append(logging.FileHandler(args.log_file, mode="w"))
     else:
         # Default to stdout if no file provided
         handlers.append(logging.StreamHandler(sys.stdout))
@@ -160,37 +193,52 @@ if __name__ == "__main__":
     # Set WARNING level to reduce log noise - only errors, warnings, and critical info
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s - %(levelname)s - %(threadName)s - %(name)s - %(message)s',
+        format="%(asctime)s - %(levelname)s - %(threadName)s - %(name)s - %(message)s",
         handlers=handlers,
-        force=True 
+        force=True,
     )
 
     logger.info(f"*** SERVER STARTUP: {args.node_name} ***")
-    logger.info(f"Config: URL={args.node_url}, GRPC={args.node_grpc_url}, Qdrant={args.qdrant_url}")
+    logger.info(
+        f"Config: URL={args.node_url}, GRPC={args.node_grpc_url}, Qdrant={args.qdrant_url}"
+    )
 
     # Initialize ServerApp
-    server = ServerApp(args.node_name, args.node_url, args.qdrant_url, args.node_grpc_url, args.coordinator_url, args.replicas, num_vectors_before_clustering=args.num_before_clustering, batch_size=args.batch_size, batch_size_retry=args.batch_size_retry)
+    server = ServerApp(
+        args.node_name,
+        args.node_url,
+        args.qdrant_url,
+        args.node_grpc_url,
+        args.coordinator_url,
+        args.replicas,
+        num_vectors_before_clustering=args.num_before_clustering,
+        batch_size=args.batch_size,
+        batch_size_retry=args.batch_size_retry,
+    )
 
     # --- START GRPC SERVER ---
     def serve_grpc(server_app, grpc_port):
         options = [
-            ('grpc.max_send_message_length', 512 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 512 * 1024 * 1024)
+            ("grpc.max_send_message_length", 512 * 1024 * 1024),
+            ("grpc.max_receive_message_length", 512 * 1024 * 1024),
         ]
         grpc_server = grpc.server(
-            futures.ThreadPoolExecutor(max_workers=10),
-            options=options
+            futures.ThreadPoolExecutor(max_workers=10), options=options
         )
-        p2p_pb2_grpc.add_P2PNodeServicer_to_server(P2PNodeServicer(server_app), grpc_server)
-        grpc_server.add_insecure_port(f'[::]:{grpc_port}')
+        p2p_pb2_grpc.add_P2PNodeServicer_to_server(
+            P2PNodeServicer(server_app), grpc_server
+        )
+        grpc_server.add_insecure_port(f"[::]:{grpc_port}")
         logger.info(f"gRPC server started on port {grpc_port}")
         grpc_server.start()
         grpc_server.wait_for_termination()
 
     grpc_port = args.node_grpc_url.split(":")[-1]
-    
+
     # Run gRPC in a background thread
-    grpc_thread = threading.Thread(target=serve_grpc, args=(server, grpc_port), name="GRPC-Thread")
+    grpc_thread = threading.Thread(
+        target=serve_grpc, args=(server, grpc_port), name="GRPC-Thread"
+    )
     grpc_thread.daemon = True
     grpc_thread.start()
 
@@ -198,6 +246,6 @@ if __name__ == "__main__":
     http_port = int(args.node_url.split(":")[-1])
     logger.info(f"Starting Uvicorn HTTP server on port {http_port}")
     metrics.start_metrics_server(args.metrics_port)
-    
+
     # CRITICAL FIX: log_config=None prevents Uvicorn from resetting our logging configuration
     uvicorn.run(app, host="0.0.0.0", port=http_port, log_config=None)
