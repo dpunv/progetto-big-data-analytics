@@ -202,6 +202,7 @@ class HintedHandoff:
 
     def __init__(self):
         self.hints: Dict[int, List] = {}  # target_id -> List[VectorComplete]
+        self.delete_hints: Dict[int, List[int]] = {}  # target_id -> List[vector_id]
         self.lock = threading.RLock()
 
     def store_hint(self, target_id: int, vectors: List):
@@ -211,10 +212,23 @@ class HintedHandoff:
                 self.hints[target_id] = []
             self.hints[target_id].extend(vectors)
 
+    def store_delete_hint(self, target_id: int, vector_ids: List[int]):
+        """Store vector IDs to delete on target when reachable."""
+        with self.lock:
+            if target_id not in self.delete_hints:
+                self.delete_hints[target_id] = []
+            self.delete_hints[target_id].extend(vector_ids)
+
     def get_hints_for(self, target_id: int) -> List:
-        """Get and clear hints for target."""
+        """Get and clear vector hints for target."""
         with self.lock:
             hints = self.hints.pop(target_id, [])
+            return hints
+
+    def get_delete_hints_for(self, target_id: int) -> List[int]:
+        """Get and clear delete hints for target."""
+        with self.lock:
+            hints = self.delete_hints.pop(target_id, [])
             return hints
 
     def peek_hints_for(self, target_id: int) -> List:
@@ -225,22 +239,28 @@ class HintedHandoff:
     def has_hints_for(self, target_id: int) -> bool:
         """Check if there are pending hints."""
         with self.lock:
-            return target_id in self.hints and len(self.hints[target_id]) > 0
+            has_vectors = target_id in self.hints and len(self.hints[target_id]) > 0
+            has_deletes = target_id in self.delete_hints and len(self.delete_hints[target_id]) > 0
+            return has_vectors or has_deletes
 
     def get_all_targets(self) -> List[int]:
         """Get all target IDs with pending hints."""
         with self.lock:
-            return [tid for tid, hints in self.hints.items() if hints]
+            targets = set(self.hints.keys()) | set(self.delete_hints.keys())
+            return list(targets)
 
     def count(self) -> int:
         """Get total number of stored hints."""
         with self.lock:
-            return sum(len(hints) for hints in self.hints.values())
+            v_count = sum(len(hints) for hints in self.hints.values())
+            d_count = sum(len(hints) for hints in self.delete_hints.values())
+            return v_count + d_count
 
     def clear(self):
         """Clear all hints."""
         with self.lock:
             self.hints.clear()
+            self.delete_hints.clear()
 
     # ============ Peer & Server Implementation ============
 
@@ -324,6 +344,12 @@ class VectorStore:
             ]
             if not self.vectors[old_cluster]:
                 del self.vectors[old_cluster]
+
+    def delete_batch(self, vec_ids: List[int]):
+        """Remove multiple vectors by ID."""
+        with self.lock:
+            for vec_id in vec_ids:
+                self._remove_by_id_internal(vec_id)
 
     def remove_by_id(self, vec_id: int):
         """Remove vector by ID."""
@@ -574,8 +600,11 @@ class QdrantVectorStore:
                 print(f"Error in batch upload: {e}")
                 return 0
 
+    def delete_batch(self, vec_ids: List[int]):
+        qdrant_module.delete_vectors(self.url, self.collection_name, vec_ids)
+
     def remove_by_id(self, vec_id: int):
-        qdrant_module.delete_vector(self.url, self.collection_name, vec_id)
+        qdrant_module.delete_vectors(self.url, self.collection_name, vec_id)
 
     def has_vector(self, vec_id: int) -> bool:
         return (
@@ -1168,14 +1197,24 @@ class Server:
         for target_id in targets:
             peer = self._get_peer_by_id(target_id)
             if peer and self._is_peer_reachable(peer):
+                # 1. Deliver Vectors
                 hints = self.hinted_handoff.get_hints_for(target_id)
                 if hints:
                     try:
                         peer.receive(hints, "handoff")
                     except Exception as e:
-                        # Put hints back if delivery fails
                         self.hinted_handoff.store_hint(target_id, hints)
                         print(f"Failed to deliver hints to {target_id}: {e}")
+
+                # 2. Deliver Deletes
+                del_hints = self.hinted_handoff.get_delete_hints_for(target_id)
+                if del_hints:
+                    try:
+                        peer.delete_vectors_local(del_hints)
+                        print(f"Delivered {len(del_hints)} delete hints to {target_id}")
+                    except Exception as e:
+                        self.hinted_handoff.store_delete_hint(target_id, del_hints)
+                        print(f"Failed to deliver delete hints to {target_id}: {e}")
 
     # ==================== Vector Versioning & Anti-Entropy ====================
 
@@ -1548,6 +1587,45 @@ class Server:
             vectors_with_id.append((v, self.get_new_vector_id(), v_p, -1, version))
 
         self.receive(vectors_with_id, "client")
+
+    def delete_vectors_local(self, vector_ids: List[int]):
+        """
+        Delete vectors locally. Called by remote peers or self.
+        """
+        self.store.delete_batch(vector_ids)
+
+    def delete_from_client(self, vector_ids: List[int]):
+        """
+        Handle delete request from client. Broadcast to all peers.
+        """
+        # 1. Delete locally
+        self.delete_vectors_local(vector_ids)
+
+        # 2. Broadcast to all peers
+        # Check logic: iterate all peers. If reachable send, else store hint.
+        
+        with self.lock:
+             all_peers = list(self.peers)
+
+        def send_delete(peer):
+            pid = peer.get_id()
+            if pid == self.id:
+                return
+
+            if self._is_peer_reachable(peer):
+                try:
+                    peer.delete_vectors_local(vector_ids)
+                except Exception as e:
+                    print(f"Error sending delete to peer {pid}: {e}. Storing hint.")
+                    self.hinted_handoff.store_delete_hint(pid, vector_ids)
+            else:
+                # Store hint directly
+                print(f"Peer {pid} unreachable. Storing delete hint.")
+                self.hinted_handoff.store_delete_hint(pid, vector_ids)
+
+        # Execute in parallel to speed up
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            executor.map(send_delete, all_peers)
 
     def set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId):
         self.queue.put((self._handle_set_clusters, (vectors_for_clusters, clusters)))

@@ -205,6 +205,13 @@ class GRPCCommunicator(BaseCommunicator):
                     resp = await stub.RespondToPing(p2p_pb2.Empty())
                     response_val = resp.value
 
+                elif query == "delete_vectors_local":
+                    ids = args[0]
+                    # args[0] should be list of ints
+                    req = p2p_pb2.IdList(ids=ids)
+                    await stub.DeleteVectorsLocal(req)
+                    response_val = None
+
                 else:
                     return {
                         "status": -1,

@@ -14,6 +14,7 @@ service P2PNode {
     rpc GetVectorsByIds(IdList) returns (VectorList);
     rpc GetPartitionCoordinatorId(Empty) returns (IdResponse);
     rpc RespondToPing(Empty) returns (BoolResponse);
+    rpc DeleteVectorsLocal(IdList) returns (Empty);
 }
 
 message Empty {}

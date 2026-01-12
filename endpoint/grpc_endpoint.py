@@ -185,6 +185,16 @@ class P2PNodeServicer(p2p_pb2_grpc.P2PNodeServicer):
         except Exception:
             return p2p_pb2.BoolResponse(value=False)
 
+    async def DeleteVectorsLocal(self, request, context):
+        try:
+            # request is IdList
+            ids = list(request.ids)
+            await self._run(self.server.delete_vectors_local, ids)
+            return p2p_pb2.Empty()
+        except Exception as e:
+            # print(f"Error DeleteVectorsLocal: {e}")
+            return p2p_pb2.Empty()
+
 
 class GRPCEndpoint(BaseEndpoint):
     """

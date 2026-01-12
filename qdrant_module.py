@@ -271,18 +271,25 @@ def retrieve_vector(url, collection, vector_id):
             return None
 
 
-def delete_vector(url, collection, vector_id):
+def delete_vectors(url, collection, vector_ids):
+    """
+    Delete a batch of vectors by ID.
+    vector_ids can be a single ID or a list of IDs.
+    """
     with GLOBAL_LOCK:
         client = get_client(url)
         try:
+            if not isinstance(vector_ids, list):
+                vector_ids = [vector_ids]
+
             client.delete(
                 collection_name=collection,
-                points_selector=models.PointIdsList(points=[vector_id]),
+                points_selector=models.PointIdsList(points=vector_ids),
                 wait=True,
             )
             return True
         except Exception as e:
-            logger.error(f"Error deleting vector {vector_id} on {url}: {e}")
+            logger.error(f"Error deleting vectors on {url}: {e}")
             return False
 
 

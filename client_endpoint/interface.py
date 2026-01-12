@@ -33,6 +33,20 @@ class ClientEndpoint:
         # Define routes with CORS
         cors.add(self.app.router.add_post("/add", self.handle_add))
         cors.add(self.app.router.add_post("/query", self.handle_query))
+        cors.add(self.app.router.add_post("/delete", self.handle_delete))
+
+    async def handle_delete(self, request):
+        try:
+            data = await request.json()
+            ids = data.get("ids")
+            if not ids:
+                return web.json_response({"error": "No ids provided"}, status=400)
+
+            await self._run_sync(self.server.delete_from_client, ids)
+            return web.json_response({"status": "ok"})
+        except Exception as e:
+            logging.error(f"Error in /delete: {e}")
+            return web.json_response({"error": str(e)}, status=500)
 
     async def start(self, ip: str, port: int):
         self.runner = web.AppRunner(self.app)

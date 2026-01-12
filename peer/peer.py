@@ -11,16 +11,26 @@ class Peer:
     Can represent the local server (self) or a remote server.
     """
 
-    def __init__(self, ip: str, port: int, server_instance=None, communicator=None):
+    def __init__(self, ip: str, port: int, server_instance=None, communicator=None, id=None):
         self.ip = ip
         self.port = port
         self.server = server_instance  # If set, this is the local peer
         self.communicator = communicator  # Used for remote communication
+        self.id = id
 
     def get_id(self) -> int:
         if self.is_local():
             return self.server.get_id()
-        return self._remote_call("get_id")
+        if self.id is not None:
+             return self.id
+        
+        try:
+             fetched_id = self._remote_call("get_id")
+             self.id = fetched_id
+             return fetched_id
+        except Exception as e:
+             # If we can't get ID, we can't do much. But re-raise.
+             raise e
 
     def similarity(self, vector) -> float:
         if self.is_local():
@@ -46,6 +56,11 @@ class Peer:
         if self.is_local():
             return self.server.search_vectors_local(vectors, top_k)
         return self._remote_call("search_vectors_local", vectors, top_k)
+
+    def delete_vectors_local(self, vector_ids):
+        if self.is_local():
+            return self.server.delete_vectors_local(vector_ids)
+        return self._remote_call("delete_vectors_local", vector_ids)
 
     def query(self, vectors, status):
         if self.is_local():

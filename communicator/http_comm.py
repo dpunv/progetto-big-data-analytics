@@ -103,6 +103,9 @@ class HTTPCommunicator(BaseCommunicator):
         elif query == "respond_to_ping":
             pass
 
+        elif query == "delete_vectors_local":
+            json_payload = {"ids": args[0]}
+
         else:
             return {
                 "status": -1,

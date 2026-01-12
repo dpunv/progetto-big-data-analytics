@@ -2202,7 +2202,7 @@ class TestQdrantModule:
 
         qdrant_module._client_cache.clear()
 
-    def test_delete_vector_success(self):
+    def test_delete_vectors_success(self):
         """Test delete_vector() success case."""
         url = ":memory:"
         collection = "test_delete_vec"
@@ -2211,7 +2211,7 @@ class TestQdrantModule:
         vectors = [([1.0, 0.0], 1, "payload_a", 0)]
         qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
 
-        result = qdrant_module.delete_vector(url, collection, 1)
+        result = qdrant_module.delete_vectors(url, collection, 1)
         assert result
 
         # Verify deleted
@@ -2220,11 +2220,11 @@ class TestQdrantModule:
 
         qdrant_module._client_cache.clear()
 
-    def test_delete_vector_error(self):
+    def test_delete_vectors_error(self):
         """Test delete_vector() handles errors."""
         url = ":memory:"
 
-        result = qdrant_module.delete_vector(url, "nonexistent", 1)
+        result = qdrant_module.delete_vectors(url, "nonexistent", 1)
         assert not result
 
         qdrant_module._client_cache.clear()
@@ -2292,6 +2292,7 @@ class TestQdrantModule:
             client = qdrant_module.get_client(local_path)
             assert client is not None
 
+            client.close()
             qdrant_module._client_cache.clear()
 
     def test_query_vectors_generic(self):
