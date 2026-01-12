@@ -57,7 +57,12 @@ class QUICServerProtocol(QuicConnectionProtocol):
             
             # Send response
             resp_data = pickle.dumps(result)
-            self._quic.send_stream_data(stream_id, resp_data, end_stream=True)
+            # Send response in chunks
+            chunk_size = 1024
+            for i in range(0, len(resp_data), chunk_size):
+                chunk = resp_data[i:i+chunk_size]
+                is_last = (i + chunk_size >= len(resp_data))
+                self._quic.send_stream_data(stream_id, chunk, end_stream=is_last)
             self.transmit()
             
         except Exception as e:

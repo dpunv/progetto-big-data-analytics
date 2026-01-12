@@ -39,8 +39,12 @@ class OneShotClientProtocol(QuicConnectionProtocol):
         # Get next stream ID
         self._stream_id = self._quic.get_next_available_stream_id()
         
-        # Send data with FIN (we don't expect to send more)
-        self._quic.send_stream_data(self._stream_id, data, end_stream=True)
+        # Send data in chunks
+        chunk_size = 1024  # Size for chunks
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i+chunk_size]
+            is_last = (i + chunk_size >= len(data))
+            self._quic.send_stream_data(self._stream_id, chunk, end_stream=is_last)
         self.transmit()
         
         # Wait for response
