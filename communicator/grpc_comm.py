@@ -26,7 +26,6 @@ class GRPCCommunicator(BaseCommunicator):
             stub = p2p_pb2_grpc.P2PNodeStub(channel)
 
             try:
-                response = None
 
                 if query == "get_id":
                     response_proto = await stub.GetId(p2p_pb2.Empty())

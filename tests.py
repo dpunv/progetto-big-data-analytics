@@ -16,7 +16,7 @@ def partition_network(servers, groups):
     groups: List[List[int]] - list of groups of server IDs that can communicate.
     """
     # Create map for ID -> Server
-    server_map = {s.id: s for s in servers}
+    {s.id: s for s in servers}
 
     # Flatten groups to check for unassigned
     assigned = set()
@@ -184,7 +184,7 @@ class TestPeer:
         # Test ping
         result = peer.ping()
         mock_server.respond_to_ping.assert_called_once()
-        assert result == True
+        assert result
 
 
 class TestServerUnit:
@@ -1082,15 +1082,15 @@ class TestEventualConsistency:
             time.sleep(0.5)  # Wait for processing
 
             # Count vectors in each partition before heal
-            left_count = servers[0].count() + servers[1].count()
-            right_count = servers[2].count() + servers[3].count()
+            servers[0].count() + servers[1].count()
+            servers[2].count() + servers[3].count()
 
             # Heal
             heal_network(servers)
             time.sleep(0.5)
 
             # After heal and reconciliation, total should be consistent
-            total_count = sum(s.count() for s in servers)
+            sum(s.count() for s in servers)
 
             # We inserted 20 vectors (10 left, 10 right)
             # With replication factor 2, expected = 20 * 2 = 40
@@ -1355,7 +1355,7 @@ class TestNetworkOptimization:
             # Not the full vectors with payloads
             import sys
 
-            digest_size = sys.getsizeof(digest)
+            sys.getsizeof(digest)
 
             # Full vectors would be much larger
             # Digest is just IDs and version tuples
@@ -1373,8 +1373,8 @@ class TestNetworkOptimization:
             result1 = s.store.insert(([1.0], 1, "a", 0, (1.0, 0)))
             result2 = s.store.insert(([1.0], 1, "a", 0, (1.0, 0)))
 
-            assert result1 == True
-            assert result2 == False  # Should be rejected
+            assert result1
+            assert not result2  # Should be rejected
             assert s.store.count() == 1
 
         finally:
@@ -1390,11 +1390,11 @@ class TestNetworkOptimization:
 
             # Insert older version - should fail
             result_old = s.store.insert(([1.0], 1, "v0", 0, (0.5, 0)))
-            assert result_old == False
+            assert not result_old
 
             # Insert newer version - should succeed
             result_new = s.store.insert(([1.0], 1, "v2", 0, (2.0, 0)))
-            assert result_new == True
+            assert result_new
 
             # Should still only have 1 vector (newer one)
             assert s.store.count() == 1
@@ -1830,9 +1830,9 @@ class TestShouldBeOnPeerVariants:
             # Vector with stored destinations (6 elements)
             vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1, 2]))
 
-            assert s._should_be_on_peer(vec, 1) == True
-            assert s._should_be_on_peer(vec, 2) == True
-            assert s._should_be_on_peer(vec, 3) == False
+            assert s._should_be_on_peer(vec, 1)
+            assert s._should_be_on_peer(vec, 2)
+            assert not s._should_be_on_peer(vec, 3)
         finally:
             s.stop()
 
@@ -1846,7 +1846,7 @@ class TestShouldBeOnPeerVariants:
             vec = ([1.0], 1, "a", 0, (1.0, 0))
 
             # Should return True (accept everything before clustering)
-            assert s._should_be_on_peer(vec, 1) == True
+            assert s._should_be_on_peer(vec, 1)
         finally:
             s.stop()
 
@@ -2095,11 +2095,11 @@ class TestQdrantModule:
 
         # Create first time
         result1 = qdrant_module.create_collection(url, collection, 2)
-        assert result1 == True
+        assert result1
 
         # Create again - should detect exists and return True
         result2 = qdrant_module.create_collection(url, collection, 2)
-        assert result2 == True
+        assert result2
 
         qdrant_module._client_cache.clear()
 
@@ -2124,7 +2124,7 @@ class TestQdrantModule:
         qdrant_module.create_collection(url, collection, 2)
         result = qdrant_module.delete_collection(url, collection)
 
-        assert result == True
+        assert result
         qdrant_module._client_cache.clear()
 
     def test_delete_collection_nonexistent(self):
@@ -2135,7 +2135,7 @@ class TestQdrantModule:
         # This test verifies the function handles both cases
         result = qdrant_module.delete_collection(url, "nonexistent_collection")
         # In-memory Qdrant returns True even for non-existent collections
-        assert result == True
+        assert result
         qdrant_module._client_cache.clear()
 
     def test_insert_and_count(self):
@@ -2150,7 +2150,7 @@ class TestQdrantModule:
         result = qdrant_module.insert_vectors(
             url, collection, vectors, batch_size_retry=1
         )
-        assert result == True
+        assert result
 
         count_result = qdrant_module.count(url, collection)
         assert count_result == 2
@@ -2212,7 +2212,7 @@ class TestQdrantModule:
         qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
 
         result = qdrant_module.delete_vector(url, collection, 1)
-        assert result == True
+        assert result
 
         # Verify deleted
         count = qdrant_module.count(url, collection)
@@ -2225,7 +2225,7 @@ class TestQdrantModule:
         url = ":memory:"
 
         result = qdrant_module.delete_vector(url, "nonexistent", 1)
-        assert result == False
+        assert not result
 
         qdrant_module._client_cache.clear()
 
@@ -2386,7 +2386,7 @@ class TestQdrantModule:
         result = qdrant_module.insert_vectors(
             url, collection, vectors, batch_size_retry=1, batch_size=3
         )
-        assert result == True
+        assert result
 
         count = qdrant_module.count(url, collection)
         assert count == 10
@@ -2497,7 +2497,7 @@ class TestPeerRemoteCalls:
         peer = Peer("127.0.0.1", 9999, server_instance=None, communicator=mock_comm)
         result = peer.i_am_coord()
 
-        assert result == True
+        assert result
 
     def test_peer_set_clusters_remote(self):
         """Test set_clusters() for remote peer."""
@@ -2591,7 +2591,7 @@ class TestPeerRemoteCalls:
         peer = Peer("127.0.0.1", 9999, server_instance=mock_server)
         result = peer.ping()
 
-        assert result == True
+        assert result
         mock_server.respond_to_ping.assert_called_once()
 
     def test_peer_ping_remote_success(self):
@@ -2606,7 +2606,7 @@ class TestPeerRemoteCalls:
         peer = Peer("127.0.0.1", 9999, server_instance=None, communicator=mock_comm)
         result = peer.ping()
 
-        assert result == True
+        assert result
 
     def test_peer_ping_remote_exception(self):
         """Test ping() for remote peer - returns False on exception."""
@@ -2620,7 +2620,7 @@ class TestPeerRemoteCalls:
         peer = Peer("127.0.0.1", 9999, server_instance=None, communicator=mock_comm)
         result = peer.ping()
 
-        assert result == False
+        assert not result
 
     def test_peer_is_local(self):
         """Test is_local() method."""
@@ -2629,8 +2629,8 @@ class TestPeerRemoteCalls:
             "127.0.0.1", 9999, server_instance=None, communicator=MagicMock()
         )
 
-        assert local_peer.is_local() == True
-        assert remote_peer.is_local() == False
+        assert local_peer.is_local()
+        assert not remote_peer.is_local()
 
 
 # ==================== CertUtils Tests ====================
@@ -2833,7 +2833,7 @@ class TestQdrantVectorStoreComplete:
         # Vector with numpy array
         vec = (np.array([1.0, 2.0]), 1, "payload", 0, (1.0, 0))
         result = store.insert(vec)
-        assert result == True
+        assert result
 
         qdrant_module._client_cache.clear()
 
@@ -2848,12 +2848,12 @@ class TestQdrantVectorStoreComplete:
         # Try to insert older version - should fail
         vec2 = ([1.0, 2.0], 1, "v0", 0, (0.5, 0))
         result = store.insert(vec2)
-        assert result == False
+        assert not result
 
         # Insert newer version - should succeed
         vec3 = ([1.0, 2.0], 1, "v2", 0, (2.0, 0))
         result = store.insert(vec3)
-        assert result == True
+        assert result
 
         qdrant_module._client_cache.clear()
 
@@ -2864,7 +2864,7 @@ class TestQdrantVectorStoreComplete:
         # Vector with destinations (6 elements)
         vec = ([1.0, 2.0], 1, "payload", 0, (1.0, 0), frozenset([1, 2, 3]))
         result = store.insert(vec)
-        assert result == True
+        assert result
 
         # Retrieve and check destinations are preserved
         retrieved = store.get_vector(1)
@@ -2937,10 +2937,10 @@ class TestQdrantVectorStoreComplete:
         """Test has_vector (lines 569-570)."""
         store = QdrantVectorStore(":memory:", "test_has", 2)
 
-        assert store.has_vector(1) == False
+        assert not store.has_vector(1)
 
         store.insert(([1.0, 2.0], 1, "payload", 0, (1.0, 0)))
-        assert store.has_vector(1) == True
+        assert store.has_vector(1)
 
         qdrant_module._client_cache.clear()
 
@@ -3412,7 +3412,7 @@ class TestVectorStoreEdgeCasesComplete:
         vec = ([1.0], 1, "a", 0)  # No version
         result = store.insert(vec)
 
-        assert result == True
+        assert result
         assert store.count() == 1
 
     def test_insert_with_6_tuple(self):
@@ -3422,7 +3422,7 @@ class TestVectorStoreEdgeCasesComplete:
         vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1, 2]))
         result = store.insert(vec)
 
-        assert result == True
+        assert result
         stored = store.get_vector(1)
         assert len(stored) == 6
 
@@ -3562,7 +3562,6 @@ class TestServerEndpointStopExceptions:
             time.sleep(0.5)  # Let endpoint start
 
             # Mock endpoint.stop to take too long
-            original_stop = s.endpoint.stop
 
             async def slow_stop():
                 await asyncio.sleep(10)  # Will timeout
@@ -3865,7 +3864,7 @@ class TestEnsureCollectionError:
             store = QdrantVectorStore(":memory:", "test_fail", 2)
 
             # collection_created should be False
-            assert store.collection_created == False
+            assert not store.collection_created
 
         qdrant_module._client_cache.clear()
 
@@ -3875,7 +3874,7 @@ class TestQdrantInsertBatchRetrieveError:
 
     def test_insert_batch_retrieve_error(self):
         """Test insert_batch handles retrieve error (lines 507-509)."""
-        store = QdrantVectorStore(":memory:", "test_err", 2)
+        QdrantVectorStore(":memory:", "test_err", 2)
 
         # Mock retrieve to fail
         original_get_client = qdrant_module.get_client
@@ -3883,7 +3882,6 @@ class TestQdrantInsertBatchRetrieveError:
         def mock_get_client(url):
             client = original_get_client(url)
             # Wrap retrieve to throw
-            original_retrieve = client.retrieve
 
             def failing_retrieve(*args, **kwargs):
                 raise Exception("Retrieve Error!")

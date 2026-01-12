@@ -160,7 +160,7 @@ def insert_vectors_generic(url, collection, vectors, batch_size_retry, batch_siz
     with GLOBAL_LOCK:
         keyfunc = itemgetter(3)
         vectors_sorted = sorted(vectors, key=keyfunc)
-        grouped = [
+        [
             insert_vectors(
                 url,
                 get_collection_name(collection, key),

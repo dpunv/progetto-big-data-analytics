@@ -609,7 +609,6 @@ def populate_and_wait_clustering(
             with lock:
                 if successful_inserts >= target_vectors:
                     return
-                current_count = successful_inserts
 
             # Choose a random vector and try to insert it
             item = random.choice(data)

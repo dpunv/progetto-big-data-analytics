@@ -567,7 +567,6 @@ def populate_and_wait_clustering(client, data, target_vectors=2500):
             with lock:
                 if successful_inserts >= target_vectors:
                     return
-                current_count = successful_inserts
 
             # Sceglie un vettore casuale e prova a inserirlo
             item = random.choice(data)

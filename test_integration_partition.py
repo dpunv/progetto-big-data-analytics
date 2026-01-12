@@ -172,7 +172,7 @@ def wait_for_network_convergence(servers, timeout=30):
     print(f"    Waiting for network convergence (timeout={timeout}s)...")
     start = time.time()
     num_servers = len(servers)
-    expected_peers = (
+    (
         num_servers - 1
     )  # Each sees everyone else (excluding self?? No, active_peers includes self)
     # wait server.py: 257 self.active_peers: Set[int] = {id}
@@ -183,7 +183,7 @@ def wait_for_network_convergence(servers, timeout=30):
         converged = True
         for s in servers:
             # Check reachable peers count
-            reachable = s.get_reachable_peers()
+            s.get_reachable_peers()
             # s.get_reachable_peers() implementation: return [p for p in self.peers if p.get_id() in self.active_peers]
             # self.peers includes self??
             # server.py line 244: self.peers = [Peer(self)] -> Yes, initially.

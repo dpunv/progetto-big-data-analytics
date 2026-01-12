@@ -129,7 +129,7 @@ def query_vectors(url, collection, query, topk):
 def insert_vectors_generic(url, collection, vectors, batch_size_retry, batch_size=256):
     keyfunc = itemgetter(3)
     vectors_sorted = sorted(vectors, key=keyfunc)
-    grouped = [
+    [
         insert_vectors(
             url,
             utils.get_collection_name(collection, key),
