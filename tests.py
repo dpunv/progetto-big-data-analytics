@@ -4491,6 +4491,57 @@ class TestBalancedSplitting:
         finally:
             s.stop()
 
+    def test_constrained_kmeans_prevents_imbalance(self):
+        """Test that constrained K-Means prevents extreme cluster imbalances."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            # Create a dataset with a dense blob and one far outlier
+            # Blob: 20 points around (0,0)
+            # Outlier: 1 point at (1000, 1000)
+            vectors = []
+            blob_size = 20
+            for i in range(blob_size):
+                vectors.append((np.array([np.random.normal(0, 0.1), np.random.normal(0, 0.1)]), i, f"p{i}", 0, (1.0, 0)))
+            
+            # Outlier
+            outlier_idx = blob_size
+            vectors.append((np.array([1000.0, 1000.0]), outlier_idx, "outlier", 0, (1.0, 0)))
+            
+            # Insert all
+            for v in vectors:
+                s.store.insert(v)
+            
+            s.clusters = [(0, [0.0, 0.0])]
+            
+            # With standard KMeans, k=2 often gives [20, 1] split (outlier alone)
+            # We want to force a more even split, e.g. max size = ceil(21/2 * 1.2) = ceil(10.5 * 1.2) = 13
+            # So split should be roughly 13/8 or 11/10, not 20/1.
+            
+            result = s.balanced_split_cluster(cluster_id=0, n_subclusters=2)
+            
+            sizes = []
+            for info in result.values():
+                sizes.append(len(info["members"]))
+            
+            print(f"DEBUG: Constrained split sizes: {sizes}")
+            
+            max_size = max(sizes)
+            min_size = min(sizes)
+            
+            # Ensure no cluster is extremely small (e.g. 1) if total is 21
+            # Unless max_size constraint allowed it?
+            # 21 vectors, 2 clusters. Avg = 10.5. Max allowed = 13.
+            # So one cluster can have at most 13.
+            # The other must have 21 - 13 = 8.
+            # So min size should be >= 8.
+            
+            assert max_size <= 14 # Allow slight buffer
+            assert min_size >= 7  # Allow slight buffer
+            
+        finally:
+            s.stop()
+
 
 class TestRebalancingOrchestration:
     """Tests for rebalancing orchestration across servers."""
