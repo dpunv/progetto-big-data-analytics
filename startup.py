@@ -1,6 +1,5 @@
 import argparse
 import atexit
-import json
 import os
 import socket
 import subprocess
@@ -79,16 +78,22 @@ def get_docker_port(container_name, internal_port=6333):
 
 
 def load_vectors(port, num_vectors=50000):
-    print(f"\nLoading {num_vectors} vectors from embeddings.json...")
+    import pandas as pd
+    print(f"\nLoading {num_vectors} vectors from embeddings.parquet...")
     try:
-        if not os.path.exists("embeddings.json"):
-            print("Error: embeddings.json not found. Skipping data load.")
+        if not os.path.exists("embeddings.parquet"):
+            print("Error: embeddings.parquet not found. Skipping data load.")
             return
 
-        with open("embeddings.json", "r") as f:
-            data = json.load(f)
+        df = pd.read_parquet("embeddings.parquet")
+        # Convert DataFrame to list of dicts
+        data = [
+            {"embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else list(row["embedding"]),
+             "text": row["sentence"]}
+            for _, row in df.iterrows()
+        ]
     except Exception as e:
-        print(f"Error reading embeddings.json: {e}")
+        print(f"Error reading embeddings.parquet: {e}")
         return
 
     if len(data) < num_vectors:

@@ -1,17 +1,20 @@
 import concurrent.futures
-import json
 import sys
 import time
 
+import pandas as pd
 import server as sv
 
 start_time = time.time()
 
 print("starting client")
-# read the data
-data = []
-with open("embeddings.json", "r") as f:
-    data = json.load(f)
+# read the data from parquet file
+df = pd.read_parquet("embeddings.parquet")
+data = [
+    {"embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else list(row["embedding"]),
+     "text": row["sentence"]}
+    for _, row in df.iterrows()
+]
 
 # configuration
 num_vectors = 16000

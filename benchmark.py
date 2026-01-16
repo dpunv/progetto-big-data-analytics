@@ -9,7 +9,7 @@ Usage:
     python benchmark.py [options]
 
 Options:
-    --data PATH       Path to embeddings JSON file (default: embeddings.json)
+    --data PATH       Path to embeddings parquet file (default: embeddings.parquet)
     --output PATH     Output report file (default: benchmark_report.txt)
     --servers N       Number of servers to create (default: 8)
     --replication N   Replication factor (default: 4)
@@ -17,7 +17,6 @@ Options:
 """
 
 import argparse
-import json
 import logging
 import random
 import statistics
@@ -141,10 +140,16 @@ class BenchmarkClient:
 
 
 def load_data(filepath: str) -> List[Dict[str, Any]]:
+    import pandas as pd
     logger.info(f"Loading vectors from {filepath}...")
     try:
-        with open(filepath, "r") as f:
-            data = json.load(f)
+        df = pd.read_parquet(filepath)
+        # Convert DataFrame to list of dicts with 'embedding' and 'text' keys
+        data = [
+            {"embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else list(row["embedding"]), 
+             "text": row["sentence"]}
+            for _, row in df.iterrows()
+        ]
         logger.info(f"Loaded {len(data)} vectors.")
         return data
     except Exception as e:
@@ -858,7 +863,7 @@ def run_suite(
 def main():
     parser = argparse.ArgumentParser(description="Run Full Benchmark Suite")
     parser.add_argument(
-        "--data", type=str, default="embeddings.json", help="Path to data file"
+        "--data", type=str, default="embeddings.parquet", help="Path to data file"
     )
     parser.add_argument(
         "--output", type=str, default="benchmark_report.txt", help="Output report file"

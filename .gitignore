@@ -15,3 +15,5 @@ benchmark_report.txt
 
 compose.yml
 compose.yaml
+
+embeddings.parquet
