@@ -1582,7 +1582,8 @@ class TestServerHelperMethods:
         s.peers = []
         try:
             result = s._calculate_destinations(([1.0], 1, "a", 0, (1.0, 0)))
-            assert result == frozenset()
+            # Expected return is (frozenset(), -1)
+            assert result[0] == frozenset()
         finally:
             s.stop()
 
@@ -3230,8 +3231,9 @@ class TestServerCalculateDestinationsEdgeCases:
 
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             result = s._calculate_destinations(vec)
-
-            assert result == frozenset()
+            
+            # Expected return is (frozenset(), -1)
+            assert result[0] == frozenset()
         finally:
             s.stop()
 

@@ -2243,7 +2243,27 @@ class Server:
         if not split_plan:
             return {}
             
-        return self.split_and_distribute_cluster(cluster_id, split_plan)
+        result = self.split_and_distribute_cluster(cluster_id, split_plan)
+        
+        # Update local cluster state
+        if result:
+            with self.lock:
+                # Remove old cluster
+                self.clusters = [c for c in self.clusters if c[0] != cluster_id]
+                
+                # Add new clusters
+                for new_id, info in result.items():
+                    center = info["center"]
+                    # ensure center is list for consistency
+                    if hasattr(center, "tolist"):
+                         center = center.tolist()
+                    self.clusters.append((new_id, center))
+                    
+                # Rebuild index
+                if self.cluster_index:
+                     self.cluster_index.build(self.clusters)
+                     
+        return result
 
     def split_and_distribute_cluster(self, cluster_id: int, split_plan: dict) -> dict:
         """
