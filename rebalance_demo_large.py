@@ -269,7 +269,7 @@ else:
     print("\n  ✓ Rebalancing executed!")
     
 # Wait for rebalancing effects (async broadcast)
-time.sleep(5)
+time.sleep(10)
 
 print("\n" + "-"*70)
 print("AFTER REBALANCING:")

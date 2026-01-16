@@ -16,7 +16,7 @@ MAX_K = 30  # Maximum number of clusters to try
 
 # Rebalancing configuration
 REBALANCE_THRESHOLD = 0.3  # 30% deviation from average triggers rebalance
-REBALANCE_SPLIT_FACTOR = 3  # Split heavy clusters into 2 subclusters
+REBALANCE_SPLIT_FACTOR = 4  # Split heavy clusters into 2 subclusters
 REBALANCE_CHECK_INTERVAL = 60  # Check every 60 seconds
 
 import argparse
@@ -2369,8 +2369,18 @@ class Server:
 
         # Find underloaded peers 
         # We need enough unique peers for primary + replicas
-        target_peers = self._get_underloaded_peers(n_subclusters * 2) # Get more candidates
+        # Pass sender's current load and split info to determine if we should keep one locally
+        sender_current_load = self.store.count()
+        target_peers, sender_should_keep_one = self._get_underloaded_peers(
+            n_subclusters * 2,  # Get more candidates
+            sender_current_load=sender_current_load,
+            vectors_being_sent=n_vectors,
+            n_subclusters=n_subclusters
+        )
         all_peers = [p.get_id() for p in self.get_reachable_peers()]
+        
+        # Track how many subclusters we've assigned to self
+        subclusters_assigned_to_self = 0
 
         result_plan = {}
         for i in range(n_subclusters):
@@ -2381,17 +2391,33 @@ class Server:
             
             # 1. Select Primary
             if i == 0:
+                # First subcluster always stays with sender
                 primary = self.id
+                subclusters_assigned_to_self += 1
             else:
-                # Pick from underloaded if available, otherwise self
-                if target_peers:
+                # Check if we need to keep at least one more subcluster locally
+                # to prevent sender from becoming too underloaded
+                should_keep_this_one = (
+                    sender_should_keep_one and 
+                    subclusters_assigned_to_self == 0 and 
+                    i == n_subclusters - 1  # Last chance to keep one
+                )
+                
+                if should_keep_this_one:
+                    primary = self.id
+                    subclusters_assigned_to_self += 1
+                    print(f"DEBUG: Server {self.id} - Keeping subcluster {i} locally to avoid underload")
+                elif target_peers:
                     # Pop best candidate that is not self (if possible)
                     candidate = next((p for p in target_peers if p != self.id), self.id)
                     if candidate in target_peers:
                         target_peers.remove(candidate)
                     primary = candidate
+                    if candidate == self.id:
+                        subclusters_assigned_to_self += 1
                 else:
                     primary = self.id
+                    subclusters_assigned_to_self += 1
             
             destinations.append(primary)
             
@@ -2450,11 +2476,17 @@ class Server:
                      
         return result
 
-    def split_and_distribute_cluster(self, cluster_id: int, split_plan: dict) -> dict:
+    def split_and_distribute_cluster(self, cluster_id: int, split_plan: dict, is_coordinator: bool = True) -> dict:
         """
         Execute a split on the local vectors of a cluster, using the provided plan.
+        
+        Args:
+            cluster_id: The cluster to split
+            split_plan: The split plan with new cluster IDs, centers, and destinations
+            is_coordinator: If True, this server initiates replication to destinations.
+                           If False (replica), only handle local data without replicating.
         """
-        print(f"DEBUG: Server {self.id} - Received split_and_distribute for cluster {cluster_id}")
+        print(f"DEBUG: Server {self.id} - Received split_and_distribute for cluster {cluster_id} (coordinator={is_coordinator})")
         
         # Get vectors from this cluster
         cluster_vectors = self.store.get_by_cluster(cluster_id)
@@ -2488,7 +2520,7 @@ class Server:
             print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
                  
             # Distribute (keep or move)
-            return self._distribute_vectors_from_split({new_id: {"center": info["center"], "members": updated_members, "destinations": info["destinations"]}})
+            return self._distribute_vectors_from_split({new_id: {"center": info["center"], "members": updated_members, "destinations": info["destinations"]}}, is_coordinator=is_coordinator)
 
         # Perform assignment of vectors to new centers
         X = np.array([v[0] for v in cluster_vectors], dtype=np.float32)
@@ -2550,20 +2582,106 @@ class Server:
         print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
             
         # Distribute (keep or move)
-        return self._distribute_vectors_from_split(result_full)
+        return self._distribute_vectors_from_split(result_full, is_coordinator=is_coordinator)
 
-    def _distribute_vectors_from_split(self, split_result: dict) -> dict:
+    def _distribute_vectors_from_split(self, split_result: dict, is_coordinator: bool = True) -> dict:
         """
         Helper to move vectors to their destinations after split.
+        Also checks if the current server would become too underloaded and 
+        should keep at least one subcluster locally.
+        
+        Args:
+            split_result: Dict of new_cluster_id -> {center, members, destinations}
+            is_coordinator: If True, replicate to all destinations. If False (replica),
+                           only handle local retention without replicating.
         """
+        # First, check if we would become too underloaded by sending everything away
+        # Calculate total vectors being redistributed
+        total_vectors_in_split = sum(len(data["members"]) for data in split_result.values())
+        
+        # Check if we're already keeping any subcluster locally
+        keeping_any_locally = any(
+            self.id in data["destinations"] 
+            for data in split_result.values()
+        )
+        
+        # Determine if we need to force keeping one subcluster
+        force_keep_one = False
+        if not keeping_any_locally and total_vectors_in_split > 0:
+            # Note: By this point, vectors have already been removed from the store.
+            # So store.count() is the count AFTER removal.
+            # If we don't keep any vectors locally, our final count = store.count() (already reflects removal)
+            # The vectors in split_result are what we're redistributing.
+            projected_load = self.store.count()  # After removal, if we don't keep any
+            
+            # Get peer loads to calculate average
+            peer_loads = []
+            for peer in self.get_reachable_peers():
+                if peer.get_id() == self.id:
+                    continue
+                try:
+                    peer_loads.append(peer.count())
+                except Exception:
+                    pass
+            
+            if peer_loads:
+                avg_load = sum(peer_loads) / len(peer_loads)
+                underload_threshold = avg_load * 0.7
+                
+                if projected_load < underload_threshold:
+                    force_keep_one = True
+                    n_subclusters = len(split_result)
+                    vectors_per_subcluster = total_vectors_in_split / n_subclusters if n_subclusters > 0 else 0
+                    projected_with_one = projected_load + vectors_per_subcluster
+                    if projected_with_one >= underload_threshold * 0.8:
+                        print(f"DEBUG: Server {self.id} - Would be underloaded "
+                              f"({projected_load} vs avg {avg_load:.0f}), keeping one subcluster locally")
+        
+        # Track which cluster we'll force-keep (choose smallest to minimize impact)
+        force_keep_cluster_id = None
+        if force_keep_one:
+            # Pick the smallest subcluster to keep locally
+            smallest = min(split_result.items(), key=lambda x: len(x[1]["members"]))
+            force_keep_cluster_id = smallest[0]
+        
         for new_cluster_id, data in split_result.items():
-            destinations = data["destinations"]
+            destinations = list(data["destinations"])  # Make a copy to modify
             
             # Destination 0 is primary, others are replicas.
             # But the 'receive' logic on peers handles "clustered" (simple save).
             # We just need to ensure everyone in destinations handles it.
             
             local_kept = False
+            # Check if we should force-keep this cluster
+            should_force_keep = (force_keep_cluster_id == new_cluster_id)
+            
+            # Replica mode: don't replicate to peers, but DO keep vectors locally if we're a destination
+            # The coordinator sends data to destinations, but we also have the same data locally.
+            # We should keep our portion (subclusters where we're a destination).
+            if not is_coordinator:
+                # Only keep vectors locally if we're in the destinations for this subcluster
+                if self.id in destinations:
+                    for vec in data["members"]:
+                        self.store.insert(vec)
+                    print(f"DEBUG: Server {self.id} - Replica re-inserting {len(data['members'])} vectors locally (cluster {new_cluster_id})")
+                    local_kept = True
+                # Skip replication to other peers - coordinator handles that
+                continue
+            
+            # Coordinator mode below: handle replication
+            
+            # If force-keeping, we replace one destination with ourselves to maintain exact count
+            # Remove one destination (preferably not the primary) and add self
+            skipped_destination = None
+            if should_force_keep and self.id not in destinations:
+                # Skip the last destination (a replica) and keep locally instead
+                if len(destinations) > 1:
+                    skipped_destination = destinations.pop()  # Remove last (a replica)
+                    print(f"DEBUG: Server {self.id} - Replacing destination {skipped_destination} with self to avoid underload")
+                else:
+                    # Only one destination (primary), we'll add ourselves but need to be careful
+                    # In this case, just force-keep in addition (rare edge case)
+                    pass
             
             for destination in destinations:
                 if destination == self.id:
@@ -2591,6 +2709,14 @@ class Server:
                     else:
                         print(f"DEBUG: Server {self.id} - Peer {destination} not found for replication")
 
+            # Force-keep: if we determined this server would be underloaded and this is the chosen cluster
+            # This happens when we skipped a destination above
+            if should_force_keep and not local_kept:
+                for vec in data["members"]:
+                    self.store.insert(vec)
+                print(f"DEBUG: Server {self.id} - Force-keeping {len(data['members'])} vectors locally to avoid underload (cluster {new_cluster_id})")
+                local_kept = True
+
             # Fallback: if we were supposed to send away but failed, should we keep?
             # Hard to track overall success here without complex logic. 
             # Current logic: if self is in destinations, we kept it.
@@ -2600,15 +2726,20 @@ class Server:
 
         return split_result
 
-    def _get_underloaded_peers(self, count: int) -> list:
+    def _get_underloaded_peers(self, count: int, sender_current_load: int = None, 
+                                 vectors_being_sent: int = None, n_subclusters: int = None) -> tuple:
         """
-        Get the N most underloaded peers (excluding self).
+        Get the N most underloaded peers (excluding self), and determine if sender 
+        should keep at least one subcluster to avoid becoming too underloaded.
         
         Args:
             count: Number of peers to return
+            sender_current_load: Current vector count of the sending server (self)
+            vectors_being_sent: Total vectors being redistributed in the split
+            n_subclusters: Number of subclusters being created
             
         Returns:
-            List of peer IDs sorted by load (ascending)
+            Tuple of (list of peer IDs sorted by load ascending, bool sender_should_keep_one)
         """
         peer_loads = []
         for peer in self.get_reachable_peers():
@@ -2623,7 +2754,32 @@ class Server:
         # Sort by load ascending (least loaded first)
         peer_loads.sort(key=lambda x: x[1])
         
-        return [pid for pid, _ in peer_loads[:count]]
+        # Determine if sender should keep at least one subcluster
+        sender_should_keep_one = False
+        if sender_current_load is not None and vectors_being_sent is not None and n_subclusters is not None:
+            # Calculate sender's projected load if it sends everything away
+            projected_sender_load = sender_current_load - vectors_being_sent
+            
+            # Calculate average load across all peers (including self's projected state)
+            all_loads = [load for _, load in peer_loads] + [projected_sender_load]
+            if all_loads:
+                avg_load = sum(all_loads) / len(all_loads)
+                
+                # If sender would become significantly underloaded (below 70% of avg),
+                # it should keep at least one subcluster
+                underload_threshold = avg_load * 0.7
+                if projected_sender_load < underload_threshold:
+                    # Calculate how many vectors per subcluster (approx)
+                    vectors_per_subcluster = vectors_being_sent / n_subclusters if n_subclusters > 0 else 0
+                    
+                    # Check if keeping one subcluster helps
+                    projected_with_one = projected_sender_load + vectors_per_subcluster
+                    if projected_with_one >= underload_threshold * 0.8:  # Some tolerance
+                        sender_should_keep_one = True
+                        print(f"DEBUG: Server {self.id} - Sender would be underloaded "
+                              f"({projected_sender_load} vs avg {avg_load:.0f}), keeping one subcluster")
+        
+        return [pid for pid, _ in peer_loads[:count]], sender_should_keep_one
 
     def _get_peer_by_id(self, peer_id: int):
         """Get peer object by ID."""
@@ -2804,8 +2960,8 @@ class Server:
              for peer in self.get_reachable_peers():
                  if peer.get_id() != self.id:
                      try:
-                         # Send the split plan so they can do it themselves
-                         peer.split_and_distribute_cluster(old_cluster_id, split_plan)
+                         # Send the split plan so they can do it themselves (as replica, not coordinator)
+                         peer.split_and_distribute_cluster(old_cluster_id, split_plan, is_coordinator=False)
                      except Exception as e:
                          print(f"DEBUG: Server {self.id} - Failed to send split command to peer {peer.get_id()}: {e}")
         
