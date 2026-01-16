@@ -286,6 +286,33 @@ def delete_vector(url, collection, vector_id):
             return False
 
 
+def delete_vectors_by_payload(url, collection, key, value):
+    """Delete vectors where payload[key] == value."""
+    with GLOBAL_LOCK:
+        client = get_client(url)
+        try:
+            # Construct filter
+            filter_condition = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key=key,
+                        match=models.MatchValue(value=value),
+                    )
+                ]
+            )
+            
+            client.delete(
+                collection_name=collection,
+                points_selector=models.FilterSelector(filter=filter_condition),
+                wait=True,
+            )
+            logger.info(f"Deleted vectors with {key}={value} on {url}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting vectors by payload {key}={value} on {url}: {e}")
+            return False
+
+
 def get_all_vectors(url, collection):
     with GLOBAL_LOCK:
         client = get_client(url)

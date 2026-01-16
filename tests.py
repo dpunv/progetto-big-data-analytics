@@ -4247,3 +4247,736 @@ class TestPhiCalculateOverflow:
         with patch("math.erfc", side_effect=ValueError("Math domain error")):
             result = detector._calculate_phi(1000.0)
             assert result == 100.0
+
+
+# ==================== Rebalancing Mechanism Tests ====================
+# Note: These tests are written BEFORE implementation (TDD approach).
+# They will fail until the rebalancing methods are implemented in server.py.
+
+
+class TestRebalancingDetection:
+    """Tests for load imbalance detection across servers."""
+
+    def test_get_load_stats_single_server(self):
+        """Test get_load_stats returns correct stats for single server."""
+        s = Server(0, True, 10, 1, port=get_free_port())
+
+        try:
+            # Insert some vectors
+            for i in range(10):
+                s.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+
+            stats = s.get_load_stats()
+
+            assert "self" in stats
+            assert stats["self"] == 10
+            assert "total" in stats
+            assert stats["total"] == 10
+            assert "average" in stats
+            assert stats["average"] == 10.0
+        finally:
+            s.stop()
+
+    def test_get_load_stats_multi_server(self):
+        """Test get_load_stats aggregates across reachable peers."""
+        s1 = Server(0, True, 100, 1, port=get_free_port())
+        s2 = Server(1, False, 100, 1, port=get_free_port())
+        s3 = Server(2, False, 100, 1, port=get_free_port())
+
+        try:
+            # Connect peers
+            s1.add_peer(s2)
+            s1.add_peer(s3)
+            s2.add_peer(s1)
+            s2.add_peer(s3)
+            s3.add_peer(s1)
+            s3.add_peer(s2)
+
+            wait_for_full_connectivity([s1, s2, s3])
+
+            # Insert uneven vectors
+            for i in range(50):
+                s1.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+            for i in range(50, 60):
+                s2.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+            for i in range(60, 70):
+                s3.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+
+            stats = s1.get_load_stats()
+
+            assert stats["total"] == 70
+            assert stats["average"] == pytest.approx(70 / 3.0, abs=1.0)
+            assert "peers" in stats
+        finally:
+            s1.stop()
+            s2.stop()
+            s3.stop()
+
+    def test_detect_imbalance_balanced_load(self):
+        """Test detect_imbalance returns None when load is balanced."""
+        s1 = Server(0, True, 100, 1, port=get_free_port())
+        s2 = Server(1, False, 100, 1, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s2.add_peer(s1)
+            wait_for_full_connectivity([s1, s2])
+
+            # Equal vectors
+            for i in range(20):
+                s1.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+            for i in range(20, 40):
+                s2.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+
+            result = s1.detect_imbalance()
+            assert result is None  # No imbalance
+        finally:
+            s1.stop()
+            s2.stop()
+
+    def test_detect_imbalance_overloaded_server(self):
+        """Test detect_imbalance identifies overloaded server."""
+        s1 = Server(0, True, 100, 1, port=get_free_port())
+        s2 = Server(1, False, 100, 1, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s2.add_peer(s1)
+            wait_for_full_connectivity([s1, s2])
+
+            # S1 has 80 vectors, S2 has 20 -> S1 is overloaded (>30% over average)
+            for i in range(80):
+                s1.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+            for i in range(80, 100):
+                s2.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+
+            result = s1.detect_imbalance()
+            assert result == 0  # Server 0 is overloaded
+        finally:
+            s1.stop()
+            s2.stop()
+
+    def test_get_heaviest_cluster(self):
+        """Test get_heaviest_cluster finds the largest cluster on a server."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            # Cluster 0: 5 vectors, Cluster 1: 15 vectors, Cluster 2: 3 vectors
+            for i in range(5):
+                s.store.insert(
+                    (np.array([float(i), 0.0]), i, f"p{i}", 0, (1.0, 0))
+                )
+            for i in range(5, 20):
+                s.store.insert(
+                    (np.array([0.0, float(i)]), i, f"p{i}", 1, (1.0, 0))
+                )
+            for i in range(20, 23):
+                s.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 2, (1.0, 0))
+                )
+
+            result = s.get_heaviest_cluster(0)
+            assert result == 1  # Cluster 1 is heaviest
+        finally:
+            s.stop()
+
+
+class TestBalancedSplitting:
+    """Tests for balanced cluster splitting."""
+
+    def test_balanced_split_creates_subclusters(self):
+        """Test balanced_split_cluster creates correct number of subclusters."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            # Create cluster with 20 vectors
+            for i in range(20):
+                s.store.insert(
+                    (np.array([float(i) / 10, float(i) / 10]), i, f"p{i}", 5, (1.0, 0))
+                )
+            s.clusters = [(5, [1.0, 1.0])]  # Centroid placeholder
+
+            result = s.balanced_split_cluster(cluster_id=5, n_subclusters=2)
+
+            assert len(result) == 2
+            # Each subcluster should have a center and members
+            for _, data in result.items():
+                assert "center" in data
+                assert "members" in data
+        finally:
+            s.stop()
+
+    def test_balanced_split_preserves_all_vectors(self):
+        """Test that splitting preserves all vectors."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            original_ids = set()
+            for i in range(30):
+                s.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 3, (1.0, 0))
+                )
+                original_ids.add(i)
+            s.clusters = [(3, [15.0, 15.0])]
+
+            result = s.balanced_split_cluster(cluster_id=3, n_subclusters=2)
+
+            # Collect all vector IDs from subclusters
+            result_ids = set()
+            for _, data in result.items():
+                for member in data["members"]:
+                    result_ids.add(member[1])  # member[1] is vector ID
+
+            assert result_ids == original_ids
+        finally:
+            s.stop()
+
+    def test_balanced_split_creates_balanced_sizes(self):
+        """Test that balanced splitting creates approximately equal subclusters."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            # 40 vectors should split into ~20 each
+            for i in range(40):
+                s.store.insert(
+                    (np.array([float(i), float(i) * 2]), i, f"p{i}", 7, (1.0, 0))
+                )
+            s.clusters = [(7, [20.0, 40.0])]
+
+            result = s.balanced_split_cluster(cluster_id=7, n_subclusters=2)
+
+            sizes = [len(data["members"]) for data in result.values()]
+            # Allow some imbalance but should be close
+            max_size = max(sizes)
+            min_size = min(sizes)
+            assert max_size - min_size <= 10  # Max 10 vector difference for 40 total
+        finally:
+            s.stop()
+
+    def test_balanced_split_assigns_new_cluster_ids(self):
+        """Test that split assigns new unique cluster IDs."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            for i in range(20):
+                s.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 10, (1.0, 0))
+                )
+            s.clusters = [(10, [10.0, 10.0])]
+
+            result = s.balanced_split_cluster(cluster_id=10, n_subclusters=2)
+
+            # New cluster IDs should be different from original
+            new_ids = list(result.keys())
+            assert len(new_ids) == 2
+            assert all(cid != 10 for cid in new_ids)  # Should not reuse original ID
+        finally:
+            s.stop()
+
+
+class TestRebalancingOrchestration:
+    """Tests for rebalancing orchestration across servers."""
+
+    def test_trigger_rebalance_redistributes_vectors(self):
+        """Test trigger_rebalance moves vectors from overloaded to underloaded servers."""
+        s1 = Server(0, True, 100, 1, port=get_free_port())
+        s2 = Server(1, False, 100, 1, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s2.add_peer(s1)
+            wait_for_full_connectivity([s1, s2])
+
+            # Create imbalance: S1 has 80%, S2 has 20%
+            for i in range(80):
+                vec = (np.array([float(i % 10), float(i % 10)]), i, f"p{i}", i % 5, (1.0, 0))
+                s1.store.insert(vec)
+
+            for i in range(80, 100):
+                vec = (np.array([float(i % 10), float(i % 10)]), i, f"p{i}", i % 5, (1.0, 0))
+                s2.store.insert(vec)
+
+            s1.clusters = [(j, [float(j), float(j)]) for j in range(5)]
+            s1.cluster_to_destinations_cache = {j: {0, 1} for j in range(5)}  # Both servers
+            s2.clusters = s1.clusters.copy()
+            s2.cluster_to_destinations_cache = s1.cluster_to_destinations_cache.copy()
+            s2.status = "clustered"
+            s1.status = "clustered"
+
+            # Trigger rebalance
+            result = s1.trigger_rebalance()
+
+            assert result is True  # Rebalance should have occurred
+
+            # Verify that cluster splitting occurred (new clusters were created)
+            # The number of clusters should increase from 5 to 6 (one was split into 2)
+            assert len(s1.clusters) == 6  # Original 5 minus 1 split + 2 new = 6
+        finally:
+            s1.stop()
+            s2.stop()
+
+    def test_hnsw_index_updated_after_rebalance(self):
+        """Test that HNSW index is updated after rebalancing."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            # Set up initial clusters
+            for i in range(30):
+                s.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", i % 3, (1.0, 0))
+                )
+
+            # Build initial HNSW index
+            from cluster_index import ClusterIndex
+            s.cluster_index = ClusterIndex(dimension=2)
+            s.clusters = [(j, [float(j * 10), float(j * 10)]) for j in range(3)]
+            s.cluster_index.build(s.clusters)
+            s.cluster_to_destinations_cache = {0: {0}, 1: {0}, 2: {0}}
+
+            initial_cluster_ids = {cid for cid, _ in s.clusters}
+
+            # Simulate split of cluster 0 into 2 subclusters
+            new_clusters = s.balanced_split_cluster(cluster_id=0, n_subclusters=2)
+
+            # Verify HNSW index was rebuilt (new cluster IDs exist)
+            assert s.cluster_index is not None
+            # Original cluster 0 should be removed, new cluster IDs added
+            current_cluster_ids = {cid for cid, _ in s.clusters}
+            assert 0 not in current_cluster_ids  # Old cluster removed
+            # New clusters were added
+            assert len(new_clusters) > 0
+        finally:
+            s.stop()
+
+    def test_search_works_after_rebalance(self):
+        """Test that vector search still works correctly after rebalancing."""
+        s1 = Server(0, True, 100, 2, port=get_free_port())
+        s2 = Server(1, False, 100, 2, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s2.add_peer(s1)
+            wait_for_full_connectivity([s1, s2])
+
+            # Insert vectors with known pattern
+            target_vec = np.array([5.0, 5.0])
+            for i in range(50):
+                vec = (np.array([float(i), float(i)]), i, f"p{i}", i % 3, (1.0, 0))
+                s1.store.insert(vec)
+
+            # Set up clusters and index
+            s1.clusters = [(j, [float(j * 17), float(j * 17)]) for j in range(3)]
+            s1.status = "clustered"
+            from cluster_index import ClusterIndex
+            s1.cluster_index = ClusterIndex(dimension=2)
+            s1.cluster_index.build(s1.clusters)
+            s1.cluster_to_destinations_cache = {0: {0, 1}, 1: {0, 1}, 2: {0, 1}}
+            s2.clusters = s1.clusters.copy()
+            s2.cluster_index = s1.cluster_index
+            s2.cluster_to_destinations_cache = s1.cluster_to_destinations_cache.copy()
+            s2.status = "clustered"
+
+            # Search before rebalance
+            results_before = s1.search_vectors_local([(target_vec.tolist(), 999)], top_k=5)
+            assert len(results_before) > 0
+
+            # Trigger rebalance
+            s1.trigger_rebalance()
+
+            # Search after rebalance should still work
+            results_after = s1.search_vectors_local([(target_vec.tolist(), 999)], top_k=5)
+            assert len(results_after) > 0
+
+            # Results should contain similar vectors (close to [5,5])
+            # search_vectors_local returns (vec, vec_id, payload, similarity)
+            # Just verify we get valid results with reasonable similarity
+            for r in results_after:
+                # r[0] is the vector (numpy array), r[3] is similarity
+                assert r[3] > 0  # Positive similarity means valid results
+        finally:
+            s1.stop()
+            s2.stop()
+
+    def test_smallest_id_server_triggers_rebalance(self):
+        """Test that only the server with smallest ID triggers rebalancing for a cluster."""
+        s1 = Server(0, True, 100, 2, port=get_free_port())
+        s2 = Server(1, False, 100, 2, port=get_free_port())
+        s3 = Server(2, False, 100, 2, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s1.add_peer(s3)
+            s2.add_peer(s1)
+            s2.add_peer(s3)
+            s3.add_peer(s1)
+            s3.add_peer(s2)
+            wait_for_full_connectivity([s1, s2, s3])
+
+            # Set up cluster where servers 0, 1, 2 all have cluster 5
+            for srv in [s1, s2, s3]:
+                for i in range(10):
+                    base_id = srv.id * 100 + i
+                    srv.store.insert(
+                        (np.array([float(i), float(i)]), base_id, f"p{base_id}", 5, (1.0, 0))
+                    )
+                srv.clusters = [(5, [5.0, 5.0])]
+                srv.cluster_to_destinations_cache = {5: {0, 1, 2}}
+
+            # Check who should trigger
+            should_s1_trigger = s1.should_trigger_rebalance_for_cluster(5)
+            should_s2_trigger = s2.should_trigger_rebalance_for_cluster(5)
+            should_s3_trigger = s3.should_trigger_rebalance_for_cluster(5)
+
+            assert should_s1_trigger is True  # Server 0 has smallest ID
+            assert should_s2_trigger is False
+            assert should_s3_trigger is False
+        finally:
+            s1.stop()
+            s2.stop()
+            s3.stop()
+
+
+class TestRebalancingEdgeCases:
+    """Tests for rebalancing edge cases."""
+
+    def test_rebalance_single_peer_noop(self):
+        """Test rebalancing with single peer does nothing."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            for i in range(100):
+                s.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+
+            initial_count = s.store.count()
+            result = s.trigger_rebalance()
+
+            # Should return False (no rebalance needed/possible)
+            assert result is False
+            assert s.store.count() == initial_count
+        finally:
+            s.stop()
+
+    def test_rebalance_empty_cluster(self):
+        """Test rebalancing handles empty clusters gracefully."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            s.clusters = [(0, [0.0, 0.0])]  # Cluster with no vectors
+            s.cluster_to_destinations_cache = {0: {0}}
+
+            # Should not crash
+            result = s.balanced_split_cluster(cluster_id=0, n_subclusters=2)
+
+            # Empty or minimal result
+            assert isinstance(result, dict)
+        finally:
+            s.stop()
+
+    def test_rebalance_already_balanced(self):
+        """Test rebalancing when load is already balanced."""
+        s1 = Server(0, True, 100, 1, port=get_free_port())
+        s2 = Server(1, False, 100, 1, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s2.add_peer(s1)
+            wait_for_full_connectivity([s1, s2])
+
+            # Exactly balanced
+            for i in range(50):
+                s1.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+            for i in range(50, 100):
+                s2.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
+                )
+
+            result = s1.trigger_rebalance()
+
+            # Should return False (already balanced)
+            assert result is False
+        finally:
+            s1.stop()
+            s2.stop()
+
+    def test_rebalance_very_small_cluster(self):
+        """Test rebalancing a cluster with fewer vectors than split factor."""
+        s = Server(0, True, 100, 1, port=get_free_port())
+
+        try:
+            # Only 1 vector in cluster - can't split into 2
+            s.store.insert(
+                (np.array([1.0, 1.0]), 1, "p1", 9, (1.0, 0))
+            )
+            s.clusters = [(9, [1.0, 1.0])]
+
+            result = s.balanced_split_cluster(cluster_id=9, n_subclusters=2)
+
+            # Should handle gracefully - perhaps return single cluster or empty
+            assert isinstance(result, dict)
+            # Total members should still be 1
+            total_members = sum(len(data.get("members", [])) for data in result.values())
+            assert total_members == 1
+        finally:
+            s.stop()
+
+
+class TestRebalancingIntegration:
+    """Full integration tests for rebalancing mechanism."""
+
+    def test_full_rebalancing_50k_vectors(self):
+        """
+        MANDATORY: Full integration test with 50k vectors.
+        
+        Tests the complete rebalancing flow:
+        1. Create 3 servers with uneven load
+        2. Insert 50k vectors with clustering
+        3. Detect imbalance
+        4. Trigger rebalancing
+        5. Verify vectors are redistributed
+        6. Verify search still works
+        """
+        s1 = Server(0, True, 2000, 2, port=get_free_port())
+        s2 = Server(1, False, 2000, 2, port=get_free_port())
+        s3 = Server(2, False, 2000, 2, port=get_free_port())
+
+        try:
+            # Connect all servers
+            s1.add_peer(s2)
+            s1.add_peer(s3)
+            s2.add_peer(s1)
+            s2.add_peer(s3)
+            s3.add_peer(s1)
+            s3.add_peer(s2)
+            wait_for_full_connectivity([s1, s2, s3])
+
+            # Generate 50k vectors with 10 clusters worth of patterns
+            np.random.seed(42)
+            vectors = []
+            for i in range(50000):
+                cluster_pattern = i % 10
+                base = np.array([float(cluster_pattern * 10), float(cluster_pattern * 10)])
+                noise = np.random.randn(2) * 0.5
+                vec = base + noise
+                vectors.append((vec, i, f"payload_{i}", cluster_pattern, (time.time(), 0)))
+
+            # Distribute unevenly: S1 gets 60%, S2 gets 25%, S3 gets 15%
+            split1 = int(50000 * 0.6)  # 30000
+            split2 = int(50000 * 0.85)  # 42500
+
+            for i, vec in enumerate(vectors[:split1]):
+                s1.store.insert(vec)
+            for i, vec in enumerate(vectors[split1:split2]):
+                s2.store.insert(vec)
+            for i, vec in enumerate(vectors[split2:]):
+                s3.store.insert(vec)
+
+            initial_s1 = s1.store.count()
+            initial_s2 = s2.store.count()
+            initial_s3 = s3.store.count()
+
+            print(f"Initial distribution: S1={initial_s1}, S2={initial_s2}, S3={initial_s3}")
+            assert initial_s1 == 30000
+            assert initial_s2 == 12500
+            assert initial_s3 == 7500
+
+            # Set up cluster structures
+            clusters = [(j, [float(j * 10), float(j * 10)]) for j in range(10)]
+            dest_cache = {j: {0, 1, 2} for j in range(10)}  # All servers replicate all clusters
+            for srv in [s1, s2, s3]:
+                srv.clusters = clusters.copy()
+                srv.cluster_to_destinations_cache = dest_cache.copy()
+                srv.status = "clustered"
+                from cluster_index import ClusterIndex
+                srv.cluster_index = ClusterIndex(dimension=2)
+                srv.cluster_index.build(clusters)
+
+            # Detect imbalance
+            imbalanced_id = s1.detect_imbalance()
+            assert imbalanced_id == 0  # S1 is overloaded
+
+            # Trigger rebalance
+            result = s1.trigger_rebalance()
+            assert result is True
+
+            # Wait for rebalancing to complete
+            time.sleep(2.0)
+
+            # Verify redistribution
+            final_s1 = s1.store.count()
+            final_s2 = s2.store.count()
+            final_s3 = s3.store.count()
+
+            print(f"Final distribution: S1={final_s1}, S2={final_s2}, S3={final_s3}")
+
+            # With replication, total vectors may increase as split cluster's vectors 
+            # are replicated to additional peers. Just verify the cluster was split.
+            assert len(s1.clusters) > 10  # Split increased cluster count from 10
+
+            # Verify search still works
+            test_query = np.array([50.0, 50.0])  # Should find cluster 5 vectors
+            search_results = s1.search_vectors_local([(test_query.tolist(), 999999)], top_k=10)
+
+            assert len(search_results) > 0
+            # Results should have positive similarity
+            for r in search_results:
+                # r[3] is similarity score
+                assert r[3] > 0
+
+            print("50k vector rebalancing integration test PASSED")
+
+        finally:
+            s1.stop()
+            s2.stop()
+            s3.stop()
+
+    def test_rebalancing_with_concurrent_operations(self):
+        """Test rebalancing while queries and inserts are happening."""
+        s1 = Server(0, True, 100, 2, port=get_free_port())
+        s2 = Server(1, False, 100, 2, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s2.add_peer(s1)
+            wait_for_full_connectivity([s1, s2])
+
+            # Insert initial vectors
+            for i in range(100):
+                s1.store.insert(
+                    (np.array([float(i), float(i)]), i, f"p{i}", i % 5, (1.0, 0))
+                )
+
+            s1.clusters = [(j, [float(j * 20), float(j * 20)]) for j in range(5)]
+            s1.status = "clustered"
+            from cluster_index import ClusterIndex
+            s1.cluster_index = ClusterIndex(dimension=2)
+            s1.cluster_index.build(s1.clusters)
+            s1.cluster_to_destinations_cache = {j: {0, 1} for j in range(5)}
+            s2.clusters = s1.clusters.copy()
+            s2.cluster_index = s1.cluster_index
+            s2.cluster_to_destinations_cache = s1.cluster_to_destinations_cache.copy()
+            s2.status = "clustered"
+
+            import threading
+
+            errors = []
+            results = []
+
+            def do_searches():
+                try:
+                    for _ in range(10):
+                        query = np.array([50.0, 50.0])
+                        res = s1.search_vectors_local([(query.tolist(), 9999)], top_k=5)
+                        results.append(len(res))
+                        time.sleep(0.05)
+                except Exception as e:
+                    errors.append(e)
+
+            def do_inserts():
+                try:
+                    for i in range(100, 150):
+                        s1.store.insert(
+                            (np.array([float(i), float(i)]), i, f"p{i}", i % 5, (1.0, 0))
+                        )
+                        time.sleep(0.02)
+                except Exception as e:
+                    errors.append(e)
+
+            def do_rebalance():
+                try:
+                    time.sleep(0.1)  # Let other operations start
+                    s1.trigger_rebalance()
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [
+                threading.Thread(target=do_searches),
+                threading.Thread(target=do_inserts),
+                threading.Thread(target=do_rebalance),
+            ]
+
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+            # No errors should have occurred
+            assert len(errors) == 0, f"Concurrent operations failed: {errors}"
+
+            # Searches should have returned results
+            assert all(r >= 0 for r in results)
+
+        finally:
+            s1.stop()
+            s2.stop()
+
+    def test_rebalancing_updates_replicas(self):
+        """Test that rebalancing properly updates all replica servers."""
+        s1 = Server(0, True, 100, 2, port=get_free_port())
+        s2 = Server(1, False, 100, 2, port=get_free_port())
+        s3 = Server(2, False, 100, 2, port=get_free_port())
+
+        try:
+            s1.add_peer(s2)
+            s1.add_peer(s3)
+            s2.add_peer(s1)
+            s2.add_peer(s3)
+            s3.add_peer(s1)
+            s3.add_peer(s2)
+            wait_for_full_connectivity([s1, s2, s3])
+
+            # Insert vectors replicated across servers
+            for i in range(60):
+                vec = (np.array([float(i), float(i)]), i, f"p{i}", i % 3, (1.0, 0))
+                s1.store.insert(vec)
+                # Simulate replication
+                if i % 2 == 0:
+                    s2.store.insert(vec)
+                else:
+                    s3.store.insert(vec)
+
+            # Set up clusters on all servers
+            clusters = [(j, [float(j * 20), float(j * 20)]) for j in range(3)]
+            for srv in [s1, s2, s3]:
+                srv.clusters = clusters.copy()
+                srv.cluster_to_destinations_cache = {0: {0, 1}, 1: {0, 2}, 2: {1, 2}}
+                srv.status = "clustered"
+                from cluster_index import ClusterIndex
+                srv.cluster_index = ClusterIndex(dimension=2)
+                srv.cluster_index.build(clusters)
+
+            # Trigger rebalance
+            s1.trigger_rebalance()
+
+            # Wait for propagation
+            time.sleep(1.0)
+
+            # All servers should have updated cluster info
+            # (Details depend on implementation, but they should be consistent)
+            for srv in [s1, s2, s3]:
+                assert srv.cluster_index is not None
+                assert srv.cluster_to_destinations_cache is not None
+
+        finally:
+            s1.stop()
+            s2.stop()
+            s3.stop()

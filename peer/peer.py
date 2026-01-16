@@ -76,6 +76,24 @@ class Peer:
         except Exception:
             return False
 
+    def count(self) -> int:
+        """Get vector count on this peer."""
+        if self.is_local():
+            return self.server.count()
+        return self._remote_call("count")
+
+    def delete_vectors_by_cluster(self, cluster_id: int):
+        """Delete all vectors belonging to a specific cluster."""
+        if self.is_local():
+            return self.server.delete_vectors_by_cluster(cluster_id)
+        return self._remote_call("delete_vectors_by_cluster", cluster_id)
+
+    def split_and_distribute_cluster(self, cluster_id: int, split_plan: dict):
+        """Execute distributed split mechanism."""
+        if self.is_local():
+            return self.server.split_and_distribute_cluster(cluster_id, split_plan)
+        return self._remote_call("split_and_distribute_cluster", cluster_id, split_plan)
+
     def is_local(self):
         return self.server is not None
 
