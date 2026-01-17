@@ -1,88 +1,111 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Vector Query Client</title>
-        <link rel="stylesheet" href="style.css" />
-        <link
-            rel="stylesheet"
-            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
-        />
-    </head>
-    <body>
-        <div class="app-container">
-            <header>
-                <h1>Vector Query</h1>
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vector Client</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+    <!-- Preconnect for fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <header>
+            <div class="header-top">
+                <h1>Vector Client</h1>
                 <button id="settings-btn" class="icon-btn" title="Settings">
                     <i class="fa-solid fa-gear"></i>
                 </button>
-            </header>
+            </div>
 
-            <main>
-                <div id="model-status" class="status-indicator">
-                    <span class="status-dot"></span>
-                    <span id="status-text">Initializing Model...</span>
-                </div>
+            <nav class="tabs">
+                <button class="tab-btn active" data-target="query-view">
+                    <i class="fa-solid fa-search"></i> Query
+                </button>
+                <button class="tab-btn" data-target="add-view">
+                    <i class="fa-solid fa-plus"></i> Add
+                </button>
+            </nav>
+        </header>
 
-                <div class="input-section">
-                    <textarea
-                        id="query-input"
-                        placeholder="Enter text to query..."
-                        rows="3"
-                    ></textarea>
-                    <button id="query-btn" disabled>
-                        <i class="fa-solid fa-search"></i> Query
-                    </button>
+        <main>
+            <!-- Common Status Indicator -->
+            <div id="model-status" class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="status-text">Initializing Model...</span>
+            </div>
+
+            <!-- Query View -->
+            <div id="query-view" class="view-section active">
+                <div class="input-group">
+                    <textarea id="query-input" placeholder="Enter text to search for similar vectors..."
+                        rows="3"></textarea>
                 </div>
+                <button id="query-btn" class="primary-btn" disabled>
+                    <i class="fa-solid fa-search"></i> Search
+                </button>
 
                 <div id="results-section" class="results-container">
                     <!-- Results will be injected here -->
                 </div>
-            </main>
-        </div>
+            </div>
 
-        <!-- Settings Modal -->
-        <div id="settings-modal" class="modal hidden">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Settings</h2>
-                    <button id="close-settings" class="icon-btn">
-                        <i class="fa-solid fa-times"></i>
+            <!-- Add View -->
+            <div id="add-view" class="view-section">
+                <div class="add-form">
+                    <div class="input-group">
+                        <label for="add-input">Content to Add</label>
+                        <textarea id="add-input" placeholder="Enter the text content you want to embed and store..."
+                            rows="5"></textarea>
+                    </div>
+                    <button id="add-btn" class="primary-btn" disabled>
+                        <i class="fa-solid fa-plus"></i> Add Vector
                     </button>
                 </div>
-                <div class="modal-body">
+                <div id="add-status" style="margin-top: 20px;"></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button id="close-settings" class="icon-btn">
+                    <i class="fa-solid fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="input-group">
                     <label for="server-url">Server Address</label>
-                    <input
-                        type="text"
-                        id="server-url"
-                        placeholder="http://localhost:8001"
-                    />
+                    <input type="text" id="server-url" placeholder="http://localhost:8001" />
                     <p class="hint">
                         Enter the full URL of the server Client Endpoint.
                     </p>
+                </div>
 
-                    <label for="topk-input" style="margin-top: 15px"
-                        >Number of Results</label
-                    >
-                    <input
-                        type="number"
-                        id="topk-input"
-                        value="10"
-                        min="1"
-                        max="100"
-                    />
+                <div class="input-group">
+                    <label for="topk-input">Number of Results</label>
+                    <input type="number" id="topk-input" value="10" min="1" max="100" />
                     <p class="hint">
                         Maximum number of results to return per query (1-100).
                     </p>
                 </div>
-                <div class="modal-footer">
-                    <button id="save-settings" class="primary-btn">Save</button>
-                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="save-settings" class="primary-btn">Save Changes</button>
             </div>
         </div>
+    </div>
 
-        <script src="config.js"></script>
-        <script type="module" src="app.js"></script>
-    </body>
+    <script src="config.js"></script>
+    <script type="module" src="app.js"></script>
+</body>
+
 </html>
