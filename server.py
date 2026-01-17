@@ -759,6 +759,12 @@ class Server:
         # Track when clustering is in progress
         self.clustering_in_progress = False
 
+        # Split-safe queue: vectors arriving for clusters being split
+        # are buffered here and re-routed after split completes
+        self.splitting_clusters: Set[int] = set()  # Cluster IDs currently being split
+        self.pending_vectors: Dict[int, list] = {}  # cluster_id -> [(vector, ...), ...]
+        self.split_queue_lock = threading.Lock()  # Separate lock for split queue
+
         # HNSW Index
         self.cluster_index = None
         self.cluster_to_destinations_cache = (
@@ -1474,6 +1480,7 @@ class Server:
     def _route_vectors_to_cluster(self, vectors: ListOfVectorsComplete, sender_status):
         """
         Determine destinations for vectors and send them.
+        If a vector's cluster is being split, buffer it for re-routing after split.
         
         Args:
            vectors: list of vectors
@@ -1612,11 +1619,32 @@ class Server:
             print("error: status corrupted")
 
     def save_vectors(self, vectors: ListOfVectorsComplete):
+        """
+        Save vectors to the store. If any vector belongs to a cluster currently
+        being split, buffer it for re-routing after split completes.
+        """
         # print(f"DEBUG: Server {self.id} saving {len(vectors)} vectors")
-        # Use batch insert
-        success_count = self.store.insert_batch(vectors)
-        if success_count < len(vectors):
-            pass  # duplicates skipped defined behavior
+        
+        # Separate vectors: those for splitting clusters go to buffer, others saved normally
+        vectors_to_save = []
+        
+        with self.split_queue_lock:
+            for vector in vectors:
+                cluster_id = vector[3]
+                if cluster_id in self.splitting_clusters:
+                    # Buffer this vector - will be re-routed after split
+                    if cluster_id not in self.pending_vectors:
+                        self.pending_vectors[cluster_id] = []
+                    self.pending_vectors[cluster_id].append(vector)
+                    print(f"DEBUG: Server {self.id} buffered vector for splitting cluster {cluster_id}")
+                else:
+                    vectors_to_save.append(vector)
+        
+        # Save non-buffered vectors
+        if vectors_to_save:
+            success_count = self.store.insert_batch(vectors_to_save)
+            if success_count < len(vectors_to_save):
+                pass  # duplicates skipped defined behavior
 
     def receive_from_client(self, vectors: ListOfVectorsWithPayload):
         vectors_with_id = []
@@ -2526,101 +2554,150 @@ class Server:
         """
         print(f"DEBUG: Server {self.id} - Received split_and_distribute for cluster {cluster_id} (coordinator={is_coordinator})")
         
-        # Get vectors from this cluster
-        cluster_vectors = self.store.get_by_cluster(cluster_id)
-        print(f"DEBUG: Server {self.id} - Found {len(cluster_vectors)} local vectors for cluster {cluster_id}")
+        # Mark cluster as splitting - vectors arriving for this cluster will be buffered
+        with self.split_queue_lock:
+            self.splitting_clusters.add(cluster_id)
+            self.pending_vectors[cluster_id] = []
+        print(f"DEBUG: Server {self.id} - Marked cluster {cluster_id} as SPLITTING")
         
-        if not cluster_vectors:
-            ret = {}
+        try:
+            # Get vectors from this cluster
+            cluster_vectors = self.store.get_by_cluster(cluster_id)
+            print(f"DEBUG: Server {self.id} - Found {len(cluster_vectors)} local vectors for cluster {cluster_id}")
+            
+            if not cluster_vectors:
+                ret = {}
+                for new_id, info in split_plan.items():
+                    if new_id == "_labels_by_vector_id":
+                        continue
+                    ret[new_id] = {"center": info["center"], "members": [], "destinations": info["destinations"]}
+                return ret
+
+            # If only one new cluster in plan, it's a migration/rename
+            if len(split_plan) == 1:
+                print(f"DEBUG: Server {self.id} - Executing migration for cluster {cluster_id}")
+                new_id = list(split_plan.keys())[0]
+                info = split_plan[new_id]
+                updated_members = []
+                for v in cluster_vectors:
+                    # Update cluster ID
+                    if len(v) >= 6:
+                        new_vec = (v[0], v[1], v[2], new_id, v[4], v[5])
+                    elif len(v) >= 5:
+                        new_vec = (v[0], v[1], v[2], new_id, v[4])
+                    else:
+                        new_vec = (v[0], v[1], v[2], new_id, (time.time(), self.id))
+                    updated_members.append((new_vec))
+                
+                # Remove old
+                for vec in cluster_vectors:
+                    self.store.remove_by_id(vec[1])
+                print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
+                    
+                # Distribute (keep or move)
+                return self._distribute_vectors_from_split({new_id: {"center": info["center"], "members": updated_members, "destinations": info["destinations"]}}, is_coordinator=is_coordinator)
+
+            # Perform assignment of vectors to new centers
+            X = np.array([v[0] for v in cluster_vectors], dtype=np.float32)
+            
+            centers_list = []
+            new_ids_list = []
+            label_idx_to_new_id = {}
             for new_id, info in split_plan.items():
-                ret[new_id] = {"center": info["center"], "members": [], "destinations": info["destinations"]}
-            return ret
-
-        # If only one new cluster in plan, it's a migration/rename
-        if len(split_plan) == 1:
-            print(f"DEBUG: Server {self.id} - Executing migration for cluster {cluster_id}")
-            new_id = list(split_plan.keys())[0]
-            info = split_plan[new_id]
-            updated_members = []
-            for v in cluster_vectors:
-                # Update cluster ID
-                 if len(v) >= 6:
-                     new_vec = (v[0], v[1], v[2], new_id, v[4], v[5])
-                 elif len(v) >= 5:
-                     new_vec = (v[0], v[1], v[2], new_id, v[4])
-                 else:
-                     new_vec = (v[0], v[1], v[2], new_id, (time.time(), self.id))
-                 updated_members.append((new_vec))
+                if new_id == "_labels_by_vector_id":
+                    continue
+                centers_list.append(info["center"])
+                new_ids_list.append(new_id)
+                if "label_idx" in info:
+                    label_idx_to_new_id[info["label_idx"]] = new_id
+                
+            centers_np = np.array(centers_list, dtype=np.float32)
             
-            # Remove old
-            for vec in cluster_vectors:
-                 self.store.remove_by_id(vec[1])
-            print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
-                 
-            # Distribute (keep or move)
-            return self._distribute_vectors_from_split({new_id: {"center": info["center"], "members": updated_members, "destinations": info["destinations"]}}, is_coordinator=is_coordinator)
-
-        # Perform assignment of vectors to new centers
-        X = np.array([v[0] for v in cluster_vectors], dtype=np.float32)
-        
-        centers_list = []
-        new_ids_list = []
-        label_idx_to_new_id = {}
-        for new_id, info in split_plan.items():
-            if new_id == "_labels_by_vector_id":
-                continue
-            centers_list.append(info["center"])
-            new_ids_list.append(new_id)
-            if "label_idx" in info:
-                label_idx_to_new_id[info["label_idx"]] = new_id
+            # Check if we have pre-computed labels
+            labels_by_vector_id = split_plan.get("_labels_by_vector_id")
             
-        centers_np = np.array(centers_list, dtype=np.float32)
-        
-        # Check if we have pre-computed labels
-        labels_by_vector_id = split_plan.get("_labels_by_vector_id")
-        
-        if labels_by_vector_id and label_idx_to_new_id:
-            # Use pre-computed constrained labels
-            labels = []
-            for v in cluster_vectors:
-                vec_id = v[1]
-                label_idx = labels_by_vector_id.get(vec_id, 0)  # Default to 0 if missing
-                labels.append(label_idx)
-            labels = np.array(labels)
-            print(f"DEBUG: Server {self.id} - Using pre-computed constrained labels")
-        else:
-            # Fallback: nearest centroid assignment
-            dists = np.linalg.norm(X[:, np.newaxis, :] - centers_np[np.newaxis, :, :], axis=2)
-            labels = np.argmin(dists, axis=1)
-            print(f"DEBUG: Server {self.id} - Using nearest centroid assignment (fallback)")
-        
-        # Group vectors
-        result_full = {}
-        for idx, new_id in enumerate(new_ids_list):
-            info = split_plan[new_id]
-            result_full[new_id] = {"center": info["center"], "members": [], "destinations": info["destinations"]}
-            
-        for vec_idx, label in enumerate(labels):
-            vec = cluster_vectors[vec_idx]
-            new_id = new_ids_list[label]
-            
-            # Update cluster ID
-            if len(vec) >= 6:
-                new_vec = (vec[0], vec[1], vec[2], new_id, vec[4], vec[5])
-            elif len(vec) >= 5:
-                new_vec = (vec[0], vec[1], vec[2], new_id, vec[4])
+            if labels_by_vector_id and label_idx_to_new_id:
+                # Use pre-computed constrained labels
+                labels = []
+                for v in cluster_vectors:
+                    vec_id = v[1]
+                    label_idx = labels_by_vector_id.get(vec_id, 0)  # Default to 0 if missing
+                    labels.append(label_idx)
+                labels = np.array(labels)
+                print(f"DEBUG: Server {self.id} - Using pre-computed constrained labels")
             else:
-                 new_vec = (vec[0], vec[1], vec[2], new_id, (time.time(), self.id))
+                # Fallback: nearest centroid assignment
+                dists = np.linalg.norm(X[:, np.newaxis, :] - centers_np[np.newaxis, :, :], axis=2)
+                labels = np.argmin(dists, axis=1)
+                print(f"DEBUG: Server {self.id} - Using nearest centroid assignment (fallback)")
             
-            result_full[new_id]["members"].append(new_vec)
+            # Group vectors
+            result_full = {}
+            for idx, new_id in enumerate(new_ids_list):
+                info = split_plan[new_id]
+                result_full[new_id] = {"center": info["center"], "members": [], "destinations": info["destinations"]}
+                
+            for vec_idx, label in enumerate(labels):
+                vec = cluster_vectors[vec_idx]
+                new_id = new_ids_list[label]
+                
+                # Update cluster ID
+                if len(vec) >= 6:
+                    new_vec = (vec[0], vec[1], vec[2], new_id, vec[4], vec[5])
+                elif len(vec) >= 5:
+                    new_vec = (vec[0], vec[1], vec[2], new_id, vec[4])
+                else:
+                    new_vec = (vec[0], vec[1], vec[2], new_id, (time.time(), self.id))
+                
+                result_full[new_id]["members"].append(new_vec)
+                
+            # Remove old vectors
+            for vec in cluster_vectors:
+                self.store.remove_by_id(vec[1])
+            print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
+                
+            # Distribute (keep or move)
+            return self._distribute_vectors_from_split(result_full, is_coordinator=is_coordinator)
+        
+        finally:
+            # Always process buffered vectors and unmark cluster, even if error
+            self._process_pending_vectors_after_split(cluster_id)
+
+    def _process_pending_vectors_after_split(self, old_cluster_id: int):
+        """
+        Process vectors that arrived during a split.
+        Re-routes them to the appropriate NEW subclusters.
+        
+        Args:
+            old_cluster_id: The cluster that was split (no longer exists)
+        """
+        with self.split_queue_lock:
+            # Get and clear pending vectors
+            pending = self.pending_vectors.pop(old_cluster_id, [])
+            # Unmark cluster as splitting
+            self.splitting_clusters.discard(old_cluster_id)
+        
+        if not pending:
+            print(f"DEBUG: Server {self.id} - No pending vectors for cluster {old_cluster_id}")
+            return
             
-        # Remove old vectors
-        for vec in cluster_vectors:
-            self.store.remove_by_id(vec[1])
-        print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
-            
-        # Distribute (keep or move)
-        return self._distribute_vectors_from_split(result_full, is_coordinator=is_coordinator)
+        print(f"DEBUG: Server {self.id} - Re-routing {len(pending)} pending vectors after split of cluster {old_cluster_id}")
+        
+        # Reset cluster_id to -1 so routing recalculates based on new clusters
+        re_routed_vectors = []
+        for v in pending:
+            # Reset cluster_id to force recalculation
+            if len(v) >= 6:
+                new_v = (v[0], v[1], v[2], -1, v[4], v[5])
+            elif len(v) >= 5:
+                new_v = (v[0], v[1], v[2], -1, v[4])
+            else:
+                new_v = (v[0], v[1], v[2], -1, (time.time(), self.id))
+            re_routed_vectors.append(new_v)
+        
+        # Re-route through normal path - will find new subclusters
+        self.send_to_peers(re_routed_vectors)
+        print(f"DEBUG: Server {self.id} - Finished re-routing pending vectors")
 
     def _distribute_vectors_from_split(self, split_result: dict, is_coordinator: bool = True) -> dict:
         """
