@@ -8,6 +8,8 @@ import time
 
 import requests
 
+import generate_peers
+
 # Configuration
 QDRANT_IMAGE = "qdrant/qdrant:latest"
 
@@ -150,17 +152,18 @@ def main():
     # 3. Start Nodes
     env = os.environ.copy()
 
-    for i in range(num_nodes):
-        print(f"\n--- Setting up Node {i} ---")
+    # Pre-calculate ports and generate peers.json
+    peers_config = []
+    node_configs = [] # store (qdrant_port, server_port, client_port_if_coord)
 
-        # A. Start Qdrant Container with Random Port
+    print("\n--- Configuring Cluster Nodes ---")
+    for i in range(num_nodes):
+        # A. Start Qdrant Container
         c_name = f"qdrant-node-{i}-{int(time.time())}"
-        # -P publishes all exposed ports to random host ports
         cmd_docker = f"docker run -d --name {c_name} -P {QDRANT_IMAGE}"
         subprocess.run(cmd_docker, shell=True, check=True)
         containers.append(c_name)
 
-        # Get assigned HTTP port
         qdrant_port = None
         for _ in range(10):
             qdrant_port = get_docker_port(c_name, 6333)
@@ -171,16 +174,50 @@ def main():
         if not qdrant_port:
             print(f"Failed to get port for {c_name}")
             sys.exit(1)
-
-        print(f"Qdrant {i} running on localhost:{qdrant_port}")
-
+        
         if not wait_for_qdrant(qdrant_port):
             print(f"Qdrant {i} failed to become ready.")
             sys.exit(1)
-
-        # B. Start Python Server with Free Port
+        
+        # B. Assign Python Server Port
         server_port = get_free_port()
+        
+        # Reserve client port for coordinator if needed
+        client_port = None
+        if i == 0:
+            client_port = get_free_port()
+            while client_port == server_port:
+                time.sleep(0.1)
+                client_port = get_free_port()
+            coordinator_client_port = client_port
 
+        peers_config.append({
+            "id": i,
+            "url": "127.0.0.1",
+            "port": server_port
+        })
+        
+        node_configs.append({
+            "id": i,
+            "qdrant_port": qdrant_port,
+            "server_port": server_port,
+            "client_port": client_port
+        })
+        
+        # Short sleep to ensure ports aren't reused immediately if OS recycles fast
+        time.sleep(0.1)
+
+    # Generate peers.json
+    print("\nGenerating peers.json...")
+    generate_peers.create_peers_config(peers_config)
+
+    # Launch Servers
+    print("\n--- Launching Servers ---")
+    for config in node_configs:
+        i = config["id"]
+        server_port = config["server_port"]
+        qdrant_port = config["qdrant_port"]
+        
         cmd_args = [
             sys.executable,
             "server.py",
@@ -192,35 +229,20 @@ def main():
             f"http://localhost:{qdrant_port}",
             "--endpoint",
             "HTTP",
+            "--peers-file",
+            "peers.json"
         ]
 
         if i == 0:
             cmd_args.append("--coordinator")
-
-            # Allocate dedicated port for client interface (inter-port)
-            client_port = get_free_port()
-            while client_port == server_port:
-                time.sleep(0.1)
-                client_port = get_free_port()
-
-            cmd_args.extend(["--inter-port", str(client_port)])
-
-            coordinator_info = f"127.0.0.1:{server_port}"
-            coordinator_client_port = client_port
-            print(
-                f"Node 0 (Coordinator) starting on intra-port {server_port}, inter-port {client_port}"
-            )
+            if config["client_port"]:
+                cmd_args.extend(["--inter-port", str(config["client_port"])])
+            print(f"Node 0 (Coordinator) starting on intra-port {server_port}, inter-port {config['client_port']}")
         else:
-            # Connect to coordinator
-            cmd_args.extend(["--peers", coordinator_info])
-            print(
-                f"Node {i} starting on intra-port {server_port} (connected to {coordinator_info})"
-            )
+            print(f"Node {i} starting on intra-port {server_port}")
 
         p = subprocess.Popen(cmd_args, env=env)
         processes.append(p)
-
-        # Give it a moment to bind before ensuring next Loop
         time.sleep(1)
 
     print("\nCluster is running! Loading data...")

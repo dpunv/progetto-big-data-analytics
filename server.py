@@ -19,13 +19,14 @@ REBALANCE_THRESHOLD = 0.5  # 50% deviation from average triggers rebalance
 REBALANCE_SPLIT_FACTOR = 3  # Split heavy clusters into 3 subclusters
 REBALANCE_CHECK_INTERVAL = 86400  # Check every 86400 seconds (24 hours)
 
+import json
 import argparse
 import asyncio
 import concurrent.futures
 import queue
 import threading
 import time
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from qdrant_client import models
@@ -935,6 +936,9 @@ class Server:
             finally:
                 self.client_loop.call_soon_threadsafe(self.client_loop.stop)
                 self.client_thread.join(timeout=1)
+
+        # Close Qdrant clients
+        qdrant_module.close_all_clients()
 
     def process_queue(self):
         while self.running:
@@ -3189,6 +3193,9 @@ def main():
     parser.add_argument(
         "--peers", type=str, default=None, help="Coordinator address (ip:port) to join"
     )
+    parser.add_argument(
+        "--peers-file", type=str, default=None, help="JSON file with peer configurations ({id, ip, port})"
+    )
 
     # These params are hardcoded in startup.py logic or client.py, but server needs them
     # Server init: before_clustering, replication_factor
@@ -3222,16 +3229,35 @@ def main():
         try:
             p_ip, p_port = args.peers.split(":")
             server.add_peer(p_ip, int(p_port))
-            print(f"Added peer {args.peers}")
+            print(f"[ID {args.id}] Added peer {args.peers}")
         except Exception as e:
-            print(f"Error parsing peer address {args.peers}: {e}")
+            print(f"[ID {args.id}] Error parsing peer address {args.peers}: {e}")
+
+    if args.peers_file:
+        try:
+            with open(args.peers_file, "r") as f:
+                peers_data = json.load(f)
+                for p in peers_data:
+                    if isinstance(p, dict):
+                        p_id = p.get("id")
+                        p_ip = p.get("url")
+                        p_port = p.get("port")
+                        
+                        if p_id == args.id:
+                            continue
+                            
+                        if p_ip and p_port:
+                            server.add_peer(p_ip, int(p_port))
+                            print(f"[ID {args.id}] Added peer {p_id} ({p_ip}:{p_port}) from file")
+        except Exception as e:
+            print(f"[ID {args.id}] Error reading peers file {args.peers_file}: {e}")
 
     # Keep main thread alive
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("Server stopping...")
+        print(f"[ID {args.id}] Server stopping...")
         server.stop()
 
 

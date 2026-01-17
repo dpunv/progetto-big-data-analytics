@@ -17,3 +17,5 @@ compose.yml
 compose.yaml
 
 embeddings.parquet
+peers.json
+web_client/config.js

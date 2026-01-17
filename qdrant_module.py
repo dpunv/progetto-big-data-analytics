@@ -47,6 +47,18 @@ def get_client(url: str) -> QdrantClient:
     return client
 
 
+def close_all_clients():
+    """Close all cached QdrantClient instances."""
+    with GLOBAL_LOCK:
+        for url, client in _client_cache.items():
+            try:
+                client.close()
+                logger.info(f"Closed QdrantClient for {url}")
+            except Exception as e:
+                logger.error(f"Error closing QdrantClient for {url}: {e}")
+        _client_cache.clear()
+
+
 def create_collection(url, collection_name, vector_size: int, distance: str = "Cosine"):
     with GLOBAL_LOCK:
         client = get_client(url)
