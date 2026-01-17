@@ -15,9 +15,9 @@ MIN_K = 5  # Minimum number of clusters to try
 MAX_K = 30  # Maximum number of clusters to try
 
 # Rebalancing configuration
-REBALANCE_THRESHOLD = 0.3  # 30% deviation from average triggers rebalance
-REBALANCE_SPLIT_FACTOR = 4  # Split heavy clusters into 2 subclusters
-REBALANCE_CHECK_INTERVAL = 60  # Check every 60 seconds
+REBALANCE_THRESHOLD = 0.5  # 50% deviation from average triggers rebalance
+REBALANCE_SPLIT_FACTOR = 3  # Split heavy clusters into 3 subclusters
+REBALANCE_CHECK_INTERVAL = 86400  # Check every 86400 seconds (24 hours)
 
 import argparse
 import asyncio
@@ -780,6 +780,33 @@ class Server:
         )
         self.heartbeat_thread.start()
 
+        # Rebalancing monitor thread
+        self.rebalance_thread = threading.Thread(
+            target=self._rebalance_monitor_loop, daemon=True
+        )
+        self.rebalance_thread.start()
+
+    def _rebalance_monitor_loop(self):
+        """
+        Periodic check for cluster imbalance across nodes.
+        Runs every REBALANCE_CHECK_INTERVAL seconds (default: 24 hours).
+        """
+        # Sleep for the configured interval
+        time.sleep(REBALANCE_CHECK_INTERVAL)
+        
+        while self.running:
+            try:
+                # Only run if clustering has been done
+                if self.status == "clustered" and self.clusters:
+                    # Check if we should run rebalancing
+                    if self.trigger_rebalance():
+                        print(f"DEBUG: Server {self.id} - Rebalancing triggered successfully")
+            except Exception as e:
+                print(f"DEBUG: Server {self.id} - Error in rebalance monitor: {e}")
+            
+            # Sleep for the configured interval
+            time.sleep(REBALANCE_CHECK_INTERVAL)
+
     def _start_endpoint_thread(self, port):
         def run_loop():
             loop = asyncio.new_event_loop()
@@ -954,6 +981,12 @@ class Server:
     def count(self):
         with self.lock:
             return self.store.count()
+
+    def get_cluster_vector_count(self, cluster_id: int) -> int:
+        """Get the number of vectors belonging to a specific cluster."""
+        with self.lock:
+            vectors = self.store.get_by_cluster(cluster_id)
+            return len(vectors) if vectors else 0
 
     def delete_vectors_by_cluster(self, cluster_id: int):
         """Delete all vectors belonging to a specific cluster."""
@@ -2231,6 +2264,7 @@ class Server:
         if avg == 0:
             return None
         
+        # es: avg= avg * (1 + 0.5) = 1.5 * avg -> 50% over avg
         overload_threshold = avg * (1 + threshold)
         
         # Check self
@@ -2265,10 +2299,6 @@ class Server:
                 return None
                 
             return max(cluster_counts.keys(), key=lambda k: cluster_counts[k])
-        else:
-            # Would need to query peer - for now just check local
-            # In a full implementation, this would be a peer RPC
-            return None
 
     def should_trigger_rebalance_for_cluster(self, cluster_id: int) -> bool:
         """
@@ -2371,11 +2401,19 @@ class Server:
         # We need enough unique peers for primary + replicas
         # Pass sender's current load and split info to determine if we should keep one locally
         sender_current_load = self.store.count()
+        
+        # Get current destinations of the cluster being split (these replicas will lose vectors)
+        cluster_replicas = set()
+        if self.cluster_to_destinations_cache:
+            cluster_replicas = self.cluster_to_destinations_cache.get(cluster_id, set())
+        
         target_peers, sender_should_keep_one = self._get_underloaded_peers(
             n_subclusters * 2,  # Get more candidates
             sender_current_load=sender_current_load,
             vectors_being_sent=n_vectors,
-            n_subclusters=n_subclusters
+            n_subclusters=n_subclusters,
+            cluster_being_split=cluster_id,
+            cluster_replicas=cluster_replicas
         )
         all_peers = [p.get_id() for p in self.get_reachable_peers()]
         
@@ -2727,7 +2765,8 @@ class Server:
         return split_result
 
     def _get_underloaded_peers(self, count: int, sender_current_load: int = None, 
-                                 vectors_being_sent: int = None, n_subclusters: int = None) -> tuple:
+                                 vectors_being_sent: int = None, n_subclusters: int = None,
+                                 cluster_being_split: int = None, cluster_replicas: set = None) -> tuple:
         """
         Get the N most underloaded peers (excluding self), and determine if sender 
         should keep at least one subcluster to avoid becoming too underloaded.
@@ -2737,6 +2776,8 @@ class Server:
             sender_current_load: Current vector count of the sending server (self)
             vectors_being_sent: Total vectors being redistributed in the split
             n_subclusters: Number of subclusters being created
+            cluster_being_split: ID of cluster being split (for projected load calculation)
+            cluster_replicas: Set of peer IDs that have replicas of the cluster being split
             
         Returns:
             Tuple of (list of peer IDs sorted by load ascending, bool sender_should_keep_one)
@@ -2747,6 +2788,25 @@ class Server:
                 continue
             try:
                 load = peer.count()
+                
+                # IMPORTANT: If this peer is a replica of the cluster being split,
+                # subtract those vectors from their count since they will be deleted.
+                # This gives us the "projected load" after the split completes.
+                if cluster_replicas and peer.get_id() in cluster_replicas:
+                    # Get count of vectors in the cluster being split on this peer
+                    try:
+                        replica_cluster_count = peer.get_cluster_vector_count(cluster_being_split)
+                        load = max(0, load - replica_cluster_count)
+                        print(f"DEBUG: Server {self.id} - Peer {peer.get_id()} projected load: "
+                              f"{load + replica_cluster_count} - {replica_cluster_count} = {load} "
+                              f"(replica of cluster {cluster_being_split})")
+                    except Exception as e:
+                        # Fallback: estimate based on even distribution
+                        # If we can't query, assume cluster is evenly distributed across replicas
+                        estimated_replica_vectors = vectors_being_sent if vectors_being_sent else 0
+                        load = max(0, load - estimated_replica_vectors)
+                        print(f"DEBUG: Server {self.id} - Peer {peer.get_id()} projected load (estimated): {load}")
+                
                 peer_loads.append((peer.get_id(), load))
             except Exception:
                 peer_loads.append((peer.get_id(), float('inf')))

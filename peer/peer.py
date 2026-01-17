@@ -82,6 +82,12 @@ class Peer:
             return self.server.count()
         return self._remote_call("count")
 
+    def get_cluster_vector_count(self, cluster_id: int) -> int:
+        """Get vector count for a specific cluster on this peer."""
+        if self.is_local():
+            return self.server.get_cluster_vector_count(cluster_id)
+        return self._remote_call("get_cluster_vector_count", cluster_id)
+
     def delete_vectors_by_cluster(self, cluster_id: int):
         """Delete all vectors belonging to a specific cluster."""
         if self.is_local():
