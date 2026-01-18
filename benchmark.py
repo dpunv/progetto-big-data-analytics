@@ -18,8 +18,11 @@ Options:
 
 import argparse
 import logging
+import os
 import random
+import shutil
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -27,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
+import requests
 import server as sv
 
 # Configure logging
@@ -155,6 +159,99 @@ def load_data(filepath: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
         return []
+
+
+# --- DOCKER CLUSTER ORCHESTRATION ---
+
+def generate_compose_and_dirs(num_servers: int, start_port: int = 6333):
+    """Generate compose.yml and create storage directories for Qdrant nodes."""
+    logger.info(f"Generating compose.yml for {num_servers} Qdrant nodes...")
+
+    services = []
+    for i in range(num_servers):
+        http_port = start_port + (i * 2)
+        grpc_port = http_port + 1
+        storage_dir = f"./qdrant_storage_{i}"
+
+        # Create storage directory
+        os.makedirs(storage_dir, exist_ok=True)
+
+        service_def = f"""  qdrant-{i}:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-{i}
+    ports:
+      - "{http_port}:6333"
+      - "{grpc_port}:6334"
+    volumes:
+      - {storage_dir}:/qdrant/storage
+    restart: unless-stopped"""
+        services.append(service_def)
+
+    compose_content = "services:\n" + "\n".join(services)
+
+    with open("compose.yml", "w") as f:
+        f.write(compose_content)
+
+    logger.info("compose.yml generated.")
+
+
+def wait_for_qdrant_cluster(num_servers: int, start_port: int = 6333, timeout: int = 60) -> bool:
+    """Wait for all Qdrant nodes to be ready."""
+    logger.info("Waiting for Qdrant nodes to be ready...")
+    ready_count = 0
+    start_time = time.time()
+
+    while ready_count < num_servers:
+        if time.time() - start_time > timeout:
+            logger.error("Timeout waiting for Qdrant nodes.")
+            return False
+
+        ready_count = 0
+        for i in range(num_servers):
+            port = start_port + (i * 2)
+            try:
+                resp = requests.get(f"http://localhost:{port}/readyz", timeout=1)
+                if resp.status_code == 200:
+                    ready_count += 1
+            except Exception:
+                pass
+
+        if ready_count < num_servers:
+            time.sleep(1)
+
+    logger.info(f"All {num_servers} Qdrant nodes are ready.")
+    return True
+
+
+def cleanup_cluster(num_servers: int):
+    """Stop Docker containers and clean up storage directories."""
+    logger.info("Cleaning up Docker cluster...")
+    try:
+        subprocess.run(["docker", "compose", "down"], check=True, capture_output=True)
+        logger.info("Docker containers stopped.")
+    except Exception as e:
+        logger.warning(f"Error stopping docker: {e}")
+
+    # Clean up storage directories
+    for i in range(num_servers):
+        storage_dir = f"./qdrant_storage_{i}"
+        if os.path.exists(storage_dir):
+            shutil.rmtree(storage_dir)
+    logger.info("Storage directories removed.")
+
+
+def start_docker_cluster(num_servers: int, start_port: int = 6333) -> bool:
+    """Generate compose file and start Docker containers."""
+    generate_compose_and_dirs(num_servers, start_port)
+
+    logger.info("Starting Docker Compose...")
+    try:
+        subprocess.run(["docker", "compose", "up", "-d"], check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to start Docker containers: {e}")
+        return False
+
+    return wait_for_qdrant_cluster(num_servers, start_port)
 
 
 def get_stats_summary(name: str, latencies: List[float], errors: int = 0) -> str:
@@ -547,6 +644,50 @@ def wait_for_clustered(servers: List[sv.Server], timeout: int = 120) -> bool:
     return False
 
 
+def wait_for_coordinator_discovery(servers: List[sv.Server], timeout: int = 30) -> bool:
+    """
+    Wait for all non-coordinator servers to be able to find the coordinator.
+    
+    This is critical for proper operation - if servers can't find the coordinator
+    during bootstrap phase, they won't be able to forward vectors and data will be lost.
+    """
+    logger.info("Waiting for coordinator discovery...")
+    start_time = time.time()
+    
+    # Find which server is the coordinator
+    coord_id = None
+    for s in servers:
+        if s.i_am_coord():
+            coord_id = s.get_id()
+            break
+    
+    if coord_id is None:
+        logger.error("No coordinator found among servers!")
+        return False
+    
+    logger.info(f"Coordinator is server {coord_id}. Waiting for all peers to discover it...")
+    
+    while time.time() - start_time < timeout:
+        all_found = True
+        for server in servers:
+            if server.i_am_coord():
+                continue  # Coordinator doesn't need to find itself
+            
+            coord = server.coordinator()
+            if coord is None:
+                all_found = False
+                break
+        
+        if all_found:
+            logger.info("All servers can reach the coordinator. Ready for warmup.")
+            return True
+        
+        time.sleep(0.5)
+    
+    logger.warning(f"Timeout waiting for coordinator discovery. Vectors may be dropped!")
+    return False
+
+
 def wait_for_queues(servers: List[sv.Server], timeout: int = 300) -> bool:
     """Wait for all server queues to drain."""
     logger.info("Waiting for server queues to drain...")
@@ -658,6 +799,8 @@ def run_suite(
     num_servers: int,
     replication_factor: int,
     warmup_count: int,
+    cluster_mode: bool = False,
+    start_port: int = 6333,
 ):
     """Run the complete benchmark suite."""
 
@@ -670,12 +813,33 @@ def run_suite(
     # Configuration based on client.py
     num_vectors_before_clustering = 8192
 
+    # Start Docker cluster if cluster mode is enabled
+    if cluster_mode:
+        logger.info("Starting Qdrant cluster with Docker...")
+        if not start_docker_cluster(num_servers, start_port):
+            logger.error("Failed to start Qdrant cluster. Aborting.")
+            sys.exit(1)
+        logger.info("Qdrant cluster started successfully.")
+
     # Create servers
     logger.info(
         f"Creating {num_servers} servers with replication factor {replication_factor}..."
     )
+    if cluster_mode:
+        logger.info(f"Using Docker cluster mode (ports starting at {start_port})")
+    else:
+        logger.info("Using in-memory Qdrant storage")
+
     servers = []
     for i in range(num_servers):
+        # Determine Qdrant URL based on mode
+        if cluster_mode:
+            # Each server connects to its own Qdrant container
+            port = start_port + (i * 2)
+            qdrant_url = f"http://localhost:{port}"
+        else:
+            qdrant_url = ":memory:"
+
         # Server with highest ID is initial coordinator
         servers.append(
             sv.Server(
@@ -684,7 +848,7 @@ def run_suite(
                 num_vectors_before_clustering,
                 replication_factor,
                 port=8000 + i,
-                qdrant_url=":memory:",
+                qdrant_url=qdrant_url,
             )
         )
 
@@ -696,7 +860,17 @@ def run_suite(
             server.add_peer(peer)
 
     logger.info(f"{num_servers} servers started and connected")
-    time.sleep(2)  # Wait for heartbeats to propagate
+    
+    # Wait for coordinator discovery before any operations
+    # This is critical - without this, non-coordinator servers won't be able
+    # to forward vectors to the coordinator and data will be lost
+    if not wait_for_coordinator_discovery(servers):
+        logger.error("Failed to establish coordinator discovery. Aborting.")
+        for s in servers:
+            s.stop()
+        if cluster_mode:
+            cleanup_cluster(num_servers)
+        sys.exit(1)
 
     client = BenchmarkClient(servers)
 
@@ -857,6 +1031,10 @@ def run_suite(
     for s in servers:
         s.stop()
 
+    # Cleanup Docker cluster if cluster mode was enabled
+    if cluster_mode:
+        cleanup_cluster(num_servers)
+
     logger.info(f"Benchmark suite completed. Results saved to {output_file}")
 
 
@@ -871,10 +1049,29 @@ def main():
     parser.add_argument("--servers", type=int, default=8, help="Number of servers")
     parser.add_argument("--replication", type=int, default=4, help="Replication factor")
     parser.add_argument("--warmup", type=int, default=10000, help="Warmup vector count")
+    parser.add_argument(
+        "--cluster",
+        action="store_true",
+        help="Enable Docker cluster mode (deploy real Qdrant instances)",
+    )
+    parser.add_argument(
+        "--start-port",
+        type=int,
+        default=6333,
+        help="Starting port for Qdrant containers (default: 6333)",
+    )
 
     args = parser.parse_args()
 
-    run_suite(args.data, args.output, args.servers, args.replication, args.warmup)
+    run_suite(
+        args.data,
+        args.output,
+        args.servers,
+        args.replication,
+        args.warmup,
+        cluster_mode=args.cluster,
+        start_port=args.start_port,
+    )
 
 
 if __name__ == "__main__":

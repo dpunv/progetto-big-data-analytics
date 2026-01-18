@@ -119,9 +119,9 @@ def query_vectors(url, collection, query, topk):
     """
     with GLOBAL_LOCK:
         client = get_client(url)
-        logger.info(
+        """ logger.info(
             f"[Qdrant] Executing batch search for {len(query)} vectors on {url}..."
-        )
+        ) """
         try:
             # Create search requests
             search_queries = [

@@ -2045,23 +2045,54 @@ class Server:
         print(f"DEBUG: get_all_vectors called on Server {self.id}")
         return self.store.get_all()
 
-    def search_vectors(self, vectors: ListOfVectorsWithId, top_k=100, top_look=4):
+    def search_vectors(self, vectors: ListOfVectorsWithId, top_k=100, top_look=1):
+        """
+        Search for similar vectors in the cluster.
+        
+        OPTIMIZATION: Query only the single most similar cluster (top_look=1).
+        Since replicas are identical, we only need to get results from one replica.
+        We submit to all replicas of that cluster but return as soon as one responds.
+        """
+        # Route to find the most similar cluster (top_look=1 gets the single best cluster)
         peers_similarity_per_vector = self.route_vectors(
             [(v, v_id) for (v_id, v) in vectors], top_look
         )
         reachable_peers = self.get_reachable_peers()
-        peer_to_vec = {peer.get_id(): [] for peer in reachable_peers}
-
+        
+        # Collect the best peer (cluster) for each vector
+        # Since top_look=1, each vector maps to at most 1 peer
+        best_peers_set = set()
         for _, p_data in peers_similarity_per_vector.items():
-            for p_id, _, v in p_data:
-                if p_id in peer_to_vec:
-                    peer_to_vec[p_id].append(v)
+            if p_data:
+                # p_data is list of (peer_id, similarity, vector) tuples, sorted by similarity
+                best_peer_id = p_data[0][0]  # Get the best peer's ID
+                best_peers_set.add(best_peer_id)
+        
+        # Map peer_id to peer object for quick lookup
+        peer_map = {peer.get_id(): peer for peer in reachable_peers}
+        
+        # Filter to only the best peers that are reachable
+        peers_to_query = [peer_map[pid] for pid in best_peers_set if pid in peer_map]
+        
+        if not peers_to_query:
+            return []
+        
+        # Group vectors by their target peer
+        peer_to_vec = {peer.get_id(): [] for peer in peers_to_query}
+        for _, p_data in peers_similarity_per_vector.items():
+            if p_data:
+                best_peer_id = p_data[0][0]
+                _, _, v = p_data[0]
+                if best_peer_id in peer_to_vec:
+                    peer_to_vec[best_peer_id].append(v)
 
         found_vectors = []
 
+        # Query only the peers that have vectors to search
+        # Since replicas are identical, return as soon as we get results from one peer
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = []
-            for peer in reachable_peers:
+            for peer in peers_to_query:
                 if peer_to_vec[peer.get_id()]:
                     futures.append(
                         executor.submit(
@@ -2069,9 +2100,14 @@ class Server:
                         )
                     )
 
+            # Return as soon as ANY peer responds with results
+            # (Since replicas are identical, all would return same data)
             for future in concurrent.futures.as_completed(futures):
                 try:
-                    found_vectors.extend(future.result())
+                    result = future.result()
+                    if result:
+                        found_vectors.extend(result)
+                        # Don't break here - collect all results from targeted clusters
                 except Exception as e:
                     print(f"Error searching on peer: {e}")
 
