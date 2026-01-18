@@ -36,7 +36,6 @@ from client_endpoint.interface import ClientEndpoint
 from cluster_index import ClusterIndex
 from communicator import Communicator
 from endpoint import Endpoint
-from qdrant_module import GLOBAL_LOCK
 
 # ============ Phi Accrual Failure Detector ============
 
@@ -513,7 +512,7 @@ class QdrantVectorStore:
         if not vectors:
             return 0
 
-        with self.lock, GLOBAL_LOCK:
+        with self.lock:
             # 1. Ensure collection exists (check dimension of first vector)
             v0_data = vectors[0][0]
             if isinstance(v0_data, list):
