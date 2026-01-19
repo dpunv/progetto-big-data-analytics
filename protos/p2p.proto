@@ -2,86 +2,118 @@ syntax = "proto3";
 
 package p2p;
 
+// Service definition for P2P Node communication
 service P2PNode {
+    // Returns the unique ID of the node
     rpc GetId(Empty) returns (IdResponse);
+
+    // Calculates similarity between a provided vector and the node's data
     rpc Similarity(VectorRequest) returns (SimilarityResponse);
+
+    // Receives a batch of vectors for replication or updates (Gossip protocol)
     rpc Receive(ReceiveRequest) returns (Empty);
+
+    // Checks if the node is currently the coordinator
     rpc IAmCoord(Empty) returns (BoolResponse);
+
+    // Updates the cluster configuration for the partition
     rpc SetClusters(SetClustersRequest) returns (Empty);
+
+    // Performs a local KNN search on the node's vector store
     rpc SearchVectorsLocal(SearchVectorsContext) returns (SearchResponse);
+
+    // General purpose query for vector search across the network
     rpc Query(QueryRequest) returns (QueryResponse);
+
+    // Returns a digest of vector versions for anti-entropy sync
     rpc GetVectorDigest(Empty) returns (DigestResponse);
+
+    // Retrieves full vector data for a list of IDs (used during sync)
     rpc GetVectorsByIds(IdList) returns (VectorList);
+
+    // Returns the ID of the coordinator responsible for this node's partition
     rpc GetPartitionCoordinatorId(Empty) returns (IdResponse);
+
+    // Simple health check responding with true
     rpc RespondToPing(Empty) returns (BoolResponse);
 }
 
+// Emtpy message for requests/responses with no payload
 message Empty {}
 
+// Response containing a single Node ID
 message IdResponse {
     int64 id = 1;
 }
 
+// Simple boolean response wrapper
 message BoolResponse {
     bool value = 1;
 }
 
+// Request containing a single raw vector (list of floats)
 message VectorRequest {
     repeated float values = 1;
 }
 
+// Response containing a similarity score
 message SimilarityResponse {
     float score = 1;
 }
 
-// Complex types
+// Comprehensive Vector structure containing data and metadata
 message VectorComplete {
-    repeated float values = 1;
-    int64 id = 2;
-    string payload = 3;
-    int32 cluster_id = 4;
-    // Version and destinations info
-    double timestamp = 5;
-    int64 version_node_id = 6;
-    repeated int64 destinations = 7;
+    repeated float values = 1;    // The vector embedding itself
+    int64 id = 2;                 // Unique Vector ID
+    string payload = 3;           // Associated payload/text
+    int32 cluster_id = 4;         // Assigned Cluster ID
+    
+    // Metadata for Version Vector (Anti-Entropy)
+    double timestamp = 5;         // Logical or physical timestamp
+    int64 version_node_id = 6;    // ID of the node that last updated this vector
+    repeated int64 destinations = 7; // List of destination nodes (if applicable)
 }
 
+// Request to receive a batch of vectors
 message ReceiveRequest {
     repeated VectorComplete vectors = 1;
-    string status = 2;
+    string status = 2; // Context/Status string (e.g. "gossip", "search_fanout")
 }
 
+// Request to set cluster configuration
 message SetClustersRequest {
-    // Clusters structure is {id: {'center': vec, 'members': [vecs]}}
-    // This is complex. We will use a dedicated message for Cluster
+    // Map of Cluster ID -> Cluster Data
     map<int32, ClusterData> clusters = 1;
-    // Assignment is map<node_id, list of (cluster_id, center)>
-    // We'll use serialized bytes for assignment or define it fully.
-    // Let's use bytes for the complex assignment map to save time/complexity on proto,
-    // as it is an internal specialized structure.
+
+    // Serialized assignment data (map<node_id, list of (cluster_id, center)>)
+    // Used to distribute partition assignments efficiently
     bytes assignment_pickle = 2;
 }
 
+// Data structure representing a Cluster
 message ClusterData {
-    repeated float center = 1;
-    repeated VectorComplete members = 2;
+    repeated float center = 1;          // Centroid vector of the cluster
+    repeated VectorComplete members = 2; // List of vectors belonging to this cluster
 }
 
+// Context for local vector search
 message SearchVectorsContext {
-    repeated VectorWithId vectors = 1;
-    int32 top_k = 2;
+    repeated VectorWithId vectors = 1; // Query vectors
+    int32 top_k = 2;                   // Number of results to return
 }
 
+// simplified vector structure with just ID and values
 message VectorWithId {
     int64 id = 1;
     repeated float values = 2;
 }
 
+// Response for search operations
 message SearchResponse {
-    // List of (Vector, id, payload, sim)
     repeated SearchResultItem results = 1;
 }
 
+// Single item in a search result
 message SearchResultItem {
     repeated float vector = 1;
     int64 id = 2;
@@ -89,33 +121,35 @@ message SearchResultItem {
     float similarity = 4;
 }
 
+// Request for distributed query
 message QueryRequest {
     repeated VectorWithId vectors = 1;
-    string status = 2;
+    string status = 2; // e.g. "forwarded", "coordinator"
 }
 
-// QueryResponse same as SearchResponse?
-// server.py: query_from_client returns [(id, payload, distance)]?
-// Actually query() returns list of results similar to search.
+// Response for distributed query (structure matches SearchResponse)
 message QueryResponse {
     repeated SearchResultItem results = 1;
 }
 
+// Digest response for anti-entropy
 message DigestResponse {
-    // map<vector_id, version_tuple>
-    // Proto map keys must be string or integer. Value cannot be tuple directly.
+    // Map of Vector ID -> Version Information
     map<int64, VersionInfo> digest = 1;
 }
 
+// Version metadata for a vector
 message VersionInfo {
     double timestamp = 1;
     int64 node_id = 2;
 }
 
+// List of IDs Request
 message IdList {
     repeated int64 ids = 1;
 }
 
+// List of Vectors Response
 message VectorList {
     repeated VectorComplete vectors = 1;
 }

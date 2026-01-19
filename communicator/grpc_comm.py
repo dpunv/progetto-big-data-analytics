@@ -215,7 +215,12 @@ class GRPCCommunicator(BaseCommunicator):
                 return {"status": 0, "error": None, "response": response_val}
 
             except grpc.RpcError as e:
-                return {"status": -1, "error": str(e), "response": None}
+                error_msg = str(e)
+                if hasattr(e, "details"):
+                    d = e.details()
+                    if d:
+                        error_msg = d
+                return {"status": -1, "error": error_msg, "response": None}
             except Exception as e:
                 print(f"GRPC Unexpected Error {query}: {e}")
                 return {"status": -1, "error": str(e), "response": None}

@@ -35,6 +35,9 @@ class ClientEndpoint:
         cors.add(self.app.router.add_post("/query", self.handle_query))
 
     async def start(self, ip: str, port: int):
+        """
+        Starts the Client Endpoint HTTP server on the specified IP and port.
+        """
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, ip, port)
@@ -42,29 +45,31 @@ class ClientEndpoint:
         print(f"Client Endpoint listening on {ip}:{port}")
 
     async def stop(self):
+        """
+        Stops the HTTP server.
+        """
         if self.runner:
             await self.runner.cleanup()
 
     async def _run_sync(self, func, *args):
+        """
+        Runs a synchronous function in a separate thread to avoid blocking the event loop.
+        """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: func(*args))
 
     async def handle_add(self, request):
+        """
+        Handles '/add' requests. Accepts a JSON payload containing vectors to add.
+        Expected JSON format: {"vectors": [[vector_values, payload_text], ...]}
+        """
         try:
             data = await request.json()
-            # Expected format: {"vectors": [[vector_data, payload_text], ...]}
-            # Client.py sends: list of (embedding, text) tuples.
-            # But wait, existing client.py uses server.receive_from_client directly with [(emb, text), ...].
-            # Let's assume the JSON body will be {"vectors": [[emb, text], ...]}
-
             vectors = data.get("vectors")
             if not vectors:
                 return web.json_response({"error": "No vectors provided"}, status=400)
 
-            # Convert list of lists to list of tuples/appropriate types if needed?
-            # server.receive_from_client expects list of (vector, payload)
-            # JSON arrays become lists in Python. That's fine.
-
+            # Invoke server logic in executor
             await self._run_sync(self.server.receive_from_client, vectors)
             return web.json_response({"status": "ok"})
         except Exception as e:
@@ -72,13 +77,16 @@ class ClientEndpoint:
             return web.json_response({"error": str(e)}, status=500)
 
     async def handle_query(self, request):
+        """
+        Handles '/query' requests. Accepts a JSON payload containing query vectors.
+        Expected JSON format: {"vectors": [vector_values, ...], "top_k": int}
+        "top_k" defaults to 10 if not specified.
+        """
         try:
             data = await request.json()
-            # Expected format: {"vectors": [vector_data, ...]} or just one?
-            # Client.py uses list of vectors for query_from_client.
-
             vectors = data.get("vectors")
-            top_k = data.get("top_k", 10)  # Default to 10 if not specified
+            top_k = data.get("top_k", 10)
+            
             if not vectors:
                 return web.json_response({"error": "No vectors provided"}, status=400)
 
@@ -86,19 +94,19 @@ class ClientEndpoint:
                 self.server.query_from_client, vectors, top_k
             )
 
-            # We need to serialize numpy arrays if present in 'v'
+            # Serialize results
             serialized_results = []
             for res in results:
-                # res = (vector, id, payload, similarity)
+                # res is a tuple: (vector, id, payload, similarity)
                 vec = res[0]
 
+                # Helper functions to safely convert numpy types to python types for JSON
                 def safe_float(v):
                     if hasattr(v, "item"):
                         return float(v.item())
                     try:
                         return float(v)
                     except TypeError:
-                        # Fallback for array-like of size 1
                         if hasattr(v, "__len__") and len(v) == 1:
                             return float(v[0])
                         raise
@@ -108,7 +116,7 @@ class ClientEndpoint:
                         return int(v.item())
                     return int(v)
 
-                # Ensure vector is list of python floats
+                # Convert vector to list
                 if hasattr(vec, "tolist"):
                     vec_list = vec.tolist()
                 else:

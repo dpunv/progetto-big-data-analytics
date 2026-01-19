@@ -39,10 +39,8 @@ class OneShotClientProtocol(QuicConnectionProtocol):
         payload = {"method": query, "args": args}
         data = pickle.dumps(payload)
 
-        # Get next stream ID
         self._stream_id = self._quic.get_next_available_stream_id()
         
-        # Send data in chunks
         chunk_size = 1024  # Size for chunks
         for i in range(0, len(data), chunk_size):
             chunk = data[i:i+chunk_size]
@@ -54,7 +52,6 @@ class OneShotClientProtocol(QuicConnectionProtocol):
         await self._response_complete.wait()
 
         # Deserialize response
-
         try:
             return pickle.loads(self._response_data)
         except Exception as e:
@@ -69,12 +66,11 @@ class QUICCommunicator(BaseCommunicator):
     def __init__(self):
         self.configuration = QuicConfiguration(
             is_client=True,
-            verify_mode=ssl.CERT_NONE,  # Trust self-signed for internal P2P
+            verify_mode=ssl.CERT_NONE,
         )
 
     async def send(self, ip: str, port: int, query: str, *args):
         try:
-            # Connect to server
             async with connect(
                 ip,
                 port,
@@ -84,13 +80,55 @@ class QUICCommunicator(BaseCommunicator):
             ) as protocol:
                 client = cast(OneShotClientProtocol, protocol)
 
-                # Perform query
                 try:
-                    result = await client.query(query, args)
-                    return {"status": 0, "error": None, "response": result}
+                    
+                    if query == "get_id":
+                         result = await client.query(query, args)
+                    
+                    elif query == "similarity":
+                         result = await client.query(query, args)
+
+                    elif query == "receive":
+                         result = await client.query(query, args)
+
+                    elif query == "i_am_coord":
+                         result = await client.query(query, args)
+
+                    elif query == "set_clusters":
+                         result = await client.query(query, args)
+
+                    elif query == "search_vectors_local":
+                         result = await client.query(query, args)
+
+                    elif query == "query":
+                         result = await client.query(query, args)
+
+                    elif query == "get_vector_digest":
+                         result = await client.query(query, args)
+
+                    elif query == "get_vectors_by_ids":
+                         result = await client.query(query, args)
+
+                    elif query == "get_partition_coordinator_id":
+                         result = await client.query(query, args)
+
+                    elif query == "respond_to_ping":
+                         result = await client.query(query, args)
+
+                    else:
+                        return {
+                            "status": -1,
+                            "error": f"Unknown QUIC method: {query}",
+                            "response": None,
+                        }
+
+                    if isinstance(result, dict) and "status" in result:
+                        return result
+                    else:
+                         return {"status": 0, "error": None, "response": result}
+
                 except Exception as e:
                     return {"status": -1, "error": str(e), "response": None}
 
         except Exception as e:
-            # Connection failed
             return {"status": -1, "error": f"Connection failed: {e}", "response": None}

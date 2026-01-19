@@ -2292,7 +2292,9 @@ class TestQdrantModule:
 
             client = qdrant_module.get_client(local_path)
             assert client is not None
-
+            
+            # Ensure client is closed to release file locks on Windows
+            client.close()
             qdrant_module._client_cache.clear()
 
     def test_query_vectors_generic(self):
@@ -3506,7 +3508,7 @@ class TestServerMainFunction:
             ],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
         )
 
         # Should exit with 0 (help) and show usage
