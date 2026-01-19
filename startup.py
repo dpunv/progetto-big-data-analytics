@@ -95,7 +95,7 @@ def get_docker_port(container_name, internal_port=6333):
     # ... (previous code)
 
 
-def load_vectors(port, num_vectors=50000):
+def load_vectors(port, num_vectors=51200):
     import pandas as pd
     print(f"\nLoading {num_vectors} vectors from embeddings.parquet...")
     try:
@@ -124,7 +124,7 @@ def load_vectors(port, num_vectors=50000):
     # interface.py expects {"vectors": [[emb, text], ...]}
     batch_data = [(d["embedding"], d["text"]) for d in data[:num_vectors]]
 
-    batch_size = 500
+    batch_size = 1024
     total = len(batch_data)
     url = f"http://localhost:{port}/add"
 
@@ -261,8 +261,6 @@ def main():
         processes.append(p)
         time.sleep(1)
 
-    print("\nCluster is running! Loading data...")
-
     # Load Initial Data
     if coordinator_client_port:
         # Give the server a second to fully start the HTTP endpoint
@@ -298,7 +296,8 @@ def main():
         print(f"Web Client running on http://localhost:{web_client_port}")
 
         if wait_for_server_health(coordinator_client_port):
-            load_vectors(coordinator_client_port, 50000)
+            print("\nCluster is running! Loading data...")
+            load_vectors(coordinator_client_port, 51200)
         else:
             print(f"\nError: Server at {coordinator_client_port} failed to become ready.")
 
