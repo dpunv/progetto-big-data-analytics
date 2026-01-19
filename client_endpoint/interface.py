@@ -33,6 +33,7 @@ class ClientEndpoint:
         # Define routes with CORS
         cors.add(self.app.router.add_post("/add", self.handle_add))
         cors.add(self.app.router.add_post("/query", self.handle_query))
+        cors.add(self.app.router.add_get("/health", self.handle_health))
 
     async def start(self, ip: str, port: int):
         """
@@ -137,3 +138,9 @@ class ClientEndpoint:
         except Exception as e:
             logging.error(f"Error in /query: {e}")
             return web.json_response({"error": str(e)}, status=500)
+
+    async def handle_health(self, request):
+        """
+        Simple health check.
+        """
+        return web.json_response({"status": "ok"})

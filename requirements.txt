@@ -12,3 +12,4 @@ aiohttp-cors
 requests
 qdrant-client
 pytest
+hnswlib

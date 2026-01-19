@@ -64,6 +64,22 @@ def wait_for_qdrant(port):
     return False
 
 
+def wait_for_server_health(port):
+    """Wait for the Python server to be ready serving the Client Endpoint."""
+    url = f"http://localhost:{port}/health"
+    print(f"Waiting for server health at {url}...")
+    for _ in range(60):  # Wait up to 60 seconds
+        try:
+            if requests.get(url, timeout=1).status_code == 200:
+                print("\nServer is ready!")
+                return True
+        except:
+            pass
+        time.sleep(1)
+        print(".", end="", flush=True)
+    return False
+
+
 def get_docker_port(container_name, internal_port=6333):
     """Get the host port mapped to the container's internal port"""
     cmd = f"docker port {container_name} {internal_port}"
@@ -281,7 +297,10 @@ def main():
 
         print(f"Web Client running on http://localhost:{web_client_port}")
 
-        load_vectors(coordinator_client_port, 50000)
+        if wait_for_server_health(coordinator_client_port):
+            load_vectors(coordinator_client_port, 50000)
+        else:
+            print(f"\nError: Server at {coordinator_client_port} failed to become ready.")
 
     print("\nSetup Complete. Press Ctrl+C to stop.")
 
