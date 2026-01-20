@@ -99,11 +99,17 @@ class Peer:
             return self.server.delete_vectors_by_cluster(cluster_id)
         return self._remote_call("delete_vectors_by_cluster", cluster_id)
 
-    def split_and_distribute_cluster(self, cluster_id: int, split_plan: dict, is_coordinator: bool = True):
+    def split_and_distribute_cluster(
+        self, cluster_id: int, split_plan: dict, is_coordinator: bool = True
+    ):
         """Execute distributed split mechanism."""
         if self.is_local():
-            return self.server.split_and_distribute_cluster(cluster_id, split_plan, is_coordinator)
-        return self._remote_call("split_and_distribute_cluster", cluster_id, split_plan, is_coordinator)
+            return self.server.split_and_distribute_cluster(
+                cluster_id, split_plan, is_coordinator
+            )
+        return self._remote_call(
+            "split_and_distribute_cluster", cluster_id, split_plan, is_coordinator
+        )
 
     def get_clusters(self):
         if self.is_local():

@@ -1,4 +1,3 @@
-
 import aiohttp
 
 from .base import BaseCommunicator

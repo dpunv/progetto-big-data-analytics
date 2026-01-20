@@ -25,15 +25,15 @@ _io_locks_lock = threading.Lock()
 def get_lock(url: str):
     """
     Get a lock for the specific Qdrant URL/Path.
-    
-    QdrantClient with local storage (path or :memory:) is NOT thread-safe for 
+
+    QdrantClient with local storage (path or :memory:) is NOT thread-safe for
     concurrent writes and reads (causing numpy broadcast errors).
     We must serialize access to local instances.
     HTTP clients are thread-safe (server handles concurrency).
     """
     if url.startswith("http"):
         return contextlib.nullcontext()
-    
+
     with _io_locks_lock:
         if url not in _io_locks:
             _io_locks[url] = threading.RLock()
@@ -45,13 +45,13 @@ def get_client(url: str) -> QdrantClient:
     # Fast path: check without lock
     if url in _client_cache:
         return _client_cache[url]
-    
+
     # Slow path: acquire lock and create client
     with _cache_lock:
         # Double-check after acquiring lock
         if url in _client_cache:
             return _client_cache[url]
-        
+
         # Handle :memory: or local path
         if url == ":memory:":
             client = QdrantClient(location=url)
@@ -156,9 +156,7 @@ def query_vectors(url, collection, query, topk):
         search_queries = [
             models.QueryRequest(
                 query=(
-                    query_vector[0]
-                    if isinstance(query_vector, tuple)
-                    else query_vector
+                    query_vector[0] if isinstance(query_vector, tuple) else query_vector
                 ),
                 limit=topk,
                 with_payload=True,
@@ -188,7 +186,7 @@ def query_vectors(url, collection, query, topk):
                     }
                 )
 
-        #logger.info(f"[Qdrant] Success: found {len(final_results)} results")
+        # logger.info(f"[Qdrant] Success: found {len(final_results)} results")
         return final_results
     except Exception as e:
         logger.error(f"[Qdrant] QUERY ERROR on {url}: {e}")
@@ -221,9 +219,9 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
                  (vector_content, vector_id, vector_payload, cluster_id)
     """
     client = get_client(url)
-    #logger.info(
+    # logger.info(
     #    f"[Qdrant] Attempting to insert {len(vectors)} vectors into {collection} on {url}..."
-    #)
+    # )
 
     # Convert your input list to PointStruct objects
     points = [
@@ -234,14 +232,14 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
         )
         for vector_content, vector_id, vector_payload, cluster_id in vectors
     ]
-    
+
     if batch_size is None or batch_size > len(vectors):
         effective_batch_size = len(vectors)
     else:
         effective_batch_size = batch_size
 
     try:
-        #logger.info(f"[Qdrant] Trying upload with batch_size= {batch_size}")
+        # logger.info(f"[Qdrant] Trying upload with batch_size= {batch_size}")
         with get_lock(url):
             client.upload_points(
                 collection_name=collection,
@@ -249,9 +247,9 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
                 batch_size=effective_batch_size,
                 wait=True,
             )
-        #logger.info(
+        # logger.info(
         #    f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}."
-        #)
+        # )
         return True
 
     except Exception as e:
@@ -259,6 +257,7 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
             f"[Qdrant] Upload with batch_size={batch_size} failed: {e}. Retrying with batch_size={batch_size_retry}..."
         )
         import time
+
         time.sleep(1)
         time.sleep(1)
         try:
@@ -337,7 +336,7 @@ def delete_vectors_by_payload(url, collection, key, value):
                 )
             ]
         )
-        
+
         with get_lock(url):
             client.delete(
                 collection_name=collection,

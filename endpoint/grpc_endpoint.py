@@ -178,9 +178,6 @@ class P2PNodeServicer(p2p_pb2_grpc.P2PNodeServicer):
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
 
-
-
-
 class GRPCEndpoint(BaseEndpoint):
     async def start(self, ip: str, port: int):
         self.server_grpc = grpc.aio.server(

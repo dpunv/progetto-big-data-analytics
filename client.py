@@ -13,9 +13,11 @@ print("starting client")
 df = pd.read_parquet("embeddings.parquet")
 data = [
     {
-        "embedding": row["embedding"].tolist()
-        if hasattr(row["embedding"], "tolist")
-        else list(row["embedding"]),
+        "embedding": (
+            row["embedding"].tolist()
+            if hasattr(row["embedding"], "tolist")
+            else list(row["embedding"])
+        ),
         "text": row["sentence"],
     }
     for _, row in df.iterrows()

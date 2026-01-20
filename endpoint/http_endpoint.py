@@ -10,8 +10,6 @@ class HTTPEndpoint(BaseEndpoint):
     Endpoint implementation using HTTP protocol.
     """
 
-
-
     async def start(self, ip: str, port: int):
         """
         Starts the HTTP web server.
@@ -94,7 +92,7 @@ class HTTPEndpoint(BaseEndpoint):
             vectors_tuples = []
             for v_list in vectors_in:
                 # v_list structure: [values, id, payload, cluster_id, [ts, nid], [dests]]
-                
+
                 # Default version and destinations
                 ts = 0.0
                 nid = 0
@@ -202,7 +200,7 @@ class HTTPEndpoint(BaseEndpoint):
             results = await self._run_sync(
                 self.server.search_vectors_local, q_vecs, top_k
             )
-            
+
             # Serialize results
             json_results = []
             if results:
@@ -229,7 +227,7 @@ class HTTPEndpoint(BaseEndpoint):
                 q_vecs.append((item["values"], item["id"]))
 
             results = await self._run_sync(self.server.query, q_vecs, status)
-            
+
             json_results = []
             if results:
                 for r in results:

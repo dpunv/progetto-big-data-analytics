@@ -40,11 +40,11 @@ class OneShotClientProtocol(QuicConnectionProtocol):
         data = pickle.dumps(payload)
 
         self._stream_id = self._quic.get_next_available_stream_id()
-        
+
         chunk_size = 1024  # Size for chunks
         for i in range(0, len(data), chunk_size):
-            chunk = data[i:i+chunk_size]
-            is_last = (i + chunk_size >= len(data))
+            chunk = data[i : i + chunk_size]
+            is_last = i + chunk_size >= len(data)
             self._quic.send_stream_data(self._stream_id, chunk, end_stream=is_last)
         self.transmit()
 
@@ -81,39 +81,39 @@ class QUICCommunicator(BaseCommunicator):
                 client = cast(OneShotClientProtocol, protocol)
 
                 try:
-                    
+
                     if query == "get_id":
-                         result = await client.query(query, args)
-                    
+                        result = await client.query(query, args)
+
                     elif query == "similarity":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "receive":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "i_am_coord":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "set_clusters":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "search_vectors_local":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "query":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "get_vector_digest":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "get_vectors_by_ids":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "get_partition_coordinator_id":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     elif query == "respond_to_ping":
-                         result = await client.query(query, args)
+                        result = await client.query(query, args)
 
                     else:
                         return {
@@ -125,7 +125,7 @@ class QUICCommunicator(BaseCommunicator):
                     if isinstance(result, dict) and "status" in result:
                         return result
                     else:
-                         return {"status": 0, "error": None, "response": result}
+                        return {"status": 0, "error": None, "response": result}
 
                 except Exception as e:
                     return {"status": -1, "error": str(e), "response": None}

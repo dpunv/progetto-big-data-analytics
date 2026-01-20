@@ -804,17 +804,19 @@ class Server:
         """
         # Sleep for the configured interval
         time.sleep(REBALANCE_CHECK_INTERVAL)
-        
+
         while self.running:
             try:
                 # Only run if clustering has been done
                 if self.status == "clustered" and self.clusters:
                     # Check if we should run rebalancing
                     if self.trigger_rebalance():
-                        print(f"DEBUG: Server {self.id} - Rebalancing triggered successfully")
+                        print(
+                            f"DEBUG: Server {self.id} - Rebalancing triggered successfully"
+                        )
             except Exception as e:
                 print(f"DEBUG: Server {self.id} - Error in rebalance monitor: {e}")
-            
+
             # Sleep for the configured interval
             time.sleep(REBALANCE_CHECK_INTERVAL)
 
@@ -1238,8 +1240,8 @@ class Server:
         def reconcile_single(peer):
             try:
                 self.reconcile_with_peer(peer)
-            except Exception as e:
-                pass # print(f"Error reconciling with peer {peer.get_id()}: {e}")
+            except Exception:
+                pass  # print(f"Error reconciling with peer {peer.get_id()}: {e}")
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
             executor.map(reconcile_single, peers_to_reconcile)
@@ -1332,21 +1334,18 @@ class Server:
                     if self._should_be_on_me(vec):
                         self.store.insert(vec)
 
-
-
-
             # 5. Sync Topology (Clusters)
             # Exchange topology version
             try:
-                 peer_topology_ver = peer.get_topology_version()
-                 if self.topology_version > peer_topology_ver:
-                     # I have newer topology -> send to peer
-                     # We only send topology metadata, vectors_for_clusters is empty dict as we rely on anti-entropy for data
-                     peer.set_clusters({}, self.clusters, version=self.topology_version)
-                 elif peer_topology_ver > self.topology_version:
-                     # Peer has newer topology -> pull from peer
-                     new_clusters = peer.get_clusters()
-                     self.set_clusters({}, new_clusters, version=peer_topology_ver)
+                peer_topology_ver = peer.get_topology_version()
+                if self.topology_version > peer_topology_ver:
+                    # I have newer topology -> send to peer
+                    # We only send topology metadata, vectors_for_clusters is empty dict as we rely on anti-entropy for data
+                    peer.set_clusters({}, self.clusters, version=self.topology_version)
+                elif peer_topology_ver > self.topology_version:
+                    # Peer has newer topology -> pull from peer
+                    new_clusters = peer.get_clusters()
+                    self.set_clusters({}, new_clusters, version=peer_topology_ver)
 
             except Exception as e:
                 print(f"Topology sync with {peer.get_id()} failed: {e}")
@@ -1485,7 +1484,10 @@ class Server:
             if nearest_cluster_ids and self.cluster_to_destinations_cache:
                 best_cluster = nearest_cluster_ids[0]
                 if best_cluster in self.cluster_to_destinations_cache:
-                    return self.cluster_to_destinations_cache[best_cluster], best_cluster
+                    return (
+                        self.cluster_to_destinations_cache[best_cluster],
+                        best_cluster,
+                    )
 
         # Fallback to linear search
         with self.lock:
@@ -1504,7 +1506,7 @@ class Server:
         top_peers = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[
             : self.replication_factor
         ]
-        
+
         # Fallback cluster ID is unknown (-1) since we only routed by peer similarity
         return frozenset([p[0] for p in top_peers]), -1
 
@@ -1512,13 +1514,13 @@ class Server:
         """
         Determine destinations for vectors and send them.
         If a vector's cluster is being split, buffer it for re-routing after split.
-        
+
         Args:
            vectors: list of vectors
            sender_status: status of the sender
         """
         # print(f"DEBUG: Server {self.id} routing {len(vectors)} vectors")
-        
+
         # Group vectors by destination
         peer_to_vec = {}
         all_peers = self.get_reachable_peers()
@@ -1526,43 +1528,75 @@ class Server:
             peer_to_vec[p.get_id()] = []
 
         # Find unreachable peers for hints
-        unreachable = [p.get_id() for p in self.peers if p.get_id() not in [ap.get_id() for ap in all_peers]]
+        unreachable = [
+            p.get_id()
+            for p in self.peers
+            if p.get_id() not in [ap.get_id() for ap in all_peers]
+        ]
         for p_id in unreachable:
-             peer_to_vec[p_id] = [] # Initialize for hints
+            peer_to_vec[p_id] = []  # Initialize for hints
 
         routed_count = 0
         dropped_count = 0
-        
+
         for vector in vectors:
             # Calculate destinations
             destinations, cluster_id = self._calculate_destinations(vector)
-            
+
             if not destinations:
                 dropped_count += 1
-                
+
             # If we found a valid cluster ID from the index, and the vector doesn't have one yet (or has -1),
             # update the vector tuple with the new cluster ID.
             # Vector format is (vec, id, payload, cluster_id, version, [destinations])
             # Index 3 is cluster_id.
-            
+
             current_cluster_id = vector[3]
             if current_cluster_id == -1 and cluster_id != -1:
                 # Create new tuple with updated cluster ID
                 if len(vector) >= 6:
-                     vector = (vector[0], vector[1], vector[2], cluster_id, vector[4], destinations)
-                else: 
-                     vector = (vector[0], vector[1], vector[2], cluster_id, vector[4])
-            
+                    vector = (
+                        vector[0],
+                        vector[1],
+                        vector[2],
+                        cluster_id,
+                        vector[4],
+                        destinations,
+                    )
+                else:
+                    vector = (vector[0], vector[1], vector[2], cluster_id, vector[4])
+
             # Update tuple with destinations if it doesn't have them
             if len(vector) == 6:
-                 # It has destinations already, but we might have recalculated them?
-                 # If we recalculated, we should update field 5
-                 vector = (vector[0], vector[1], vector[2], vector[3], vector[4], destinations)
+                # It has destinations already, but we might have recalculated them?
+                # If we recalculated, we should update field 5
+                vector = (
+                    vector[0],
+                    vector[1],
+                    vector[2],
+                    vector[3],
+                    vector[4],
+                    destinations,
+                )
             elif len(vector) == 5:
-                 vector = (vector[0], vector[1], vector[2], vector[3], vector[4], destinations)
+                vector = (
+                    vector[0],
+                    vector[1],
+                    vector[2],
+                    vector[3],
+                    vector[4],
+                    destinations,
+                )
             elif len(vector) == 4:
-                 # Legacy format conversion
-                 vector = (vector[0], vector[1], vector[2], vector[3], (time.time(), self.id), destinations)
+                # Legacy format conversion
+                vector = (
+                    vector[0],
+                    vector[1],
+                    vector[2],
+                    vector[3],
+                    (time.time(), self.id),
+                    destinations,
+                )
 
             # Route to intended destinations only
             for peer_id in destinations:
@@ -1570,7 +1604,9 @@ class Server:
                     peer_to_vec[peer_id].append(vector)
 
         if dropped_count > 0:
-             print(f"DEBUG: Server {self.id} routing report: {dropped_count} DROPPED due to no destinations")
+            print(
+                f"DEBUG: Server {self.id} routing report: {dropped_count} DROPPED due to no destinations"
+            )
 
         def send_to_single_peer(peer):
             vecs = peer_to_vec[peer.get_id()]
@@ -1655,10 +1691,10 @@ class Server:
         being split, buffer it for re-routing after split completes.
         """
         # print(f"DEBUG: Server {self.id} saving {len(vectors)} vectors")
-        
+
         # Separate vectors: those for splitting clusters go to buffer, others saved normally
         vectors_to_save = []
-        
+
         with self.split_queue_lock:
             for vector in vectors:
                 cluster_id = vector[3]
@@ -1667,10 +1703,12 @@ class Server:
                     if cluster_id not in self.pending_vectors:
                         self.pending_vectors[cluster_id] = []
                     self.pending_vectors[cluster_id].append(vector)
-                    print(f"DEBUG: Server {self.id} buffered vector for splitting cluster {cluster_id}")
+                    print(
+                        f"DEBUG: Server {self.id} buffered vector for splitting cluster {cluster_id}"
+                    )
                 else:
                     vectors_to_save.append(vector)
-        
+
         # Save non-buffered vectors
         if vectors_to_save:
             success_count = self.store.insert_batch(vectors_to_save)
@@ -1686,14 +1724,20 @@ class Server:
 
         self.receive(vectors_with_id, "client")
 
-    def set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId, version=0):
-        self.queue.put((self._handle_set_clusters, (vectors_for_clusters, clusters, version)))
+    def set_clusters(
+        self, vectors_for_clusters, clusters: ListOfVectorsWithId, version=0
+    ):
+        self.queue.put(
+            (self._handle_set_clusters, (vectors_for_clusters, clusters, version))
+        )
 
-    def _handle_set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId, version=0):
+    def _handle_set_clusters(
+        self, vectors_for_clusters, clusters: ListOfVectorsWithId, version=0
+    ):
         with self.lock:
             # Update topology version if provided
             if version > self.topology_version:
-                 self.topology_version = version
+                self.topology_version = version
 
             self.clusters = clusters
 
@@ -1801,10 +1845,10 @@ class Server:
                 cluster_list = []
                 for k, v in clusters:
                     if isinstance(v, dict):
-                         cluster_list.append((k, v["center"]))
+                        cluster_list.append((k, v["center"]))
                     else:
-                         cluster_list.append((k, v)) # v is centroid list
-            
+                        cluster_list.append((k, v))  # v is centroid list
+
             self.cluster_index.build(cluster_list)
 
             # Cache destinations
@@ -1919,81 +1963,83 @@ class Server:
         """
         K-Means with maximum cluster size constraint.
         Uses iterative reassignment to satisfy max_size.
-        
+
         Args:
             X: Data matrix (n_samples, n_features)
             k: Number of clusters
             max_size: Maximum allowed points per cluster
             max_iter: Maximum iterations for reassignment logic
-            
+
         Returns:
             centers: cluster centers (k, n_features)
             labels: cluster labels (n_samples,)
         """
         n_samples = X.shape[0]
-        
+
         # 1. Initial K-Means
         kmeans = KMeans(n_clusters=k, n_init=1, max_iter=50, random_state=42)
         kmeans.fit(X)
         centers = kmeans.cluster_centers_
         labels = kmeans.labels_
-        
+
         from scipy.spatial.distance import cdist
-        
+
         for iteration in range(max_iter):
             # Check cluster sizes
             counts = np.bincount(labels, minlength=k)
             if np.all(counts <= max_size):
-                print(f"DEBUG: Constrained KMeans converged in {iteration} iterations (sizes: {counts})")
+                print(
+                    f"DEBUG: Constrained KMeans converged in {iteration} iterations (sizes: {counts})"
+                )
                 break
-                
+
             # Compute squared distances to all centers
             # dists[i, j] is dist from point i to center j
-            dists = cdist(X, centers, metric='sqeuclidean')
-            
+            dists = cdist(X, centers, metric="sqeuclidean")
+
             # Sort clusters by how much they violate the constraint (largest first)
             violation_indices = np.argsort(counts)[::-1]
-            
+
             satisfied = True
-            
+
             # Create a prioritized list of moves
             # For each point in an overfull cluster, calculate cost to move to next best cluster
-            
+
             for cluster_idx in violation_indices:
                 current_size = counts[cluster_idx]
                 excess = current_size - max_size
-                
+
                 if excess <= 0:
                     continue
-                    
+
                 satisfied = False
-                
+
                 # Identify points currently in this cluster
                 member_indices = np.where(labels == cluster_idx)[0]
-                
+
                 # Calculate utility of moving each member
                 # Cost = Dist_to_Alt - Dist_to_Curr
                 # We want to move points with LOWEST cost (i.e. close to boundary)
-                
+
                 move_proposals = []
-                
+
                 for idx in member_indices:
                     curr_dist = dists[idx, cluster_idx]
-                    
+
                     # Find best alternative cluster that is NOT full
                     # (In early iterations, many might be full, so just find best non-current)
                     # To effectively balance, we look at gain.
-                    
+
                     # Sort other clusters by distance
                     sorted_clusters = np.argsort(dists[idx])
-                    
+
                     best_alt = -1
-                    best_alt_dist = float('inf')
-                    
+                    best_alt_dist = float("inf")
+
                     for alt_c in sorted_clusters:
                         if alt_c == cluster_idx:
                             continue
-                        
+
                         # Only move to a cluster that has space?
                         # Or just move to best efficient one and let outer loop resolve?
                         # Let's try to move to one that has space or is smaller
@@ -2001,32 +2047,32 @@ class Server:
                             best_alt = alt_c
                             best_alt_dist = dists[idx, alt_c]
                             break
-                    
+
                     if best_alt != -1:
-                         cost = best_alt_dist - curr_dist
-                         move_proposals.append((cost, idx, best_alt))
-                
+                        cost = best_alt_dist - curr_dist
+                        move_proposals.append((cost, idx, best_alt))
+
                 # Sort proposals by cost (cheapest moves first)
                 move_proposals.sort(key=lambda x: x[0])
-                
+
                 # Execute moves
                 moves_to_make = min(excess, len(move_proposals))
-                
+
                 for i in range(moves_to_make):
                     _, pt_idx, target_c = move_proposals[i]
                     labels[pt_idx] = target_c
                     counts[cluster_idx] -= 1
                     counts[target_c] += 1
-                    
+
             if satisfied:
                 break
-                
+
             # Update centers based on new labels
             for j in range(k):
                 mask = labels == j
                 if np.any(mask):
                     centers[j] = np.mean(X[mask], axis=0)
-                    
+
         return centers, labels
 
     def assign_clusters_to_peers(self, clusters, beam_width=50):
@@ -2074,7 +2120,7 @@ class Server:
 
     def get_clusters(self):
         with self.lock:
-             return list(self.clusters)
+            return list(self.clusters)
 
     def get_all_vectors(self):
         print(f"DEBUG: get_all_vectors called on Server {self.id}")
@@ -2083,7 +2129,7 @@ class Server:
     def search_vectors(self, vectors: ListOfVectorsWithId, top_k=100, top_look=1):
         """
         Search for similar vectors in the cluster.
-        
+
         OPTIMIZATION: Query only the single most similar cluster (top_look=1).
         Since replicas are identical, we only need to get results from one replica.
         We submit to all replicas of that cluster but return as soon as one responds.
@@ -2093,7 +2139,7 @@ class Server:
             [(v, v_id) for (v_id, v) in vectors], top_look
         )
         reachable_peers = self.get_reachable_peers()
-        
+
         # Collect the best peer (cluster) for each vector
         # Since top_look=1, each vector maps to at most 1 peer
         best_peers_set = set()
@@ -2102,16 +2148,16 @@ class Server:
                 # p_data is list of (peer_id, similarity, vector) tuples, sorted by similarity
                 best_peer_id = p_data[0][0]  # Get the best peer's ID
                 best_peers_set.add(best_peer_id)
-        
+
         # Map peer_id to peer object for quick lookup
         peer_map = {peer.get_id(): peer for peer in reachable_peers}
-        
+
         # Filter to only the best peers that are reachable
         peers_to_query = [peer_map[pid] for pid in best_peers_set if pid in peer_map]
-        
+
         if not peers_to_query:
             return []
-        
+
         # Group vectors by their target peer
         peer_to_vec = {peer.get_id(): [] for peer in peers_to_query}
         for _, p_data in peers_similarity_per_vector.items():
@@ -2322,7 +2368,7 @@ class Server:
     def get_load_stats(self) -> dict:
         """
         Get vector count statistics across all reachable peers.
-        
+
         Returns dict with:
             - self: count on this server
             - peers: dict of peer_id -> count
@@ -2332,7 +2378,7 @@ class Server:
         stats = {"self": self.store.count(), "peers": {}}
         total = stats["self"]
         peer_count = 1  # Include self
-        
+
         for peer in self.get_reachable_peers():
             if peer.get_id() == self.id:
                 continue
@@ -2342,8 +2388,10 @@ class Server:
                 total += count
                 peer_count += 1
             except Exception as e:
-                print(f"DEBUG: Server {self.id} - Failed to get count from peer {peer.get_id()}: {e}")
-        
+                print(
+                    f"DEBUG: Server {self.id} - Failed to get count from peer {peer.get_id()}: {e}"
+                )
+
         stats["total"] = total
         stats["average"] = total / peer_count if peer_count > 0 else 0
         return stats
@@ -2351,43 +2399,43 @@ class Server:
     def detect_imbalance(self, threshold: float = None) -> Optional[int]:
         """
         Detect if any server is overloaded beyond threshold.
-        
+
         Args:
             threshold: Fraction above average that triggers imbalance (default from constant)
-            
+
         Returns:
             ID of overloaded server, or None if balanced.
         """
         if threshold is None:
             threshold = REBALANCE_THRESHOLD
-            
+
         stats = self.get_load_stats()
         avg = stats["average"]
-        
+
         if avg == 0:
             return None
-        
+
         # es: avg= avg * (1 + 0.5) = 1.5 * avg -> 50% over avg
         overload_threshold = avg * (1 + threshold)
-        
+
         # Check self
         if stats["self"] > overload_threshold:
             return self.id
-            
+
         # Check peers
         for peer_id, count in stats["peers"].items():
             if count > overload_threshold:
                 return peer_id
-                
+
         return None
 
     def get_heaviest_cluster(self, peer_id: int) -> Optional[int]:
         """
         Find the largest cluster on a given server.
-        
+
         Args:
             peer_id: ID of the server to check
-            
+
         Returns:
             Cluster ID of the heaviest cluster, or None if no clusters.
         """
@@ -2397,36 +2445,38 @@ class Server:
             for vec in self.store.get_all():
                 cluster_id = vec[3]
                 cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + 1
-            
+
             if not cluster_counts:
                 return None
-                
+
             return max(cluster_counts.keys(), key=lambda k: cluster_counts[k])
 
     def should_trigger_rebalance_for_cluster(self, cluster_id: int) -> bool:
         """
         Check if this server should trigger rebalancing for a given cluster.
         Only the server with the smallest ID among those hosting the cluster should trigger.
-        
+
         Args:
             cluster_id: The cluster ID to check
-            
+
         Returns:
             True if this server should trigger, False otherwise.
         """
         if self.cluster_to_destinations_cache is None:
             return False
-            
+
         destinations = self.cluster_to_destinations_cache.get(cluster_id, set())
-        
+
         if not destinations:
             return False
-            
+
         # Only the smallest ID should trigger
         min_id = min(destinations)
         return self.id == min_id
 
-    def _calculate_split_parameters(self, cluster_id: int, n_subclusters: int = None) -> dict:
+    def _calculate_split_parameters(
+        self, cluster_id: int, n_subclusters: int = None
+    ) -> dict:
         """
         Calculate K-means split for a cluster.
         Returns dict of {new_cluster_id: {"center": [...], "destinations": [peer_id, ...]}, ...}
@@ -2449,15 +2499,17 @@ class Server:
             center = np.mean([v[0] for v in cluster_vectors], axis=0).tolist()
             # Destinations: self + replicas
             destinations = [self.id]
-            
+
             # Select replicas
-            candidates = [p.get_id() for p in self.get_reachable_peers() if p.get_id() != self.id]
+            candidates = [
+                p.get_id() for p in self.get_reachable_peers() if p.get_id() != self.id
+            ]
             if len(candidates) >= self.replication_factor - 1:
                 replicas = random.sample(candidates, self.replication_factor - 1)
                 destinations.extend(replicas)
             else:
                 destinations.extend(candidates)
-                
+
             return {new_id: {"center": center, "destinations": destinations}}
 
         # Extract vector data for K-means
@@ -2470,28 +2522,34 @@ class Server:
         # Ensure max_size is at least enough to cover all points if perfectly balanced + buffer
         # But if max_size * k < n, we have a problem.
         if max_size * n_subclusters < n_vectors:
-             max_size = int(math.ceil(n_vectors / n_subclusters)) + 1
+            max_size = int(math.ceil(n_vectors / n_subclusters)) + 1
 
-        print(f"DEBUG: Server {self.id} - Constrained KMeans: n={n_vectors}, k={n_subclusters}, max_size={max_size}")
+        print(
+            f"DEBUG: Server {self.id} - Constrained KMeans: n={n_vectors}, k={n_subclusters}, max_size={max_size}"
+        )
 
         try:
             # Use constrained K-Means
             centers, labels = self._constrained_kmeans(X, n_subclusters, max_size)
-            
+
             # Convert centers to list
             centers = centers.tolist()
-            
+
             # Build labels_by_vector_id map
             labels_by_vector_id = {}
             for i, vec in enumerate(cluster_vectors):
                 vec_id = vec[1]
                 labels_by_vector_id[vec_id] = int(labels[i])
-            
+
         except Exception as e:
-            print(f"DEBUG: Server {self.id} - Constrained K-means failed, falling back to standard: {e}")
+            print(
+                f"DEBUG: Server {self.id} - Constrained K-means failed, falling back to standard: {e}"
+            )
             labels_by_vector_id = None  # Will trigger nearest-centroid fallback
             try:
-                kmeans = KMeans(n_clusters=n_subclusters, n_init=1, max_iter=100, random_state=42)
+                kmeans = KMeans(
+                    n_clusters=n_subclusters, n_init=1, max_iter=100, random_state=42
+                )
                 kmeans.fit(X)
                 centers = kmeans.cluster_centers_.tolist()
             except Exception as e2:
@@ -2500,26 +2558,26 @@ class Server:
                 center = np.mean(X, axis=0).tolist()
                 return {new_id: {"center": center, "destinations": [self.id]}}
 
-        # Find underloaded peers 
+        # Find underloaded peers
         # We need enough unique peers for primary + replicas
         # Pass sender's current load and split info to determine if we should keep one locally
         sender_current_load = self.store.count()
-        
+
         # Get current destinations of the cluster being split (these replicas will lose vectors)
         cluster_replicas = set()
         if self.cluster_to_destinations_cache:
             cluster_replicas = self.cluster_to_destinations_cache.get(cluster_id, set())
-        
+
         target_peers, sender_should_keep_one = self._get_underloaded_peers(
             n_subclusters * 2,  # Get more candidates
             sender_current_load=sender_current_load,
             vectors_being_sent=n_vectors,
             n_subclusters=n_subclusters,
             cluster_being_split=cluster_id,
-            cluster_replicas=cluster_replicas
+            cluster_replicas=cluster_replicas,
         )
         all_peers = [p.get_id() for p in self.get_reachable_peers()]
-        
+
         # Track how many subclusters we've assigned to self
         subclusters_assigned_to_self = 0
 
@@ -2527,9 +2585,9 @@ class Server:
         for i in range(n_subclusters):
             new_id = self._generate_cluster_id()
             center = centers[i]
-            
+
             destinations = []
-            
+
             # 1. Select Primary
             if i == 0:
                 # First subcluster always stays with sender
@@ -2539,15 +2597,17 @@ class Server:
                 # Check if we need to keep at least one more subcluster locally
                 # to prevent sender from becoming too underloaded
                 should_keep_this_one = (
-                    sender_should_keep_one and 
-                    subclusters_assigned_to_self == 0 and 
-                    i == n_subclusters - 1  # Last chance to keep one
+                    sender_should_keep_one
+                    and subclusters_assigned_to_self == 0
+                    and i == n_subclusters - 1  # Last chance to keep one
                 )
-                
+
                 if should_keep_this_one:
                     primary = self.id
                     subclusters_assigned_to_self += 1
-                    print(f"DEBUG: Server {self.id} - Keeping subcluster {i} locally to avoid underload")
+                    print(
+                        f"DEBUG: Server {self.id} - Keeping subcluster {i} locally to avoid underload"
+                    )
                 elif target_peers:
                     # Pop best candidate that is not self (if possible)
                     candidate = next((p for p in target_peers if p != self.id), self.id)
@@ -2559,15 +2619,15 @@ class Server:
                 else:
                     primary = self.id
                     subclusters_assigned_to_self += 1
-            
+
             destinations.append(primary)
-            
+
             # 2. Select Replicas
             needed = self.replication_factor - 1
             if needed > 0:
                 # Candidates: everyone except primary
                 candidates = [p for p in all_peers if p != primary]
-                
+
                 # Check underloaded first for replicas too?
                 # For simplicity, just pick random from candidates to spread load
                 # Or prefer underloaded?
@@ -2577,16 +2637,22 @@ class Server:
                     destinations.extend(replicas)
                 else:
                     destinations.extend(candidates)
-            
-            result_plan[new_id] = {"center": center, "destinations": destinations, "label_idx": i}
-            
+
+            result_plan[new_id] = {
+                "center": center,
+                "destinations": destinations,
+                "label_idx": i,
+            }
+
         # Include labels mapping if available
         if labels_by_vector_id:
             result_plan["_labels_by_vector_id"] = labels_by_vector_id
-            
+
         return result_plan
 
-    def balanced_split_cluster(self, cluster_id: int, n_subclusters: int = None) -> dict:
+    def balanced_split_cluster(
+        self, cluster_id: int, n_subclusters: int = None
+    ) -> dict:
         """
         Split a cluster locally based on calculated parameters.
         This is now a wrapper around _calculate_split_parameters + split_and_distribute_cluster.
@@ -2594,64 +2660,76 @@ class Server:
         split_plan = self._calculate_split_parameters(cluster_id, n_subclusters)
         if not split_plan:
             return {}
-            
+
         result = self.split_and_distribute_cluster(cluster_id, split_plan)
-        
+
         # Update local cluster state
         if result:
             with self.lock:
                 self.topology_version += 1
                 # Remove old cluster
                 self.clusters = [c for c in self.clusters if c[0] != cluster_id]
-                
+
                 # Add new clusters
                 for new_id, info in result.items():
                     center = info["center"]
                     # ensure center is list for consistency
                     if hasattr(center, "tolist"):
-                         center = center.tolist()
+                        center = center.tolist()
                     self.clusters.append((new_id, center))
-                    
+
                 # Rebuild index
                 if self.cluster_index:
-                     self.cluster_index.build(self.clusters)
-                     
+                    self.cluster_index.build(self.clusters)
+
         return result
 
-    def split_and_distribute_cluster(self, cluster_id: int, split_plan: dict, is_coordinator: bool = True) -> dict:
+    def split_and_distribute_cluster(
+        self, cluster_id: int, split_plan: dict, is_coordinator: bool = True
+    ) -> dict:
         """
         Execute a split on the local vectors of a cluster, using the provided plan.
-        
+
         Args:
             cluster_id: The cluster to split
             split_plan: The split plan with new cluster IDs, centers, and destinations
             is_coordinator: If True, this server initiates replication to destinations.
                            If False (replica), only handle local data without replicating.
         """
-        print(f"DEBUG: Server {self.id} - Received split_and_distribute for cluster {cluster_id} (coordinator={is_coordinator})")
-        
+        print(
+            f"DEBUG: Server {self.id} - Received split_and_distribute for cluster {cluster_id} (coordinator={is_coordinator})"
+        )
+
         # Mark cluster as splitting - vectors arriving for this cluster will be buffered
         with self.split_queue_lock:
             self.splitting_clusters.add(cluster_id)
             self.pending_vectors[cluster_id] = []
         print(f"DEBUG: Server {self.id} - Marked cluster {cluster_id} as SPLITTING")
-        
+
         try:
             # Get vectors from this cluster
             cluster_vectors = self.store.get_by_cluster(cluster_id)
-            print(f"DEBUG: Server {self.id} - Found {len(cluster_vectors)} local vectors for cluster {cluster_id}")
-            
+            print(
+                f"DEBUG: Server {self.id} - Found {len(cluster_vectors)} local vectors for cluster {cluster_id}"
+            )
+
             if not cluster_vectors:
                 ret = {}
                 for new_id, info in split_plan.items():
                     if new_id == "_labels_by_vector_id":
                         continue
-                    ret[new_id] = {"center": info["center"], "members": [], "destinations": info["destinations"]}
+                    ret[new_id] = {
+                        "center": info["center"],
+                        "members": [],
+                        "destinations": info["destinations"],
+                    }
                 return ret
 
             # If only one new cluster in plan, it's a migration/rename
             if len(split_plan) == 1:
-                print(f"DEBUG: Server {self.id} - Executing migration for cluster {cluster_id}")
+                print(
+                    f"DEBUG: Server {self.id} - Executing migration for cluster {cluster_id}"
+                )
                 new_id = list(split_plan.keys())[0]
                 info = split_plan[new_id]
                 updated_members = []
@@ -2664,18 +2742,27 @@ class Server:
                     else:
                         new_vec = (v[0], v[1], v[2], new_id, (time.time(), self.id))
                     updated_members.append((new_vec))
-                
+
                 # Remove old
                 for vec in cluster_vectors:
                     self.store.remove_by_id(vec[1])
                 print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
-                    
+
                 # Distribute (keep or move)
-                return self._distribute_vectors_from_split({new_id: {"center": info["center"], "members": updated_members, "destinations": info["destinations"]}}, is_coordinator=is_coordinator)
+                return self._distribute_vectors_from_split(
+                    {
+                        new_id: {
+                            "center": info["center"],
+                            "members": updated_members,
+                            "destinations": info["destinations"],
+                        }
+                    },
+                    is_coordinator=is_coordinator,
+                )
 
             # Perform assignment of vectors to new centers
             X = np.array([v[0] for v in cluster_vectors], dtype=np.float32)
-            
+
             centers_list = []
             new_ids_list = []
             label_idx_to_new_id = {}
@@ -2686,37 +2773,49 @@ class Server:
                 new_ids_list.append(new_id)
                 if "label_idx" in info:
                     label_idx_to_new_id[info["label_idx"]] = new_id
-                
+
             centers_np = np.array(centers_list, dtype=np.float32)
-            
+
             # Check if we have pre-computed labels
             labels_by_vector_id = split_plan.get("_labels_by_vector_id")
-            
+
             if labels_by_vector_id and label_idx_to_new_id:
                 # Use pre-computed constrained labels
                 labels = []
                 for v in cluster_vectors:
                     vec_id = v[1]
-                    label_idx = labels_by_vector_id.get(vec_id, 0)  # Default to 0 if missing
+                    label_idx = labels_by_vector_id.get(
+                        vec_id, 0
+                    )  # Default to 0 if missing
                     labels.append(label_idx)
                 labels = np.array(labels)
-                print(f"DEBUG: Server {self.id} - Using pre-computed constrained labels")
+                print(
+                    f"DEBUG: Server {self.id} - Using pre-computed constrained labels"
+                )
             else:
                 # Fallback: nearest centroid assignment
-                dists = np.linalg.norm(X[:, np.newaxis, :] - centers_np[np.newaxis, :, :], axis=2)
+                dists = np.linalg.norm(
+                    X[:, np.newaxis, :] - centers_np[np.newaxis, :, :], axis=2
+                )
                 labels = np.argmin(dists, axis=1)
-                print(f"DEBUG: Server {self.id} - Using nearest centroid assignment (fallback)")
-            
+                print(
+                    f"DEBUG: Server {self.id} - Using nearest centroid assignment (fallback)"
+                )
+
             # Group vectors
             result_full = {}
             for idx, new_id in enumerate(new_ids_list):
                 info = split_plan[new_id]
-                result_full[new_id] = {"center": info["center"], "members": [], "destinations": info["destinations"]}
-                
+                result_full[new_id] = {
+                    "center": info["center"],
+                    "members": [],
+                    "destinations": info["destinations"],
+                }
+
             for vec_idx, label in enumerate(labels):
                 vec = cluster_vectors[vec_idx]
                 new_id = new_ids_list[label]
-                
+
                 # Update cluster ID
                 if len(vec) >= 6:
                     new_vec = (vec[0], vec[1], vec[2], new_id, vec[4], vec[5])
@@ -2724,17 +2823,19 @@ class Server:
                     new_vec = (vec[0], vec[1], vec[2], new_id, vec[4])
                 else:
                     new_vec = (vec[0], vec[1], vec[2], new_id, (time.time(), self.id))
-                
+
                 result_full[new_id]["members"].append(new_vec)
-                
+
             # Remove old vectors
             for vec in cluster_vectors:
                 self.store.remove_by_id(vec[1])
             print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
-                
+
             # Distribute (keep or move)
-            return self._distribute_vectors_from_split(result_full, is_coordinator=is_coordinator)
-        
+            return self._distribute_vectors_from_split(
+                result_full, is_coordinator=is_coordinator
+            )
+
         finally:
             # Always process buffered vectors and unmark cluster, even if error
             self._process_pending_vectors_after_split(cluster_id)
@@ -2743,7 +2844,7 @@ class Server:
         """
         Process vectors that arrived during a split.
         Re-routes them to the appropriate NEW subclusters.
-        
+
         Args:
             old_cluster_id: The cluster that was split (no longer exists)
         """
@@ -2752,13 +2853,17 @@ class Server:
             pending = self.pending_vectors.pop(old_cluster_id, [])
             # Unmark cluster as splitting
             self.splitting_clusters.discard(old_cluster_id)
-        
+
         if not pending:
-            print(f"DEBUG: Server {self.id} - No pending vectors for cluster {old_cluster_id}")
+            print(
+                f"DEBUG: Server {self.id} - No pending vectors for cluster {old_cluster_id}"
+            )
             return
-            
-        print(f"DEBUG: Server {self.id} - Re-routing {len(pending)} pending vectors after split of cluster {old_cluster_id}")
-        
+
+        print(
+            f"DEBUG: Server {self.id} - Re-routing {len(pending)} pending vectors after split of cluster {old_cluster_id}"
+        )
+
         # Reset cluster_id to -1 so routing recalculates based on new clusters
         re_routed_vectors = []
         for v in pending:
@@ -2770,17 +2875,19 @@ class Server:
             else:
                 new_v = (v[0], v[1], v[2], -1, (time.time(), self.id))
             re_routed_vectors.append(new_v)
-        
+
         # Re-route through normal path - will find new subclusters
         self.send_to_peers(re_routed_vectors)
         print(f"DEBUG: Server {self.id} - Finished re-routing pending vectors")
 
-    def _distribute_vectors_from_split(self, split_result: dict, is_coordinator: bool = True) -> dict:
+    def _distribute_vectors_from_split(
+        self, split_result: dict, is_coordinator: bool = True
+    ) -> dict:
         """
         Helper to move vectors to their destinations after split.
-        Also checks if the current server would become too underloaded and 
+        Also checks if the current server would become too underloaded and
         should keep at least one subcluster locally.
-        
+
         Args:
             split_result: Dict of new_cluster_id -> {center, members, destinations}
             is_coordinator: If True, replicate to all destinations. If False (replica),
@@ -2788,14 +2895,15 @@ class Server:
         """
         # First, check if we would become too underloaded by sending everything away
         # Calculate total vectors being redistributed
-        total_vectors_in_split = sum(len(data["members"]) for data in split_result.values())
-        
+        total_vectors_in_split = sum(
+            len(data["members"]) for data in split_result.values()
+        )
+
         # Check if we're already keeping any subcluster locally
         keeping_any_locally = any(
-            self.id in data["destinations"] 
-            for data in split_result.values()
+            self.id in data["destinations"] for data in split_result.values()
         )
-        
+
         # Determine if we need to force keeping one subcluster
         force_keep_one = False
         if not keeping_any_locally and total_vectors_in_split > 0:
@@ -2804,7 +2912,7 @@ class Server:
             # If we don't keep any vectors locally, our final count = store.count() (already reflects removal)
             # The vectors in split_result are what we're redistributing.
             projected_load = self.store.count()  # After removal, if we don't keep any
-            
+
             # Get peer loads to calculate average
             peer_loads = []
             for peer in self.get_reachable_peers():
@@ -2814,38 +2922,44 @@ class Server:
                     peer_loads.append(peer.count())
                 except Exception:
                     pass
-            
+
             if peer_loads:
                 avg_load = sum(peer_loads) / len(peer_loads)
                 underload_threshold = avg_load * 0.7
-                
+
                 if projected_load < underload_threshold:
                     force_keep_one = True
                     n_subclusters = len(split_result)
-                    vectors_per_subcluster = total_vectors_in_split / n_subclusters if n_subclusters > 0 else 0
+                    vectors_per_subcluster = (
+                        total_vectors_in_split / n_subclusters
+                        if n_subclusters > 0
+                        else 0
+                    )
                     projected_with_one = projected_load + vectors_per_subcluster
                     if projected_with_one >= underload_threshold * 0.8:
-                        print(f"DEBUG: Server {self.id} - Would be underloaded "
-                              f"({projected_load} vs avg {avg_load:.0f}), keeping one subcluster locally")
-        
+                        print(
+                            f"DEBUG: Server {self.id} - Would be underloaded "
+                            f"({projected_load} vs avg {avg_load:.0f}), keeping one subcluster locally"
+                        )
+
         # Track which cluster we'll force-keep (choose smallest to minimize impact)
         force_keep_cluster_id = None
         if force_keep_one:
             # Pick the smallest subcluster to keep locally
             smallest = min(split_result.items(), key=lambda x: len(x[1]["members"]))
             force_keep_cluster_id = smallest[0]
-        
+
         for new_cluster_id, data in split_result.items():
             destinations = list(data["destinations"])  # Make a copy to modify
-            
+
             # Destination 0 is primary, others are replicas.
             # But the 'receive' logic on peers handles "clustered" (simple save).
             # We just need to ensure everyone in destinations handles it.
-            
+
             local_kept = False
             # Check if we should force-keep this cluster
-            should_force_keep = (force_keep_cluster_id == new_cluster_id)
-            
+            should_force_keep = force_keep_cluster_id == new_cluster_id
+
             # Replica mode: don't replicate to peers, but DO keep vectors locally if we're a destination
             # The coordinator sends data to destinations, but we also have the same data locally.
             # We should keep our portion (subclusters where we're a destination).
@@ -2854,13 +2968,15 @@ class Server:
                 if self.id in destinations:
                     for vec in data["members"]:
                         self.store.insert(vec)
-                    print(f"DEBUG: Server {self.id} - Replica re-inserting {len(data['members'])} vectors locally (cluster {new_cluster_id})")
+                    print(
+                        f"DEBUG: Server {self.id} - Replica re-inserting {len(data['members'])} vectors locally (cluster {new_cluster_id})"
+                    )
                     local_kept = True
                 # Skip replication to other peers - coordinator handles that
                 continue
-            
+
             # Coordinator mode below: handle replication
-            
+
             # If force-keeping, we replace one destination with ourselves to maintain exact count
             # Remove one destination (preferably not the primary) and add self
             skipped_destination = None
@@ -2868,19 +2984,25 @@ class Server:
                 # Skip the last destination (a replica) and keep locally instead
                 if len(destinations) > 1:
                     skipped_destination = destinations.pop()  # Remove last (a replica)
-                    print(f"DEBUG: Server {self.id} - Replacing destination {skipped_destination} with self to avoid underload")
+                    print(
+                        f"DEBUG: Server {self.id} - Replacing destination {skipped_destination} with self to avoid underload"
+                    )
                 else:
                     # Only one destination (primary), we'll add ourselves but need to be careful
                     # In this case, just force-keep in addition (rare edge case)
                     pass
-            
+
             for destination in destinations:
                 if destination == self.id:
                     # Keep locally
-                    if not local_kept: # Only insert once if self appears multiple times (shouldn't happen but safe)
+                    if (
+                        not local_kept
+                    ):  # Only insert once if self appears multiple times (shouldn't happen but safe)
                         for vec in data["members"]:
                             self.store.insert(vec)
-                        print(f"DEBUG: Server {self.id} - Keeping (re-inserting) {len(data['members'])} vectors locally (cluster {new_cluster_id})")
+                        print(
+                            f"DEBUG: Server {self.id} - Keeping (re-inserting) {len(data['members'])} vectors locally (cluster {new_cluster_id})"
+                        )
                         local_kept = True
                 else:
                     # Move to peer
@@ -2889,41 +3011,55 @@ class Server:
                         try:
                             # Send 'clustered' status so peer just saves them
                             peer.receive(data["members"], "clustered")
-                            print(f"DEBUG: Server {self.id} - Replicated {len(data['members'])} vectors to Server {destination} (cluster {new_cluster_id})")
+                            print(
+                                f"DEBUG: Server {self.id} - Replicated {len(data['members'])} vectors to Server {destination} (cluster {new_cluster_id})"
+                            )
                         except Exception as e:
-                            print(f"DEBUG: Server {self.id} - Failed to send to peer {destination}: {e}")
+                            print(
+                                f"DEBUG: Server {self.id} - Failed to send to peer {destination}: {e}"
+                            )
                             # If primary failed, we might want to keep locally as fallback?
                             # But if we have other replicas, maybe it's fine.
                             # For safety, if ALL remote fails and not local, we should perhaps panic or keep locally.
                             # But simplistic logic: try best effort.
                             pass
                     else:
-                        print(f"DEBUG: Server {self.id} - Peer {destination} not found for replication")
+                        print(
+                            f"DEBUG: Server {self.id} - Peer {destination} not found for replication"
+                        )
 
             # Force-keep: if we determined this server would be underloaded and this is the chosen cluster
             # This happens when we skipped a destination above
             if should_force_keep and not local_kept:
                 for vec in data["members"]:
                     self.store.insert(vec)
-                print(f"DEBUG: Server {self.id} - Force-keeping {len(data['members'])} vectors locally to avoid underload (cluster {new_cluster_id})")
+                print(
+                    f"DEBUG: Server {self.id} - Force-keeping {len(data['members'])} vectors locally to avoid underload (cluster {new_cluster_id})"
+                )
                 local_kept = True
 
             # Fallback: if we were supposed to send away but failed, should we keep?
-            # Hard to track overall success here without complex logic. 
+            # Hard to track overall success here without complex logic.
             # Current logic: if self is in destinations, we kept it.
             # If self is NOT in destinations, we might have lost data if all peers failed.
-            # Improvement: check if at least one success? 
+            # Improvement: check if at least one success?
             # For now, let's stick to simple loop. PROD systems would need acks.
 
         return split_result
 
-    def _get_underloaded_peers(self, count: int, sender_current_load: int = None, 
-                                 vectors_being_sent: int = None, n_subclusters: int = None,
-                                 cluster_being_split: int = None, cluster_replicas: set = None) -> tuple:
+    def _get_underloaded_peers(
+        self,
+        count: int,
+        sender_current_load: int = None,
+        vectors_being_sent: int = None,
+        n_subclusters: int = None,
+        cluster_being_split: int = None,
+        cluster_replicas: set = None,
+    ) -> tuple:
         """
-        Get the N most underloaded peers (excluding self), and determine if sender 
+        Get the N most underloaded peers (excluding self), and determine if sender
         should keep at least one subcluster to avoid becoming too underloaded.
-        
+
         Args:
             count: Number of peers to return
             sender_current_load: Current vector count of the sending server (self)
@@ -2931,7 +3067,7 @@ class Server:
             n_subclusters: Number of subclusters being created
             cluster_being_split: ID of cluster being split (for projected load calculation)
             cluster_replicas: Set of peer IDs that have replicas of the cluster being split
-            
+
         Returns:
             Tuple of (list of peer IDs sorted by load ascending, bool sender_should_keep_one)
         """
@@ -2941,57 +3077,75 @@ class Server:
                 continue
             try:
                 load = peer.count()
-                
+
                 # IMPORTANT: If this peer is a replica of the cluster being split,
                 # subtract those vectors from their count since they will be deleted.
                 # This gives us the "projected load" after the split completes.
                 if cluster_replicas and peer.get_id() in cluster_replicas:
                     # Get count of vectors in the cluster being split on this peer
                     try:
-                        replica_cluster_count = peer.get_cluster_vector_count(cluster_being_split)
+                        replica_cluster_count = peer.get_cluster_vector_count(
+                            cluster_being_split
+                        )
                         load = max(0, load - replica_cluster_count)
-                        print(f"DEBUG: Server {self.id} - Peer {peer.get_id()} projected load: "
-                              f"{load + replica_cluster_count} - {replica_cluster_count} = {load} "
-                              f"(replica of cluster {cluster_being_split})")
-                    except Exception as e:
+                        print(
+                            f"DEBUG: Server {self.id} - Peer {peer.get_id()} projected load: "
+                            f"{load + replica_cluster_count} - {replica_cluster_count} = {load} "
+                            f"(replica of cluster {cluster_being_split})"
+                        )
+                    except Exception:
                         # Fallback: estimate based on even distribution
                         # If we can't query, assume cluster is evenly distributed across replicas
-                        estimated_replica_vectors = vectors_being_sent if vectors_being_sent else 0
+                        estimated_replica_vectors = (
+                            vectors_being_sent if vectors_being_sent else 0
+                        )
                         load = max(0, load - estimated_replica_vectors)
-                        print(f"DEBUG: Server {self.id} - Peer {peer.get_id()} projected load (estimated): {load}")
-                
+                        print(
+                            f"DEBUG: Server {self.id} - Peer {peer.get_id()} projected load (estimated): {load}"
+                        )
+
                 peer_loads.append((peer.get_id(), load))
             except Exception:
-                peer_loads.append((peer.get_id(), float('inf')))
-        
+                peer_loads.append((peer.get_id(), float("inf")))
+
         # Sort by load ascending (least loaded first)
         peer_loads.sort(key=lambda x: x[1])
-        
+
         # Determine if sender should keep at least one subcluster
         sender_should_keep_one = False
-        if sender_current_load is not None and vectors_being_sent is not None and n_subclusters is not None:
+        if (
+            sender_current_load is not None
+            and vectors_being_sent is not None
+            and n_subclusters is not None
+        ):
             # Calculate sender's projected load if it sends everything away
             projected_sender_load = sender_current_load - vectors_being_sent
-            
+
             # Calculate average load across all peers (including self's projected state)
             all_loads = [load for _, load in peer_loads] + [projected_sender_load]
             if all_loads:
                 avg_load = sum(all_loads) / len(all_loads)
-                
+
                 # If sender would become significantly underloaded (below 70% of avg),
                 # it should keep at least one subcluster
                 underload_threshold = avg_load * 0.7
                 if projected_sender_load < underload_threshold:
                     # Calculate how many vectors per subcluster (approx)
-                    vectors_per_subcluster = vectors_being_sent / n_subclusters if n_subclusters > 0 else 0
-                    
+                    vectors_per_subcluster = (
+                        vectors_being_sent / n_subclusters if n_subclusters > 0 else 0
+                    )
+
                     # Check if keeping one subcluster helps
                     projected_with_one = projected_sender_load + vectors_per_subcluster
-                    if projected_with_one >= underload_threshold * 0.8:  # Some tolerance
+                    if (
+                        projected_with_one >= underload_threshold * 0.8
+                    ):  # Some tolerance
                         sender_should_keep_one = True
-                        print(f"DEBUG: Server {self.id} - Sender would be underloaded "
-                              f"({projected_sender_load} vs avg {avg_load:.0f}), keeping one subcluster")
-        
+                        print(
+                            f"DEBUG: Server {self.id} - Sender would be underloaded "
+                            f"({projected_sender_load} vs avg {avg_load:.0f}), keeping one subcluster"
+                        )
+
         return [pid for pid, _ in peer_loads[:count]], sender_should_keep_one
 
     def _get_peer_by_id(self, peer_id: int):
@@ -3002,48 +3156,44 @@ class Server:
         return None
 
     def _balance_cluster_sizes(
-        self,
-        subclusters: dict,
-        centers: list,
-        X: np.ndarray,
-        target_size: int
+        self, subclusters: dict, centers: list, X: np.ndarray, target_size: int
     ) -> dict:
         """
         Post-process K-means result to achieve balanced sizes.
-        
-        Moves vectors from oversized clusters to undersized ones based on 
+
+        Moves vectors from oversized clusters to undersized ones based on
         second-best centroid similarity.
-        
-        This function is designed to be easily replaceable with alternative 
+
+        This function is designed to be easily replaceable with alternative
         balancing algorithms in the future.
-        
+
         Args:
             subclusters: dict of label -> list of vectors
             centers: list of centroid vectors
             X: numpy array of all vectors
             target_size: target size per cluster
-            
+
         Returns:
             Balanced subclusters dict
         """
         n_subclusters = len(centers)
         centers_np = np.array(centers, dtype=np.float32)
-        
+
         # Iteratively move vectors from large to small clusters
         max_iterations = 100
         for _ in range(max_iterations):
             sizes = {k: len(v) for k, v in subclusters.items()}
             max_cluster = max(sizes.keys(), key=lambda k: sizes[k])
             min_cluster = min(sizes.keys(), key=lambda k: sizes[k])
-            
+
             # Check if balanced enough
             if sizes[max_cluster] - sizes[min_cluster] <= 1:
                 break
-                
+
             # Find best vector index to move from max to min
             best_idx = None
-            best_score = -float('inf')
-            
+            best_score = -float("inf")
+
             for idx, vec in enumerate(subclusters[max_cluster]):
                 # Score = similarity to min_cluster center
                 vec_np = np.array(vec[0], dtype=np.float32)
@@ -3051,60 +3201,64 @@ class Server:
                 if similarity > best_score:
                     best_score = similarity
                     best_idx = idx
-            
+
             if best_idx is not None:
                 # Remove by index to avoid numpy array comparison
                 vec_to_move = subclusters[max_cluster].pop(best_idx)
                 subclusters[min_cluster].append(vec_to_move)
-        
+
         return subclusters
 
     def _generate_cluster_id(self) -> int:
         """Generate a unique cluster ID."""
         # Use timestamp + server ID + counter + random to ensure uniqueness
         with self.lock:
-             self._cluster_id_counter += 1
-             counter = self._cluster_id_counter
-             
+            self._cluster_id_counter += 1
+            counter = self._cluster_id_counter
+
         # High precision timestamp
         ts = int(time.time() * 1000) % 10000000
-        # Format: TTTTTTT (7) + SS (2) + CCC (3) + R (1) 
+        # Format: TTTTTTT (7) + SS (2) + CCC (3) + R (1)
         # This gives us unique IDs even if called rapidly
         return int(f"{ts}{self.id:02d}{counter % 1000:03d}{random.randint(0, 9)}")
 
     def _update_hnsw_after_split(self, old_cluster_id: int, new_clusters: dict):
         """
         Update HNSW index after splitting a cluster.
-        
+
         Since hnswlib doesn't support true deletion, we rebuild the index.
-        
+
         Args:
             old_cluster_id: ID of the cluster that was split
             new_clusters: dict of new cluster data
         """
         if self.cluster_index is None:
             return
-            
+
         # Get current clusters, remove old, add new
         current_clusters = list(self.clusters) if self.clusters else []
-        current_clusters = [(cid, center) for cid, center in current_clusters if cid != old_cluster_id]
-        
+        current_clusters = [
+            (cid, center) for cid, center in current_clusters if cid != old_cluster_id
+        ]
+
         for new_id, data in new_clusters.items():
             current_clusters.append((new_id, data["center"]))
-        
+
         # Rebuild index
         if current_clusters:
             dim = len(current_clusters[0][1])
             self.cluster_index = ClusterIndex(dimension=dim)
             self.cluster_index.build(current_clusters)
             self.clusters = current_clusters
-            
+
             # Update destinations cache
             if self.cluster_to_destinations_cache is not None:
-                old_destinations = self.cluster_to_destinations_cache.pop(old_cluster_id, set())
+                old_destinations = self.cluster_to_destinations_cache.pop(
+                    old_cluster_id, set()
+                )
                 for new_id in new_clusters.keys():
                     self.cluster_to_destinations_cache[new_id] = old_destinations.copy()
-        
+
         print(f"DEBUG: Server {self.id} - HNSW index rebuilt after split")
 
     def trigger_rebalance(self) -> bool:
@@ -3112,131 +3266,153 @@ class Server:
         Main rebalancing entry point.
         """
         reachable = self.get_reachable_peers()
-        
+
         # Need at least 2 servers to rebalance
         if len(reachable) < 2:
             return False
-        
+
         # Detect imbalance
         overloaded_id = self.detect_imbalance()
-        
+
         if overloaded_id is None:
             return False
-            
-        print(f"DEBUG: Server {self.id} - Detected imbalance, overloaded server: {overloaded_id}")
-        
+
+        print(
+            f"DEBUG: Server {self.id} - Detected imbalance, overloaded server: {overloaded_id}"
+        )
+
         # Find heaviest cluster on overloaded server
         heaviest = self.get_heaviest_cluster(overloaded_id)
-        
+
         if heaviest is None:
-            print(f"DEBUG: Server {self.id} - No heavy cluster found on server {overloaded_id}")
+            print(
+                f"DEBUG: Server {self.id} - No heavy cluster found on server {overloaded_id}"
+            )
             return False
-        
+
         # Check if we should be the one to trigger (smallest ID rule)
         if not self.should_trigger_rebalance_for_cluster(heaviest):
             print(f"DEBUG: Server {self.id} - Not responsible for cluster {heaviest}")
             return False
-        
+
         print(f"DEBUG: Server {self.id} - Splitting cluster {heaviest}")
-        
+
         # Calculate split plan
         split_plan = self._calculate_split_parameters(heaviest, REBALANCE_SPLIT_FACTOR)
-        
+
         if not split_plan:
             return False
-            
+
         # Execute split locally
         new_clusters = self.split_and_distribute_cluster(heaviest, split_plan)
-        
+
         # Broadcast cluster update to peers
-        self._broadcast_cluster_update(new_clusters, old_cluster_id=heaviest, split_plan=split_plan)
-        
-        print(f"DEBUG: Server {self.id} - Rebalancing complete, created {len(new_clusters)} subclusters")
+        self._broadcast_cluster_update(
+            new_clusters, old_cluster_id=heaviest, split_plan=split_plan
+        )
+
+        print(
+            f"DEBUG: Server {self.id} - Rebalancing complete, created {len(new_clusters)} subclusters"
+        )
         return True
 
-    def _broadcast_cluster_update(self, new_clusters: dict, old_cluster_id: int, split_plan: dict = None):
+    def _broadcast_cluster_update(
+        self, new_clusters: dict, old_cluster_id: int, split_plan: dict = None
+    ):
         """
         Send cluster updates to all peers and trigger HNSW rebuild.
         """
         # Update clusters list
         if self.clusters:
-            self.clusters = [(cid, center) for cid, center in self.clusters if cid != old_cluster_id]
+            self.clusters = [
+                (cid, center) for cid, center in self.clusters if cid != old_cluster_id
+            ]
         else:
             self.clusters = []
-            
+
         for new_id, data in new_clusters.items():
             self.clusters.append((new_id, data["center"]))
-        
+
         # Tell peers to split/distribute as well
         if old_cluster_id is not None and split_plan:
-             print(f"DEBUG: Server {self.id} - Broadcasting split_and_distribute for cluster {old_cluster_id}")
-             for peer in self.get_reachable_peers():
-                 if peer.get_id() != self.id:
-                     try:
-                         # Send the split plan so they can do it themselves (as replica, not coordinator)
-                         peer.split_and_distribute_cluster(old_cluster_id, split_plan, is_coordinator=False)
-                     except Exception as e:
-                         print(f"DEBUG: Server {self.id} - Failed to send split command to peer {peer.get_id()}: {e}")
-        
+            print(
+                f"DEBUG: Server {self.id} - Broadcasting split_and_distribute for cluster {old_cluster_id}"
+            )
+            for peer in self.get_reachable_peers():
+                if peer.get_id() != self.id:
+                    try:
+                        # Send the split plan so they can do it themselves (as replica, not coordinator)
+                        peer.split_and_distribute_cluster(
+                            old_cluster_id, split_plan, is_coordinator=False
+                        )
+                    except Exception as e:
+                        print(
+                            f"DEBUG: Server {self.id} - Failed to send split command to peer {peer.get_id()}: {e}"
+                        )
+
         # Tell peers to update their cluster index
         for peer in self.get_reachable_peers():
             if peer.get_id() != self.id:
                 try:
                     peer.set_clusters({}, self.clusters)
                 except Exception as e:
-                    print(f"DEBUG: Server {self.id} - Failed to update peer {peer.get_id()} clusters: {e}")
+                    print(
+                        f"DEBUG: Server {self.id} - Failed to update peer {peer.get_id()} clusters: {e}"
+                    )
 
-    def _calculate_destinations_for_cluster(self, cluster_id: int, force_include: set = None, projected_usage: dict = None) -> set:
+    def _calculate_destinations_for_cluster(
+        self, cluster_id: int, force_include: set = None, projected_usage: dict = None
+    ) -> set:
         """
         Calculate which peers should store a given cluster.
-        
+
         Args:
             cluster_id: ID of the cluster
             force_include: Set of peer IDs that MUST be included in the result.
             projected_usage: Optional dict of peer_id -> estimated_count to use instead of querying.
-            
+
         Returns:
             Set of peer IDs that should store this cluster.
         """
         if force_include is None:
             force_include = set()
-            
+
         reachable = self.get_reachable_peers()
         if not reachable:
             return {self.id} | force_include
-        
+
         # Start with authentication result
         result = set(force_include)
-        
+
         # If we already satisfied replication factor, return
         if len(result) >= self.replication_factor:
             return result
-            
+
         # Get peer loads
         peer_loads = []
         for peer in reachable:
             # Skip if already in result
             if peer.get_id() in result:
                 continue
-            
+
             if projected_usage is not None and peer.get_id() in projected_usage:
                 count = projected_usage[peer.get_id()]
             else:
                 try:
                     count = peer.count()
                 except Exception:
-                    count = float('inf')
-                    
+                    count = float("inf")
+
             peer_loads.append((peer.get_id(), count))
-            
+
         # Sort by load
         peer_loads.sort(key=lambda x: x[1])
-        
+
         # Fill remaining spots
         needed = self.replication_factor - len(result)
         for pid, _ in peer_loads[:needed]:
             result.add(pid)
-            
+
         return result
 
 
@@ -3266,7 +3442,10 @@ def main():
         "--peers", type=str, default=None, help="Coordinator address (ip:port) to join"
     )
     parser.add_argument(
-        "--peers-file", type=str, default=None, help="JSON file with peer configurations ({id, ip, port})"
+        "--peers-file",
+        type=str,
+        default=None,
+        help="JSON file with peer configurations ({id, ip, port})",
     )
 
     # These params are hardcoded in startup.py logic or client.py, but server needs them
@@ -3314,13 +3493,15 @@ def main():
                         p_id = p.get("id")
                         p_ip = p.get("url")
                         p_port = p.get("port")
-                        
+
                         if p_id == args.id:
                             continue
-                            
+
                         if p_ip and p_port:
                             server.add_peer(p_ip, int(p_port))
-                            print(f"[ID {args.id}] Added peer {p_id} ({p_ip}:{p_port}) from file")
+                            print(
+                                f"[ID {args.id}] Added peer {p_id} ({p_ip}:{p_port}) from file"
+                            )
         except Exception as e:
             print(f"[ID {args.id}] Error reading peers file {args.peers_file}: {e}")
 

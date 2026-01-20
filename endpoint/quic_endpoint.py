@@ -116,19 +116,19 @@ class QUICServerProtocol(QuicConnectionProtocol):
                 result = await self.respond_to_ping(args)
             else:
                 raise AttributeError(f"Method {method_name} not found")
-            
+
             response_payload["response"] = result
 
         except Exception as e:
             response_payload["status"] = -1
             response_payload["error"] = str(e)
-        
+
         try:
             resp_data = pickle.dumps(response_payload)
             chunk_size = 1024
             for i in range(0, len(resp_data), chunk_size):
-                chunk = resp_data[i:i+chunk_size]
-                is_last = (i + chunk_size >= len(resp_data))
+                chunk = resp_data[i : i + chunk_size]
+                is_last = i + chunk_size >= len(resp_data)
                 self._quic.send_stream_data(stream_id, chunk, end_stream=is_last)
             self.transmit()
         except Exception as e:

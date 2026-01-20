@@ -1056,12 +1056,13 @@ class TestAntiEntropy:
         try:
             # 1. Insert data on S1 only
             s1.store.insert(([1.0], 1, "data", 0, (1.0, 1)))
-            
+
             # 2. Mock s0.reconcile_with_peer to fail exactly ONCE then succeed
             # We mock the internal method that does the actual exchange
             original_receive = s0.receive
-            
+
             call_count = [0]
+
             def failing_receive(vectors, status):
                 if status == "reconcile":
                     call_count[0] += 1
@@ -1070,12 +1071,12 @@ class TestAntiEntropy:
                 return original_receive(vectors, status)
 
             # Apply patch to S0 (the receiver)
-            with patch.object(s0, 'receive', side_effect=failing_receive):
-                
+            with patch.object(s0, "receive", side_effect=failing_receive):
+
                 # Trigger First Reconciliation (Should Fail)
                 print("Triggering failing reconciliation...")
                 try:
-                    s1.reconcile_with_peer(s1.peers[1]) # s1 pushes to s0
+                    s1.reconcile_with_peer(s1.peers[1])  # s1 pushes to s0
                 except Exception as e:
                     print(f"Caught expected error: {e}")
 
@@ -1085,7 +1086,7 @@ class TestAntiEntropy:
                 # Trigger Second Reconciliation (Should Succeed)
                 print("Triggering retry reconciliation...")
                 s1.reconcile_with_peer(s1.peers[1])
-                
+
                 time.sleep(0.5)
                 # Verify S0 NOW has the data
                 assert s0.count() == 1, "S0 should have data after successful retry"
@@ -1207,7 +1208,7 @@ class TestEventualConsistency:
 
     def test_cluster_topology_sync_after_partition(self):
         """
-        Test that cluster metadata (IDs and centroids) converges if rebalancing 
+        Test that cluster metadata (IDs and centroids) converges if rebalancing
         happens on one side of a partition.
         """
         # 1. Setup 2 servers
@@ -1223,14 +1224,14 @@ class TestEventualConsistency:
             for i in range(50):
                 vec = (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
                 s0.store.insert(vec)
-            
+
             # Manually set shared initial state
             initial_clusters = [(0, [25.0, 25.0])]
             s0.clusters = list(initial_clusters)
             s1.clusters = list(initial_clusters)
             s0.status = "clustered"
             s1.status = "clustered"
-            
+
             wait_for_full_connectivity([s0, s1])
 
             # 3. Partition the network
@@ -1241,27 +1242,29 @@ class TestEventualConsistency:
             # This deletes Cluster 0 and creates new sub-clusters on S0
             print("Triggering split on S0...")
             s0.balanced_split_cluster(cluster_id=0, n_subclusters=2)
-            
+
             # Verify S0 and S1 are now divergent
             ids_s0 = set(c[0] for c in s0.clusters)
             ids_s1 = set(c[0] for c in s1.clusters)
-            assert ids_s0 != ids_s1, "Sanity check: Topology should be divergent during partition"
+            assert (
+                ids_s0 != ids_s1
+            ), "Sanity check: Topology should be divergent during partition"
             assert 0 not in ids_s0, "S0 should have replaced Cluster 0"
             assert 0 in ids_s1, "S1 should still have Cluster 0"
 
             # 5. Heal the network
             print("Healing network...")
             heal_network([s0, s1])
-            
+
             # Allow time for anti-entropy/gossip to exchange cluster info
             # NOTE: If your system lacks metadata sync, this assertion will FAIL,
             # revealing the bug.
             time.sleep(2.0)
-            
+
             # 6. Assert Topology Convergence
             final_ids_s0 = set(c[0] for c in s0.clusters)
             final_ids_s1 = set(c[0] for c in s1.clusters)
-            
+
             assert final_ids_s0 == final_ids_s1, (
                 f"Topology Divergence detected!\n"
                 f"S0 Clusters: {final_ids_s0}\n"
@@ -1273,14 +1276,13 @@ class TestEventualConsistency:
             s1.stop()
 
 
-
 class TestPartitionHealVectorConsistency:
     """Large-scale tests for verifying vector consistency after network partition and heal.
-    
+
     These tests verify that after a partition occurs and heals:
     - No vectors are lost
     - Total vector count = vectors_sent × replication_factor
-    
+
     Tests use 1000-10000 vectors and wait for actual clustering to complete.
     """
 
@@ -1329,7 +1331,13 @@ class TestPartitionHealVectorConsistency:
 
         # Coordinator is the last server (highest ID)
         servers = [
-            Server(i, i == num_servers - 1, clustering_threshold, replication_factor, port=get_free_port())
+            Server(
+                i,
+                i == num_servers - 1,
+                clustering_threshold,
+                replication_factor,
+                port=get_free_port(),
+            )
             for i in range(num_servers)
         ]
 
@@ -1345,20 +1353,28 @@ class TestPartitionHealVectorConsistency:
             coordinator_idx = num_servers - 1
 
             # Phase 1: Insert initial vectors to COORDINATOR to trigger clustering
-            print(f"[Phase 1] Inserting {initial_vectors} initial vectors to coordinator (server {coordinator_idx})...")
+            print(
+                f"[Phase 1] Inserting {initial_vectors} initial vectors to coordinator (server {coordinator_idx})..."
+            )
             initial_vecs = self._generate_vectors(initial_vectors, dimension, "init")
             servers[coordinator_idx].receive_from_client(initial_vecs)
 
             # Wait for clustering to complete
             print("[Phase 1] Waiting for clustering...")
-            assert self._wait_for_clustering(servers, timeout=180), "Clustering did not complete in time"
-            print(f"[Phase 1] Clustering complete. Status: {[s.status for s in servers]}")
+            assert self._wait_for_clustering(
+                servers, timeout=180
+            ), "Clustering did not complete in time"
+            print(
+                f"[Phase 1] Clustering complete. Status: {[s.status for s in servers]}"
+            )
 
             # Wait for replication to stabilize
             time.sleep(3.0)
             count_after_clustering = self._total_vector_count(servers)
             unique_after_clustering = self._count_unique_vectors(servers)
-            print(f"[Phase 1] After clustering: {unique_after_clustering} unique, {count_after_clustering} total")
+            print(
+                f"[Phase 1] After clustering: {unique_after_clustering} unique, {count_after_clustering} total"
+            )
 
             # Phase 2: Create network partition [[0,1], [2,3]]
             print("[Phase 2] Creating network partition...")
@@ -1366,9 +1382,15 @@ class TestPartitionHealVectorConsistency:
             time.sleep(1.0)
 
             # Phase 3: Insert vectors during partition
-            print(f"[Phase 3] Inserting {partition_vectors_per_side * 2} vectors during partition...")
-            left_vecs = self._generate_vectors(partition_vectors_per_side, dimension, "left")
-            right_vecs = self._generate_vectors(partition_vectors_per_side, dimension, "right")
+            print(
+                f"[Phase 3] Inserting {partition_vectors_per_side * 2} vectors during partition..."
+            )
+            left_vecs = self._generate_vectors(
+                partition_vectors_per_side, dimension, "left"
+            )
+            right_vecs = self._generate_vectors(
+                partition_vectors_per_side, dimension, "right"
+            )
 
             servers[0].receive_from_client(left_vecs)
             servers[2].receive_from_client(right_vecs)
@@ -1376,7 +1398,9 @@ class TestPartitionHealVectorConsistency:
 
             count_before_heal = self._total_vector_count(servers)
             unique_before_heal = self._count_unique_vectors(servers)
-            print(f"[Phase 3] Before heal: {unique_before_heal} unique, {count_before_heal} total")
+            print(
+                f"[Phase 3] Before heal: {unique_before_heal} unique, {count_before_heal} total"
+            )
 
             # Phase 4: Heal the partition
             print("[Phase 4] Healing network partition...")
@@ -1385,7 +1409,9 @@ class TestPartitionHealVectorConsistency:
 
             count_after_heal = self._total_vector_count(servers)
             unique_after_heal = self._count_unique_vectors(servers)
-            print(f"[Phase 4] After heal: {unique_after_heal} unique, {count_after_heal} total")
+            print(
+                f"[Phase 4] After heal: {unique_after_heal} unique, {count_after_heal} total"
+            )
 
             # Verification
             total_vectors_sent = initial_vectors + partition_vectors_per_side * 2
@@ -1404,7 +1430,9 @@ class TestPartitionHealVectorConsistency:
                 f"(difference: {expected_total_count - count_after_heal})"
             )
 
-            print(f"[SUCCESS] All {total_vectors_sent} vectors present with correct replication")
+            print(
+                f"[SUCCESS] All {total_vectors_sent} vectors present with correct replication"
+            )
 
         finally:
             for s in servers:
@@ -1421,7 +1449,13 @@ class TestPartitionHealVectorConsistency:
 
         # Coordinator is last server (highest ID = 5)
         servers = [
-            Server(i, i == num_servers - 1, clustering_threshold, replication_factor, port=get_free_port())
+            Server(
+                i,
+                i == num_servers - 1,
+                clustering_threshold,
+                replication_factor,
+                port=get_free_port(),
+            )
             for i in range(num_servers)
         ]
 
@@ -1435,13 +1469,17 @@ class TestPartitionHealVectorConsistency:
             coordinator_idx = num_servers - 1
 
             # Phase 1: Insert initial vectors to COORDINATOR
-            print(f"[Phase 1] Inserting {initial_vectors} initial vectors to coordinator...")
+            print(
+                f"[Phase 1] Inserting {initial_vectors} initial vectors to coordinator..."
+            )
             initial_vecs = self._generate_vectors(initial_vectors, dimension, "init")
             servers[coordinator_idx].receive_from_client(initial_vecs)
 
             # Wait for clustering
             print("[Phase 1] Waiting for clustering...")
-            assert self._wait_for_clustering(servers, timeout=180), "Clustering did not complete"
+            assert self._wait_for_clustering(
+                servers, timeout=180
+            ), "Clustering did not complete"
             time.sleep(3.0)
 
             # Phase 2: Three-way partition
@@ -1450,10 +1488,18 @@ class TestPartitionHealVectorConsistency:
             time.sleep(1.0)
 
             # Phase 3: Insert during partition
-            print(f"[Phase 3] Inserting {partition_vectors_per_partition * 3} vectors during partition...")
-            p1_vecs = self._generate_vectors(partition_vectors_per_partition, dimension, "p1")
-            p2_vecs = self._generate_vectors(partition_vectors_per_partition, dimension, "p2")
-            p3_vecs = self._generate_vectors(partition_vectors_per_partition, dimension, "p3")
+            print(
+                f"[Phase 3] Inserting {partition_vectors_per_partition * 3} vectors during partition..."
+            )
+            p1_vecs = self._generate_vectors(
+                partition_vectors_per_partition, dimension, "p1"
+            )
+            p2_vecs = self._generate_vectors(
+                partition_vectors_per_partition, dimension, "p2"
+            )
+            p3_vecs = self._generate_vectors(
+                partition_vectors_per_partition, dimension, "p3"
+            )
 
             servers[0].receive_from_client(p1_vecs)
             servers[2].receive_from_client(p2_vecs)
@@ -1462,7 +1508,9 @@ class TestPartitionHealVectorConsistency:
 
             count_before_heal = self._total_vector_count(servers)
             unique_before_heal = self._count_unique_vectors(servers)
-            print(f"[Phase 3] Before heal: {unique_before_heal} unique, {count_before_heal} total")
+            print(
+                f"[Phase 3] Before heal: {unique_before_heal} unique, {count_before_heal} total"
+            )
 
             # Phase 4: Heal
             print("[Phase 4] Healing network...")
@@ -1471,21 +1519,25 @@ class TestPartitionHealVectorConsistency:
 
             count_after_heal = self._total_vector_count(servers)
             unique_after_heal = self._count_unique_vectors(servers)
-            print(f"[Phase 4] After heal: {unique_after_heal} unique, {count_after_heal} total")
+            print(
+                f"[Phase 4] After heal: {unique_after_heal} unique, {count_after_heal} total"
+            )
 
             # Verification
             total_vectors_sent = initial_vectors + partition_vectors_per_partition * 3
             expected_total_count = total_vectors_sent * replication_factor
 
-            assert unique_after_heal == total_vectors_sent, (
-                f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {unique_after_heal}"
-            )
+            assert (
+                unique_after_heal == total_vectors_sent
+            ), f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {unique_after_heal}"
 
-            assert count_after_heal == expected_total_count, (
-                f"REPLICATION MISMATCH: Expected {expected_total_count}, got {count_after_heal}"
-            )
+            assert (
+                count_after_heal == expected_total_count
+            ), f"REPLICATION MISMATCH: Expected {expected_total_count}, got {count_after_heal}"
 
-            print(f"[SUCCESS] All {total_vectors_sent} vectors present with correct replication")
+            print(
+                f"[SUCCESS] All {total_vectors_sent} vectors present with correct replication"
+            )
 
         finally:
             for s in servers:
@@ -1503,7 +1555,13 @@ class TestPartitionHealVectorConsistency:
 
         # Coordinator is last server (highest ID = 3)
         servers = [
-            Server(i, i == num_servers - 1, clustering_threshold, replication_factor, port=get_free_port())
+            Server(
+                i,
+                i == num_servers - 1,
+                clustering_threshold,
+                replication_factor,
+                port=get_free_port(),
+            )
             for i in range(num_servers)
         ]
 
@@ -1517,7 +1575,9 @@ class TestPartitionHealVectorConsistency:
             coordinator_idx = num_servers - 1
 
             # Initial vectors and clustering - send to COORDINATOR
-            print(f"[Init] Inserting {initial_vectors} initial vectors to coordinator...")
+            print(
+                f"[Init] Inserting {initial_vectors} initial vectors to coordinator..."
+            )
             initial_vecs = self._generate_vectors(initial_vectors, dimension, "init")
             servers[coordinator_idx].receive_from_client(initial_vecs)
 
@@ -1535,7 +1595,9 @@ class TestPartitionHealVectorConsistency:
                 time.sleep(1.0)
 
                 # Insert vectors during partition
-                cycle_vecs = self._generate_vectors(vectors_per_cycle, dimension, f"cycle{cycle}")
+                cycle_vecs = self._generate_vectors(
+                    vectors_per_cycle, dimension, f"cycle{cycle}"
+                )
                 servers[cycle % num_servers].receive_from_client(cycle_vecs)
                 total_vectors_sent += vectors_per_cycle
                 time.sleep(1.0)
@@ -1546,7 +1608,9 @@ class TestPartitionHealVectorConsistency:
 
                 current_unique = self._count_unique_vectors(servers)
                 current_total = self._total_vector_count(servers)
-                print(f"[Cycle {cycle+1}] After heal: {current_unique} unique, {current_total} total")
+                print(
+                    f"[Cycle {cycle+1}] After heal: {current_unique} unique, {current_total} total"
+                )
 
             # Final verification
             time.sleep(2.0)
@@ -1554,17 +1618,21 @@ class TestPartitionHealVectorConsistency:
             final_total = self._total_vector_count(servers)
             expected_total = total_vectors_sent * replication_factor
 
-            print(f"[Final] Unique: {final_unique}, Total: {final_total}, Expected: {expected_total}")
-
-            assert final_unique == total_vectors_sent, (
-                f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {final_unique}"
+            print(
+                f"[Final] Unique: {final_unique}, Total: {final_total}, Expected: {expected_total}"
             )
 
-            assert final_total == expected_total, (
-                f"REPLICATION MISMATCH: Expected {expected_total}, got {final_total}"
-            )
+            assert (
+                final_unique == total_vectors_sent
+            ), f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {final_unique}"
 
-            print(f"[SUCCESS] All {total_vectors_sent} vectors survive {num_cycles} partition cycles")
+            assert (
+                final_total == expected_total
+            ), f"REPLICATION MISMATCH: Expected {expected_total}, got {final_total}"
+
+            print(
+                f"[SUCCESS] All {total_vectors_sent} vectors survive {num_cycles} partition cycles"
+            )
 
         finally:
             for s in servers:
@@ -1582,7 +1650,13 @@ class TestPartitionHealVectorConsistency:
 
         # Coordinator is last server (highest ID = 4)
         servers = [
-            Server(i, i == num_servers - 1, clustering_threshold, replication_factor, port=get_free_port())
+            Server(
+                i,
+                i == num_servers - 1,
+                clustering_threshold,
+                replication_factor,
+                port=get_free_port(),
+            )
             for i in range(num_servers)
         ]
 
@@ -1596,7 +1670,9 @@ class TestPartitionHealVectorConsistency:
             coordinator_idx = num_servers - 1
 
             # Initial vectors - send to COORDINATOR
-            print(f"[Init] Inserting {initial_vectors} initial vectors to coordinator...")
+            print(
+                f"[Init] Inserting {initial_vectors} initial vectors to coordinator..."
+            )
             initial_vecs = self._generate_vectors(initial_vectors, dimension, "init")
             servers[coordinator_idx].receive_from_client(initial_vecs)
 
@@ -1610,12 +1686,18 @@ class TestPartitionHealVectorConsistency:
 
             # Insert to isolated node (will have to use hints)
             print(f"[Insert] Adding {vectors_to_isolated} vectors to isolated node...")
-            isolated_vecs = self._generate_vectors(vectors_to_isolated, dimension, "isolated")
+            isolated_vecs = self._generate_vectors(
+                vectors_to_isolated, dimension, "isolated"
+            )
             servers[0].receive_from_client(isolated_vecs)
 
             # Insert to majority partition
-            print(f"[Insert] Adding {vectors_to_majority} vectors to majority partition...")
-            majority_vecs = self._generate_vectors(vectors_to_majority, dimension, "majority")
+            print(
+                f"[Insert] Adding {vectors_to_majority} vectors to majority partition..."
+            )
+            majority_vecs = self._generate_vectors(
+                vectors_to_majority, dimension, "majority"
+            )
             servers[1].receive_from_client(majority_vecs)
             time.sleep(2.0)
 
@@ -1629,22 +1711,28 @@ class TestPartitionHealVectorConsistency:
             time.sleep(5.0)
 
             # Verification
-            total_vectors_sent = initial_vectors + vectors_to_isolated + vectors_to_majority
+            total_vectors_sent = (
+                initial_vectors + vectors_to_isolated + vectors_to_majority
+            )
             expected_total = total_vectors_sent * replication_factor
 
             final_unique = self._count_unique_vectors(servers)
             final_total = self._total_vector_count(servers)
-            print(f"[After Heal] Unique: {final_unique}, Total: {final_total}, Expected: {expected_total}")
-
-            assert final_unique == total_vectors_sent, (
-                f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {final_unique}"
+            print(
+                f"[After Heal] Unique: {final_unique}, Total: {final_total}, Expected: {expected_total}"
             )
 
-            assert final_total == expected_total, (
-                f"REPLICATION MISMATCH: Expected {expected_total}, got {final_total}"
-            )
+            assert (
+                final_unique == total_vectors_sent
+            ), f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {final_unique}"
 
-            print(f"[SUCCESS] All {total_vectors_sent} vectors present after asymmetric partition heal")
+            assert (
+                final_total == expected_total
+            ), f"REPLICATION MISMATCH: Expected {expected_total}, got {final_total}"
+
+            print(
+                f"[SUCCESS] All {total_vectors_sent} vectors present after asymmetric partition heal"
+            )
 
         finally:
             for s in servers:
@@ -1661,7 +1749,13 @@ class TestPartitionHealVectorConsistency:
 
         # Coordinator is last server (highest ID = 7)
         servers = [
-            Server(i, i == num_servers - 1, clustering_threshold, replication_factor, port=get_free_port())
+            Server(
+                i,
+                i == num_servers - 1,
+                clustering_threshold,
+                replication_factor,
+                port=get_free_port(),
+            )
             for i in range(num_servers)
         ]
 
@@ -1675,7 +1769,9 @@ class TestPartitionHealVectorConsistency:
             coordinator_idx = num_servers - 1
 
             # Initial vectors - send to COORDINATOR
-            print(f"[Init] Inserting {initial_vectors} vectors with RF={replication_factor} to coordinator...")
+            print(
+                f"[Init] Inserting {initial_vectors} vectors with RF={replication_factor} to coordinator..."
+            )
             initial_vecs = self._generate_vectors(initial_vectors, dimension, "init")
             servers[coordinator_idx].receive_from_client(initial_vecs)
 
@@ -1689,14 +1785,18 @@ class TestPartitionHealVectorConsistency:
 
             # Insert during partition
             print(f"[Insert] Adding {partition_vectors} vectors during partition...")
-            partition_vecs = self._generate_vectors(partition_vectors, dimension, "part")
-            
+            partition_vecs = self._generate_vectors(
+                partition_vectors, dimension, "part"
+            )
+
             # Distribute across partitions
             part_chunk = partition_vectors // 4
             servers[0].receive_from_client(partition_vecs[:part_chunk])
-            servers[2].receive_from_client(partition_vecs[part_chunk:part_chunk*2])
-            servers[4].receive_from_client(partition_vecs[part_chunk*2:part_chunk*3])
-            servers[6].receive_from_client(partition_vecs[part_chunk*3:])
+            servers[2].receive_from_client(partition_vecs[part_chunk : part_chunk * 2])
+            servers[4].receive_from_client(
+                partition_vecs[part_chunk * 2 : part_chunk * 3]
+            )
+            servers[6].receive_from_client(partition_vecs[part_chunk * 3 :])
             time.sleep(3.0)
 
             # Heal
@@ -1710,11 +1810,13 @@ class TestPartitionHealVectorConsistency:
 
             final_unique = self._count_unique_vectors(servers)
             final_total = self._total_vector_count(servers)
-            print(f"[Result] Unique: {final_unique}, Total: {final_total}, Expected: {expected_total}")
-
-            assert final_unique == total_vectors_sent, (
-                f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {final_unique}"
+            print(
+                f"[Result] Unique: {final_unique}, Total: {final_total}, Expected: {expected_total}"
             )
+
+            assert (
+                final_unique == total_vectors_sent
+            ), f"VECTOR LOSS: Expected {total_vectors_sent} unique, got {final_unique}"
 
             assert final_total == expected_total, (
                 f"REPLICATION MISMATCH: Expected {expected_total} "
@@ -1722,7 +1824,9 @@ class TestPartitionHealVectorConsistency:
                 f"got {final_total}"
             )
 
-            print(f"[SUCCESS] All {total_vectors_sent} vectors correctly replicated {replication_factor}x")
+            print(
+                f"[SUCCESS] All {total_vectors_sent} vectors correctly replicated {replication_factor}x"
+            )
 
         finally:
             for s in servers:
@@ -2863,7 +2967,7 @@ class TestQdrantModule:
 
             client = qdrant_module.get_client(local_path)
             assert client is not None
-            
+
             # Ensure client is closed to release file locks on Windows
             client.close()
             qdrant_module._client_cache.clear()
@@ -3804,7 +3908,7 @@ class TestServerCalculateDestinationsEdgeCases:
 
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             result = s._calculate_destinations(vec)
-            
+
             # Expected return is (frozenset(), -1)
             assert result[0] == frozenset()
         finally:
@@ -4954,13 +5058,9 @@ class TestRebalancingDetection:
         try:
             # Cluster 0: 5 vectors, Cluster 1: 15 vectors, Cluster 2: 3 vectors
             for i in range(5):
-                s.store.insert(
-                    (np.array([float(i), 0.0]), i, f"p{i}", 0, (1.0, 0))
-                )
+                s.store.insert((np.array([float(i), 0.0]), i, f"p{i}", 0, (1.0, 0)))
             for i in range(5, 20):
-                s.store.insert(
-                    (np.array([0.0, float(i)]), i, f"p{i}", 1, (1.0, 0))
-                )
+                s.store.insert((np.array([0.0, float(i)]), i, f"p{i}", 1, (1.0, 0)))
             for i in range(20, 23):
                 s.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 2, (1.0, 0))
@@ -5075,43 +5175,53 @@ class TestBalancedSplitting:
             vectors = []
             blob_size = 20
             for i in range(blob_size):
-                vectors.append((np.array([np.random.normal(0, 0.1), np.random.normal(0, 0.1)]), i, f"p{i}", 0, (1.0, 0)))
-            
+                vectors.append(
+                    (
+                        np.array([np.random.normal(0, 0.1), np.random.normal(0, 0.1)]),
+                        i,
+                        f"p{i}",
+                        0,
+                        (1.0, 0),
+                    )
+                )
+
             # Outlier
             outlier_idx = blob_size
-            vectors.append((np.array([1000.0, 1000.0]), outlier_idx, "outlier", 0, (1.0, 0)))
-            
+            vectors.append(
+                (np.array([1000.0, 1000.0]), outlier_idx, "outlier", 0, (1.0, 0))
+            )
+
             # Insert all
             for v in vectors:
                 s.store.insert(v)
-            
+
             s.clusters = [(0, [0.0, 0.0])]
-            
+
             # With standard KMeans, k=2 often gives [20, 1] split (outlier alone)
             # We want to force a more even split, e.g. max size = ceil(21/2 * 1.2) = ceil(10.5 * 1.2) = 13
             # So split should be roughly 13/8 or 11/10, not 20/1.
-            
+
             result = s.balanced_split_cluster(cluster_id=0, n_subclusters=2)
-            
+
             sizes = []
             for info in result.values():
                 sizes.append(len(info["members"]))
-            
+
             print(f"DEBUG: Constrained split sizes: {sizes}")
-            
+
             max_size = max(sizes)
             min_size = min(sizes)
-            
+
             # Ensure no cluster is extremely small (e.g. 1) if total is 21
             # Unless max_size constraint allowed it?
             # 21 vectors, 2 clusters. Avg = 10.5. Max allowed = 13.
             # So one cluster can have at most 13.
             # The other must have 21 - 13 = 8.
             # So min size should be >= 8.
-            
-            assert max_size <= 14 # Allow slight buffer
+
+            assert max_size <= 14  # Allow slight buffer
             assert min_size >= 7  # Allow slight buffer
-            
+
         finally:
             s.stop()
 
@@ -5131,15 +5241,29 @@ class TestRebalancingOrchestration:
 
             # Create imbalance: S1 has 80%, S2 has 20%
             for i in range(80):
-                vec = (np.array([float(i % 10), float(i % 10)]), i, f"p{i}", i % 5, (1.0, 0))
+                vec = (
+                    np.array([float(i % 10), float(i % 10)]),
+                    i,
+                    f"p{i}",
+                    i % 5,
+                    (1.0, 0),
+                )
                 s1.store.insert(vec)
 
             for i in range(80, 100):
-                vec = (np.array([float(i % 10), float(i % 10)]), i, f"p{i}", i % 5, (1.0, 0))
+                vec = (
+                    np.array([float(i % 10), float(i % 10)]),
+                    i,
+                    f"p{i}",
+                    i % 5,
+                    (1.0, 0),
+                )
                 s2.store.insert(vec)
 
             s1.clusters = [(j, [float(j), float(j)]) for j in range(5)]
-            s1.cluster_to_destinations_cache = {j: {0, 1} for j in range(5)}  # Both servers
+            s1.cluster_to_destinations_cache = {
+                j: {0, 1} for j in range(5)
+            }  # Both servers
             s2.clusters = s1.clusters.copy()
             s2.cluster_to_destinations_cache = s1.cluster_to_destinations_cache.copy()
             s2.status = "clustered"
@@ -5171,6 +5295,7 @@ class TestRebalancingOrchestration:
 
             # Build initial HNSW index
             from cluster_index import ClusterIndex
+
             s.cluster_index = ClusterIndex(dimension=2)
             s.clusters = [(j, [float(j * 10), float(j * 10)]) for j in range(3)]
             s.cluster_index.build(s.clusters)
@@ -5211,6 +5336,7 @@ class TestRebalancingOrchestration:
             s1.clusters = [(j, [float(j * 17), float(j * 17)]) for j in range(3)]
             s1.status = "clustered"
             from cluster_index import ClusterIndex
+
             s1.cluster_index = ClusterIndex(dimension=2)
             s1.cluster_index.build(s1.clusters)
             s1.cluster_to_destinations_cache = {0: {0, 1}, 1: {0, 1}, 2: {0, 1}}
@@ -5220,14 +5346,18 @@ class TestRebalancingOrchestration:
             s2.status = "clustered"
 
             # Search before rebalance
-            results_before = s1.search_vectors_local([(target_vec.tolist(), 999)], top_k=5)
+            results_before = s1.search_vectors_local(
+                [(target_vec.tolist(), 999)], top_k=5
+            )
             assert len(results_before) > 0
 
             # Trigger rebalance
             s1.trigger_rebalance()
 
             # Search after rebalance should still work
-            results_after = s1.search_vectors_local([(target_vec.tolist(), 999)], top_k=5)
+            results_after = s1.search_vectors_local(
+                [(target_vec.tolist(), 999)], top_k=5
+            )
             assert len(results_after) > 0
 
             # Results should contain similar vectors (close to [5,5])
@@ -5260,7 +5390,13 @@ class TestRebalancingOrchestration:
                 for i in range(10):
                     base_id = srv.id * 100 + i
                     srv.store.insert(
-                        (np.array([float(i), float(i)]), base_id, f"p{base_id}", 5, (1.0, 0))
+                        (
+                            np.array([float(i), float(i)]),
+                            base_id,
+                            f"p{base_id}",
+                            5,
+                            (1.0, 0),
+                        )
                     )
                 srv.clusters = [(5, [5.0, 5.0])]
                 srv.cluster_to_destinations_cache = {5: {0, 1, 2}}
@@ -5351,9 +5487,7 @@ class TestRebalancingEdgeCases:
 
         try:
             # Only 1 vector in cluster - can't split into 2
-            s.store.insert(
-                (np.array([1.0, 1.0]), 1, "p1", 9, (1.0, 0))
-            )
+            s.store.insert((np.array([1.0, 1.0]), 1, "p1", 9, (1.0, 0)))
             s.clusters = [(9, [1.0, 1.0])]
 
             result = s.balanced_split_cluster(cluster_id=9, n_subclusters=2)
@@ -5361,7 +5495,9 @@ class TestRebalancingEdgeCases:
             # Should handle gracefully - perhaps return single cluster or empty
             assert isinstance(result, dict)
             # Total members should still be 1
-            total_members = sum(len(data.get("members", [])) for data in result.values())
+            total_members = sum(
+                len(data.get("members", [])) for data in result.values()
+            )
             assert total_members == 1
         finally:
             s.stop()
@@ -5373,7 +5509,7 @@ class TestRebalancingIntegration:
     def test_full_rebalancing_50k_vectors(self):
         """
         MANDATORY: Full integration test with 50k vectors.
-        
+
         Tests the complete rebalancing flow:
         1. Create 3 servers with uneven load
         2. Insert 50k vectors with clustering
@@ -5401,10 +5537,14 @@ class TestRebalancingIntegration:
             vectors = []
             for i in range(50000):
                 cluster_pattern = i % 10
-                base = np.array([float(cluster_pattern * 10), float(cluster_pattern * 10)])
+                base = np.array(
+                    [float(cluster_pattern * 10), float(cluster_pattern * 10)]
+                )
                 noise = np.random.randn(2) * 0.5
                 vec = base + noise
-                vectors.append((vec, i, f"payload_{i}", cluster_pattern, (time.time(), 0)))
+                vectors.append(
+                    (vec, i, f"payload_{i}", cluster_pattern, (time.time(), 0))
+                )
 
             # Distribute unevenly: S1 gets 60%, S2 gets 25%, S3 gets 15%
             split1 = int(50000 * 0.6)  # 30000
@@ -5421,19 +5561,24 @@ class TestRebalancingIntegration:
             initial_s2 = s2.store.count()
             initial_s3 = s3.store.count()
 
-            print(f"Initial distribution: S1={initial_s1}, S2={initial_s2}, S3={initial_s3}")
+            print(
+                f"Initial distribution: S1={initial_s1}, S2={initial_s2}, S3={initial_s3}"
+            )
             assert initial_s1 == 30000
             assert initial_s2 == 12500
             assert initial_s3 == 7500
 
             # Set up cluster structures
             clusters = [(j, [float(j * 10), float(j * 10)]) for j in range(10)]
-            dest_cache = {j: {0, 1, 2} for j in range(10)}  # All servers replicate all clusters
+            dest_cache = {
+                j: {0, 1, 2} for j in range(10)
+            }  # All servers replicate all clusters
             for srv in [s1, s2, s3]:
                 srv.clusters = clusters.copy()
                 srv.cluster_to_destinations_cache = dest_cache.copy()
                 srv.status = "clustered"
                 from cluster_index import ClusterIndex
+
                 srv.cluster_index = ClusterIndex(dimension=2)
                 srv.cluster_index.build(clusters)
 
@@ -5455,13 +5600,15 @@ class TestRebalancingIntegration:
 
             print(f"Final distribution: S1={final_s1}, S2={final_s2}, S3={final_s3}")
 
-            # With replication, total vectors may increase as split cluster's vectors 
+            # With replication, total vectors may increase as split cluster's vectors
             # are replicated to additional peers. Just verify the cluster was split.
             assert len(s1.clusters) > 10  # Split increased cluster count from 10
 
             # Verify search still works
             test_query = np.array([50.0, 50.0])  # Should find cluster 5 vectors
-            search_results = s1.search_vectors_local([(test_query.tolist(), 999999)], top_k=10)
+            search_results = s1.search_vectors_local(
+                [(test_query.tolist(), 999999)], top_k=10
+            )
 
             assert len(search_results) > 0
             # Results should have positive similarity
@@ -5495,6 +5642,7 @@ class TestRebalancingIntegration:
             s1.clusters = [(j, [float(j * 20), float(j * 20)]) for j in range(5)]
             s1.status = "clustered"
             from cluster_index import ClusterIndex
+
             s1.cluster_index = ClusterIndex(dimension=2)
             s1.cluster_index.build(s1.clusters)
             s1.cluster_to_destinations_cache = {j: {0, 1} for j in range(5)}
@@ -5522,7 +5670,13 @@ class TestRebalancingIntegration:
                 try:
                     for i in range(100, 150):
                         s1.store.insert(
-                            (np.array([float(i), float(i)]), i, f"p{i}", i % 5, (1.0, 0))
+                            (
+                                np.array([float(i), float(i)]),
+                                i,
+                                f"p{i}",
+                                i % 5,
+                                (1.0, 0),
+                            )
                         )
                         time.sleep(0.02)
                 except Exception as e:
@@ -5588,6 +5742,7 @@ class TestRebalancingIntegration:
                 srv.cluster_to_destinations_cache = {0: {0, 1}, 1: {0, 2}, 2: {1, 2}}
                 srv.status = "clustered"
                 from cluster_index import ClusterIndex
+
                 srv.cluster_index = ClusterIndex(dimension=2)
                 srv.cluster_index.build(clusters)
 
@@ -5705,7 +5860,9 @@ class TestQdrantModuleDeleteVectorsByPayload:
         assert qdrant_module.count(url, collection) == 3
 
         # Delete by cluster_id = 5
-        result = qdrant_module.delete_vectors_by_payload(url, collection, "cluster_id", 5)
+        result = qdrant_module.delete_vectors_by_payload(
+            url, collection, "cluster_id", 5
+        )
         assert result is True
 
         # Only cluster_id=10 vectors remain
@@ -5724,7 +5881,9 @@ class TestQdrantModuleDeleteVectorsByPayload:
         qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
 
         # Delete by cluster_id=999 - no matches
-        result = qdrant_module.delete_vectors_by_payload(url, collection, "cluster_id", 999)
+        result = qdrant_module.delete_vectors_by_payload(
+            url, collection, "cluster_id", 999
+        )
         assert result is True
 
         # Original vector still there
@@ -5737,7 +5896,9 @@ class TestQdrantModuleDeleteVectorsByPayload:
         url = ":memory:"
 
         # Try to delete from nonexistent collection
-        result = qdrant_module.delete_vectors_by_payload(url, "nonexistent", "key", "value")
+        result = qdrant_module.delete_vectors_by_payload(
+            url, "nonexistent", "key", "value"
+        )
 
         # Should return False on error
         assert result is False
@@ -5769,7 +5930,9 @@ class TestQdrantModuleInsertRetry:
         original_client.upload_points = mock_upload
 
         vectors = [([1.0, 0.0], 1, "A", 0)]
-        result = qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
+        result = qdrant_module.insert_vectors(
+            url, collection, vectors, batch_size_retry=1
+        )
 
         # Should succeed on retry
         assert result is True
@@ -5796,7 +5959,9 @@ class TestQdrantModuleInsertRetry:
         original_client.upload_points = always_fail
 
         vectors = [([1.0, 0.0], 1, "A", 0)]
-        result = qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
+        result = qdrant_module.insert_vectors(
+            url, collection, vectors, batch_size_retry=1
+        )
 
         # Should return False after both attempts fail
         assert result is False
@@ -5842,12 +6007,18 @@ class TestPeerRemoteCallEdgeCases:
         mock_comm = MagicMock()
 
         async def mock_send(*args):
-            return {"status": 0, "error": None, "response": {"new_cluster": {"center": [1.0], "members": []}}}
+            return {
+                "status": 0,
+                "error": None,
+                "response": {"new_cluster": {"center": [1.0], "members": []}},
+            }
 
         mock_comm.send = mock_send
 
         peer = Peer("127.0.0.1", 9999, server_instance=None, communicator=mock_comm)
-        result = peer.split_and_distribute_cluster(cluster_id=5, split_plan={"n_subclusters": 2})
+        result = peer.split_and_distribute_cluster(
+            cluster_id=5, split_plan={"n_subclusters": 2}
+        )
 
         assert "new_cluster" in result
 
@@ -5914,10 +6085,14 @@ class TestPeerLocalCountAndDelete:
         mock_server.split_and_distribute_cluster.return_value = {"new": "clusters"}
 
         peer = Peer("127.0.0.1", 9999, server_instance=mock_server)
-        result = peer.split_and_distribute_cluster(5, {"plan": "data"}, is_coordinator=True)
+        result = peer.split_and_distribute_cluster(
+            5, {"plan": "data"}, is_coordinator=True
+        )
 
         assert result == {"new": "clusters"}
-        mock_server.split_and_distribute_cluster.assert_called_once_with(5, {"plan": "data"}, True)
+        mock_server.split_and_distribute_cluster.assert_called_once_with(
+            5, {"plan": "data"}, True
+        )
 
 
 class TestServerDeleteVectorsByCluster:
@@ -5959,7 +6134,7 @@ class TestServerAddPeerPingException:
             mock_peer.get_id.side_effect = Exception("ID failed!")
 
             # Patch Peer creation to return our mock
-            with patch('server.Peer', return_value=mock_peer):
+            with patch("server.Peer", return_value=mock_peer):
                 # Try to add a peer by IP/port - should not crash
                 s.add_peer("127.0.0.1", 99999)
 
@@ -6167,7 +6342,6 @@ class TestServerReconcileGetPeerByIdPath:
             s.stop()
 
 
-
 class TestServerHandleNetworkChangeComplete:
     """Tests for _handle_network_change path."""
 
@@ -6271,17 +6445,18 @@ class TestQdrantModuleDeleteCollectionError:
 
         qdrant_module._client_cache.clear()
 
+
 class TestNetworkConditions:
     """Tests for non-binary network failures (latency, jitter)."""
 
     def test_phi_accrual_with_network_latency(self):
         """
-        Verify that high latency increases Phi (suspicion) but doesn't 
+        Verify that high latency increases Phi (suspicion) but doesn't
         mark node down immediately unless threshold is crossed.
         """
         s0 = Server(0, True, 100, 1, port=get_free_port())
         s1 = Server(1, False, 100, 1, port=get_free_port())
-        
+
         # We need to patch the Peer client's ping method to introduce delay
         # The Peer object inside s0 that represents s1
         real_peer_class = Peer
@@ -6300,7 +6475,7 @@ class TestNetworkConditions:
                     connected = True
                     break
                 time.sleep(0.1)
-            
+
             assert connected, "Peer should be initially reachable (timed out)"
             initial_phi = s0.get_peer_phi(s1.id)
             print(f"Initial Phi: {initial_phi}")
@@ -6308,37 +6483,42 @@ class TestNetworkConditions:
             # 2. Inject Latency (Simulate Slow Network)
             # We wrap the existing ping to just sleep before returning
             original_ping = peer_ref.ping
-            
+
             def slow_ping():
                 # Sleep slightly less than timeout but longer than average heartbeat
-                time.sleep(0.3) 
+                time.sleep(0.3)
                 return original_ping()
-            
+
             # Apply the slow ping
-            with patch.object(peer_ref, 'ping', side_effect=slow_ping):
+            with patch.object(peer_ref, "ping", side_effect=slow_ping):
                 print("Injecting latency...")
                 # Let heartbeats run for a few cycles
                 time.sleep(4.0)
-                
+
                 # 3. Check Phi increase
                 new_phi = s0.get_peer_phi(s1.id)
                 print(f"Phi after latency: {new_phi}")
-                
+
                 # Phi should have accrued (increased) due to the delay
-                assert new_phi > initial_phi, "Phi should increase when latency is introduced"
-                
-                # However, since we are still responding (just slowly), 
+                assert (
+                    new_phi > initial_phi
+                ), "Phi should increase when latency is introduced"
+
+                # However, since we are still responding (just slowly),
                 # we shouldn't be marked dead if the threshold is generous (e.g., 8.0)
                 # Note: If this fails, your threshold might be too sensitive.
-                assert new_phi < 8.0, f"False positive! Latency marked node dead. Phi: {new_phi}"
+                assert (
+                    new_phi < 8.0
+                ), f"False positive! Latency marked node dead. Phi: {new_phi}"
 
         finally:
             s0.stop()
             s1.stop()
 
+
 def test_anti_entropy_recovery_no_hints():
     """
-    Test recovery of data residing ONLY on non-coordinator nodes 
+    Test recovery of data residing ONLY on non-coordinator nodes
     when hinted handoff has failed (hints lost).
     Scenario:
     - 4 Nodes, Rep Factor 2.
@@ -6355,17 +6535,17 @@ def test_anti_entropy_recovery_no_hints():
         # 1. Setup 4 servers, replication factor 2
         # Use a larger 'before_clustering' to wait for all 4
         for i in range(4):
-            s = Server(i, i==0, 100, 2, port=ports[i]) # id 0 is initial coord
+            s = Server(i, i == 0, 100, 2, port=ports[i])  # id 0 is initial coord
             servers.append(s)
-            
+
         # Connect fully
         for i in range(4):
-             for j in range(4):
-                 if i != j:
-                     servers[i].add_peer(servers[j])
-        
+            for j in range(4):
+                if i != j:
+                    servers[i].add_peer(servers[j])
+
         wait_for_full_connectivity(servers)
-        
+
         # 2. Insert 100 vectors (will trigger clustering)
         # Use distinct centers to ensure K-Means separates them well
         centers = [[10.0, 10.0], [10.0, -10.0], [-10.0, 10.0], [-10.0, -10.0]]
@@ -6375,11 +6555,11 @@ def test_anti_entropy_recovery_no_hints():
             # Small jitter
             vec = [center[0] + (i * 0.01), center[1] + (i * 0.01)]
             data.append((vec, f"init_{i}"))
-            
+
         # Send to S0 (Coordinator)
         # add_to_buffer logic checks 'before_clustering' (100)
         servers[0].receive_from_client(data)
-        
+
         # Wait for clustering to complete
         # It takes time for the thread to run and distribute
         print("Waiting for clustering...")
@@ -6387,79 +6567,81 @@ def test_anti_entropy_recovery_no_hints():
             if servers[0].status == "clustered":
                 break
             time.sleep(0.2)
-            
+
         assert servers[0].status == "clustered"
-        
+
         # Wait for distribution to peers
         time.sleep(2)
-        
+
         # 3. Partition the network: [0, 1] vs [2, 3]
         print("Partitioning network...")
         partition_network(servers, [[0, 1], [2, 3]])
-        
+
         # Wait for failure detection & election
         # Heartbeat is 3s + jitter. Wait 5s.
         time.sleep(5)
-        
+
         # Verify Election: S0 should be Coord of P1. S3 (max of 2,3) should be Coord of P2.
         # (Assuming auto-election works, otherwise force for test stability)
         # In server.py, election happens on network change.
-        
+
         # 4. Insert 100 new vectors (50 to each partition)
         print("Inserting new data into partitions...")
-        
+
         # Partition A (0, 1) inserts
         input_a = []
         for i in range(50):
-             vec = [12.0 + i*0.1, 12.0] # Near cluster 0
-             input_a.append((vec, f"new_a_{i}"))
+            vec = [12.0 + i * 0.1, 12.0]  # Near cluster 0
+            input_a.append((vec, f"new_a_{i}"))
         servers[0].receive_from_client(input_a)
-             
+
         # Partition B (2, 3) inserts - send to S3 (likely coord)
         input_b = []
         for i in range(50):
-             vec = [-12.0 - i*0.1, -12.0] # Near cluster 3
-             input_b.append((vec, f"new_b_{i}"))
-        
+            vec = [-12.0 - i * 0.1, -12.0]  # Near cluster 3
+            input_b.append((vec, f"new_b_{i}"))
+
         # We need to find who is coord in P2 to receive?
         # Or just send to S3 and let it forward/handle if it thinks it is coord.
         # S3 has id 3, should be elected.
         servers[3].receive_from_client(input_b)
-        
+
         # Wait for processing
         time.sleep(2)
-        
+
         # 5. DESTROY HINTS
         print("Sabotaging: Destroying all hinted handoff data...")
         for s in servers:
             s.hinted_handoff.clear()
-            
+
         # 6. Heal Network
         print("Healing network...")
         heal_network(servers)
         wait_for_full_connectivity(servers)
-        
+
         # 7. Trigger Reconciliation
         # This should happen on heal, but we wait for it to finish.
         # Anti-entropy runs in threads.
         print("Reconciling...")
-        time.sleep(10) # Give generous time for full sync
-        
+        time.sleep(10)  # Give generous time for full sync
+
         # 8. Verify Count
         # Total vectors = 100 (init) + 50 (A) + 50 (B) = 200 unique vectors.
         # Replication = 2.
         # Total expected instances = 400.
-        
+
         counts = [s.count() for s in servers]
         total_count = sum(counts)
         print(f"Final Counts per Node: {counts}")
         print(f"Total Count: {total_count}")
-        
-        assert total_count == 400, f"Expected 400 vectors, got {total_count}. Counts: {counts}"
-        
+
+        assert (
+            total_count == 400
+        ), f"Expected 400 vectors, got {total_count}. Counts: {counts}"
+
         # Optional: verify specific non-coord persistence?
         # If total is 400, it means we didn't lose the partition writes.
-        
+
     finally:
         for s in servers:
             s.stop()

@@ -87,7 +87,7 @@ class ClientEndpoint:
             data = await request.json()
             vectors = data.get("vectors")
             top_k = data.get("top_k", 10)
-            
+
             if not vectors:
                 return web.json_response({"error": "No vectors provided"}, status=400)
 

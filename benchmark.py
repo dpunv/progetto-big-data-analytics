@@ -145,13 +145,20 @@ class BenchmarkClient:
 
 def load_data(filepath: str) -> List[Dict[str, Any]]:
     import pandas as pd
+
     logger.info(f"Loading vectors from {filepath}...")
     try:
         df = pd.read_parquet(filepath)
         # Convert DataFrame to list of dicts with 'embedding' and 'text' keys
         data = [
-            {"embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else list(row["embedding"]), 
-             "text": row["sentence"]}
+            {
+                "embedding": (
+                    row["embedding"].tolist()
+                    if hasattr(row["embedding"], "tolist")
+                    else list(row["embedding"])
+                ),
+                "text": row["sentence"],
+            }
             for _, row in df.iterrows()
         ]
         logger.info(f"Loaded {len(data)} vectors.")
@@ -162,6 +169,7 @@ def load_data(filepath: str) -> List[Dict[str, Any]]:
 
 
 # --- DOCKER CLUSTER ORCHESTRATION ---
+
 
 def generate_compose_and_dirs(num_servers: int, start_port: int = 6333):
     """Generate compose.yml and create storage directories for Qdrant nodes."""
@@ -195,7 +203,9 @@ def generate_compose_and_dirs(num_servers: int, start_port: int = 6333):
     logger.info("compose.yml generated.")
 
 
-def wait_for_qdrant_cluster(num_servers: int, start_port: int = 6333, timeout: int = 60) -> bool:
+def wait_for_qdrant_cluster(
+    num_servers: int, start_port: int = 6333, timeout: int = 60
+) -> bool:
     """Wait for all Qdrant nodes to be ready."""
     logger.info("Waiting for Qdrant nodes to be ready...")
     ready_count = 0
@@ -246,7 +256,9 @@ def start_docker_cluster(num_servers: int, start_port: int = 6333) -> bool:
 
     logger.info("Starting Docker Compose...")
     try:
-        subprocess.run(["docker", "compose", "up", "-d"], check=True, capture_output=True)
+        subprocess.run(
+            ["docker", "compose", "up", "-d"], check=True, capture_output=True
+        )
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to start Docker containers: {e}")
         return False
@@ -647,44 +659,48 @@ def wait_for_clustered(servers: List[sv.Server], timeout: int = 120) -> bool:
 def wait_for_coordinator_discovery(servers: List[sv.Server], timeout: int = 30) -> bool:
     """
     Wait for all non-coordinator servers to be able to find the coordinator.
-    
+
     This is critical for proper operation - if servers can't find the coordinator
     during bootstrap phase, they won't be able to forward vectors and data will be lost.
     """
     logger.info("Waiting for coordinator discovery...")
     start_time = time.time()
-    
+
     # Find which server is the coordinator
     coord_id = None
     for s in servers:
         if s.i_am_coord():
             coord_id = s.get_id()
             break
-    
+
     if coord_id is None:
         logger.error("No coordinator found among servers!")
         return False
-    
-    logger.info(f"Coordinator is server {coord_id}. Waiting for all peers to discover it...")
-    
+
+    logger.info(
+        f"Coordinator is server {coord_id}. Waiting for all peers to discover it..."
+    )
+
     while time.time() - start_time < timeout:
         all_found = True
         for server in servers:
             if server.i_am_coord():
                 continue  # Coordinator doesn't need to find itself
-            
+
             coord = server.coordinator()
             if coord is None:
                 all_found = False
                 break
-        
+
         if all_found:
             logger.info("All servers can reach the coordinator. Ready for warmup.")
             return True
-        
+
         time.sleep(0.5)
-    
-    logger.warning(f"Timeout waiting for coordinator discovery. Vectors may be dropped!")
+
+    logger.warning(
+        "Timeout waiting for coordinator discovery. Vectors may be dropped!"
+    )
     return False
 
 
@@ -860,7 +876,7 @@ def run_suite(
             server.add_peer(peer)
 
     logger.info(f"{num_servers} servers started and connected")
-    
+
     # Wait for coordinator discovery before any operations
     # This is critical - without this, non-coordinator servers won't be able
     # to forward vectors to the coordinator and data will be lost

@@ -28,17 +28,19 @@ print("=" * 70)
 # =============================================================================
 num_servers = 3
 initial_vectors = 3000  # Initial vectors to establish clustering
-extra_vectors = 6000    # Extra vectors to add to one server (creates imbalance)
+extra_vectors = 6000  # Extra vectors to add to one server (creates imbalance)
 num_vectors_before_clustering = 1500
 replication_factor = 2
 batch_size = 256
 
-print(f"\nConfiguration:")
+print("\nConfiguration:")
 print(f"  Servers: {num_servers}")
 print(f"  Initial vectors: {initial_vectors}")
 print(f"  Extra vectors (to create imbalance): {extra_vectors}")
 print(f"  Replication factor: {replication_factor}")
-print(f"  REBALANCE_THRESHOLD: {sv.REBALANCE_THRESHOLD} ({int(sv.REBALANCE_THRESHOLD*100)}%)")
+print(
+    f"  REBALANCE_THRESHOLD: {sv.REBALANCE_THRESHOLD} ({int(sv.REBALANCE_THRESHOLD*100)}%)"
+)
 
 # =============================================================================
 # LOAD EMBEDDINGS
@@ -47,17 +49,28 @@ print("\n[1] Loading embeddings from parquet...")
 try:
     df = pd.read_parquet("embeddings.parquet")
     data = [
-        {"embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else list(row["embedding"]),
-         "text": row["sentence"]}
+        {
+            "embedding": (
+                row["embedding"].tolist()
+                if hasattr(row["embedding"], "tolist")
+                else list(row["embedding"])
+            ),
+            "text": row["sentence"],
+        }
         for _, row in df.iterrows()
     ]
-    all_vectors = [(d["embedding"], d["text"]) for d in data[:initial_vectors + extra_vectors]]
+    all_vectors = [
+        (d["embedding"], d["text"]) for d in data[: initial_vectors + extra_vectors]
+    ]
     print(f"    Loaded {len(all_vectors)} vectors (dim={len(all_vectors[0][0])})")
 except Exception as e:
     print(f"    Could not load embeddings.parquet: {e}")
     print("    Generating synthetic vectors...")
     np.random.seed(42)
-    all_vectors = [(np.random.randn(64).tolist(), f"text_{i}") for i in range(initial_vectors + extra_vectors)]
+    all_vectors = [
+        (np.random.randn(64).tolist(), f"text_{i}")
+        for i in range(initial_vectors + extra_vectors)
+    ]
     print(f"    Generated {len(all_vectors)} vectors (dim=64)")
 
 initial_batch = all_vectors[:initial_vectors]
@@ -97,8 +110,10 @@ print(f"    {num_servers} servers created and connected")
 # =============================================================================
 print("\n[3] Inserting initial vectors evenly...")
 
+
 def send_batch(server_idx, batch_vectors, batch_idx, total_batches):
     servers[server_idx].receive_from_client(batch_vectors)
+
 
 total_batches = math.ceil(initial_vectors / batch_size)
 
@@ -133,7 +148,7 @@ print("    (Using receive_from_client() API - routed normally with replication)"
 if not servers[0].clusters:
     print("Error: Server 0 has no clusters!")
     sys.exit(1)
-    
+
 print(f"DEBUG: Server 0 clusters type: {type(servers[0].clusters)}")
 if servers[0].clusters:
     print(f"DEBUG: First cluster element: {servers[0].clusters[0]}")
@@ -153,20 +168,22 @@ for c_data in iterator:
         # Based on debug, c_data[1] is the centroid list directly
         val = c_data[1]
         if isinstance(val, list) or isinstance(val, tuple):
-             # It assumes c_data[1] is the centroid vector
-             if len(val) > 0 and isinstance(val[0], (int, float)):
-                 centroid = np.array(val)
-             elif isinstance(val[0], dict): # Fallback if list of dicts?
-                 centroid = np.array(val[0]["center"])
+            # It assumes c_data[1] is the centroid vector
+            if len(val) > 0 and isinstance(val[0], (int, float)):
+                centroid = np.array(val)
+            elif isinstance(val[0], dict):  # Fallback if list of dicts?
+                centroid = np.array(val[0]["center"])
         elif isinstance(val, dict):
-             centroid = np.array(val["center"])
+            centroid = np.array(val["center"])
         break
 
 if centroid is None:
     print("Error: Could not find centroid for target cluster")
     sys.exit(1)
 
-print(f"    Targeting Cluster {target_cluster_id} on Server 0 with {extra_vectors} vectors")
+print(
+    f"    Targeting Cluster {target_cluster_id} on Server 0 with {extra_vectors} vectors"
+)
 
 # 2. Generate vectors near this centroid (centroid + noise)
 # Use the first vector from dataset to get dimension/type hints if needed, but we generate synthetic
@@ -191,7 +208,7 @@ batch_size_extra = 500
 print(f"    Inserting {extra_vectors} vectors in batches of {batch_size_extra}...")
 
 for i in range(0, len(extra_vectors_data), batch_size_extra):
-    batch = extra_vectors_data[i:i+batch_size_extra]
+    batch = extra_vectors_data[i : i + batch_size_extra]
     # Send to Server 0 (it will route them, likely to itself as leader of that cluster)
     servers[0].receive_from_client(batch)
     if i % 1000 == 0:
@@ -217,7 +234,7 @@ counts_before = [s.count() for s in servers]
 total_before = sum(counts_before)
 avg = total_before / num_servers
 
-print(f"\n  Load Statistics:")
+print("\n  Load Statistics:")
 for i, c in enumerate(counts_before):
     overload = " ⚠️ OVERLOADED" if c > avg * (1 + sv.REBALANCE_THRESHOLD) else ""
     print(f"    Server {i}: {c} vectors{overload}")
@@ -225,14 +242,14 @@ print(f"    Total: {total_before}")
 print(f"    Average: {avg:.1f}")
 
 threshold_value = avg * (1 + sv.REBALANCE_THRESHOLD)
-print(f"\n  Imbalance Detection:")
+print("\n  Imbalance Detection:")
 print(f"    Threshold: > {threshold_value:.0f} vectors (average × 1.3)")
 
 # =============================================================================
 # TRIGGER REBALANCING
 # =============================================================================
 print("\n" + "-" * 70)
-print("TRIGGERING REBALANCING...")  
+print("TRIGGERING REBALANCING...")
 print("-" * 70)
 
 result = servers[0].trigger_rebalance()
@@ -241,7 +258,7 @@ if result:
     print("\n  ✓ Rebalancing executed!")
 else:
     print("\n  ℹ  No rebalancing needed (load is balanced)")
-    
+
 # Wait for vectors to transfer
 time.sleep(1)
 
@@ -255,7 +272,7 @@ print("-" * 70)
 counts_after = [s.count() for s in servers]
 total_after = sum(counts_after)
 
-print(f"\n  Load Statistics:")
+print("\n  Load Statistics:")
 for i, (before, after) in enumerate(zip(counts_before, counts_after)):
     delta = after - before
     delta_str = f" ({'+' if delta > 0 else ''}{delta})" if delta != 0 else ""
@@ -263,7 +280,7 @@ for i, (before, after) in enumerate(zip(counts_before, counts_after)):
 print(f"    Total: {total_after}")
 
 if total_after == total_before:
-    print(f"    ✓ Vector count preserved!")
+    print("    ✓ Vector count preserved!")
 else:
     diff = total_after - total_before
     print(f"    Note: Count changed by {diff} (replication effects)")
@@ -278,14 +295,14 @@ print("-" * 70)
 query_vector = [all_vectors[0][0]]
 results = servers[0].query_from_client(query_vector)
 
-print(f"\n  Query: first vector from dataset")
+print("\n  Query: first vector from dataset")
 print(f"  Results: {len(results)} vectors found")
 
 if results:
-    print(f"  Top 3 results:")
+    print("  Top 3 results:")
     for vec, vec_id, payload, similarity in results[:3]:
         text_preview = payload[:50] + "..." if len(payload) > 50 else payload
-        print(f"    - similarity={similarity:.4f}: \"{text_preview}\"")
+        print(f'    - similarity={similarity:.4f}: "{text_preview}"')
 
 # =============================================================================
 # CLEANUP

@@ -97,6 +97,7 @@ def get_docker_port(container_name, internal_port=6333):
 
 def load_vectors(port, num_vectors=51200):
     import pandas as pd
+
     print(f"\nLoading {num_vectors} vectors from embeddings.parquet...")
     try:
         if not os.path.exists("embeddings.parquet"):
@@ -106,8 +107,14 @@ def load_vectors(port, num_vectors=51200):
         df = pd.read_parquet("embeddings.parquet")
         # Convert DataFrame to list of dicts
         data = [
-            {"embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else list(row["embedding"]),
-             "text": row["sentence"]}
+            {
+                "embedding": (
+                    row["embedding"].tolist()
+                    if hasattr(row["embedding"], "tolist")
+                    else list(row["embedding"])
+                ),
+                "text": row["sentence"],
+            }
             for _, row in df.iterrows()
         ]
     except Exception as e:
@@ -170,7 +177,7 @@ def main():
 
     # Pre-calculate ports and generate peers.json
     peers_config = []
-    node_configs = [] # store (qdrant_port, server_port, client_port_if_coord)
+    node_configs = []  # store (qdrant_port, server_port, client_port_if_coord)
 
     print("\n--- Configuring Cluster Nodes ---")
     for i in range(num_nodes):
@@ -190,14 +197,14 @@ def main():
         if not qdrant_port:
             print(f"Failed to get port for {c_name}")
             sys.exit(1)
-        
+
         if not wait_for_qdrant(qdrant_port):
             print(f"Qdrant {i} failed to become ready.")
             sys.exit(1)
-        
+
         # B. Assign Python Server Port
         server_port = get_free_port()
-        
+
         # Reserve client port for coordinator if needed
         client_port = None
         if i == 0:
@@ -207,19 +214,17 @@ def main():
                 client_port = get_free_port()
             coordinator_client_port = client_port
 
-        peers_config.append({
-            "id": i,
-            "url": "127.0.0.1",
-            "port": server_port
-        })
-        
-        node_configs.append({
-            "id": i,
-            "qdrant_port": qdrant_port,
-            "server_port": server_port,
-            "client_port": client_port
-        })
-        
+        peers_config.append({"id": i, "url": "127.0.0.1", "port": server_port})
+
+        node_configs.append(
+            {
+                "id": i,
+                "qdrant_port": qdrant_port,
+                "server_port": server_port,
+                "client_port": client_port,
+            }
+        )
+
         # Short sleep to ensure ports aren't reused immediately if OS recycles fast
         time.sleep(0.1)
 
@@ -233,7 +238,7 @@ def main():
         i = config["id"]
         server_port = config["server_port"]
         qdrant_port = config["qdrant_port"]
-        
+
         cmd_args = [
             sys.executable,
             "server.py",
@@ -246,14 +251,16 @@ def main():
             "--endpoint",
             "HTTP",
             "--peers-file",
-            "peers.json"
+            "peers.json",
         ]
 
         if i == 0:
             cmd_args.append("--coordinator")
             if config["client_port"]:
                 cmd_args.extend(["--inter-port", str(config["client_port"])])
-            print(f"Node 0 (Coordinator) starting on intra-port {server_port}, inter-port {config['client_port']}")
+            print(
+                f"Node 0 (Coordinator) starting on intra-port {server_port}, inter-port {config['client_port']}"
+            )
         else:
             print(f"Node {i} starting on intra-port {server_port}")
 
@@ -299,7 +306,9 @@ def main():
             print("\nCluster is running! Loading data...")
             load_vectors(coordinator_client_port, 51200)
         else:
-            print(f"\nError: Server at {coordinator_client_port} failed to become ready.")
+            print(
+                f"\nError: Server at {coordinator_client_port} failed to become ready."
+            )
 
     print("\nSetup Complete. Press Ctrl+C to stop.")
 
