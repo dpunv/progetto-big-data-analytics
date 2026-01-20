@@ -1,6 +1,0 @@
-__pycache__/*
-*.json
-qdrant_storage*
-logs/*
-*.log
-rust_p2p_analytics/target/*

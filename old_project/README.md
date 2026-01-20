@@ -1,1 +1,0 @@
-# progetto-big-data-analytics
