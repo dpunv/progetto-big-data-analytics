@@ -6291,13 +6291,17 @@ class TestNetworkConditions:
             s0.heartbeat_interval = 0.5  # Speed up heartbeats for test
             s0.add_peer(s1)
             # Wait for detector initialization
-            time.sleep(2.0) 
+            # Polling wait for detector initialization and reachability
+            peer_ref = s0.peers[1]
+            start = time.time()
+            connected = False
+            while time.time() - start < 5.0:
+                if s0._is_peer_reachable(peer_ref):
+                    connected = True
+                    break
+                time.sleep(0.1)
             
-            # Get the peer instance s0 uses to talk to s1
-            peer_ref = s0.peers[1] 
-            
-            # Check baseline: Node should be reachable
-            assert s0._is_peer_reachable(peer_ref), "Peer should be initially reachable"
+            assert connected, "Peer should be initially reachable (timed out)"
             initial_phi = s0.get_peer_phi(s1.id)
             print(f"Initial Phi: {initial_phi}")
 

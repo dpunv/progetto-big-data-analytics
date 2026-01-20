@@ -724,6 +724,7 @@ class Server:
         # Partition tolerance state
         self.partition_coordinator_id = id if is_coordinator else None
         self.hinted_handoff = HintedHandoff()
+        self.topology_version = 0
 
         self.endpoint = Endpoint(endpoint, self)
 
@@ -1323,6 +1324,23 @@ class Server:
                     if self._should_be_on_me(vec):
                         self.store.insert(vec)
 
+            # 5. Sync Topology (Clusters)
+            # Exchange topology version
+            try:
+                 peer_topology_ver = peer.get_topology_version()
+                 if self.topology_version > peer_topology_ver:
+                     # I have newer topology -> send to peer
+                     # We only send topology metadata, vectors_for_clusters is empty dict as we rely on anti-entropy for data
+                     print(f"DEBUG: Server {self.id} pushing topology v{self.topology_version} to peer {peer.get_id()} (v{peer_topology_ver})")
+                     peer.set_clusters({}, self.clusters, version=self.topology_version)
+                 elif peer_topology_ver > self.topology_version:
+                     # Peer has newer topology -> pull from peer
+                     print(f"DEBUG: Server {self.id} pulling topology v{peer_topology_ver} from peer {peer.get_id()}")
+                     new_clusters = peer.get_clusters()
+                     self.set_clusters({}, new_clusters, version=peer_topology_ver)
+            except Exception as e:
+                print(f"Topology sync with {peer.get_id()} failed: {e}")
+
         except Exception as e:
             print(f"Reconciliation with peer {peer.get_id()} failed: {e}")
 
@@ -1658,11 +1676,15 @@ class Server:
 
         self.receive(vectors_with_id, "client")
 
-    def set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId):
-        self.queue.put((self._handle_set_clusters, (vectors_for_clusters, clusters)))
+    def set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId, version=0):
+        self.queue.put((self._handle_set_clusters, (vectors_for_clusters, clusters, version)))
 
-    def _handle_set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId):
+    def _handle_set_clusters(self, vectors_for_clusters, clusters: ListOfVectorsWithId, version=0):
         with self.lock:
+            # Update topology version if provided
+            if version > self.topology_version:
+                 self.topology_version = version
+
             self.clusters = clusters
 
             for cluster_info in self.clusters:
@@ -2039,6 +2061,10 @@ class Server:
                 )
 
         return assignment
+
+    def get_clusters(self):
+        with self.lock:
+             return list(self.clusters)
 
     def get_all_vectors(self):
         print(f"DEBUG: get_all_vectors called on Server {self.id}")
@@ -2564,6 +2590,7 @@ class Server:
         # Update local cluster state
         if result:
             with self.lock:
+                self.topology_version += 1
                 # Remove old cluster
                 self.clusters = [c for c in self.clusters if c[0] != cluster_id]
                 

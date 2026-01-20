@@ -62,6 +62,11 @@ class Peer:
             return self.server.get_vectors_by_ids(ids)
         return self._remote_call("get_vectors_by_ids", ids)
 
+    def get_topology_version(self) -> int:
+        if self.is_local():
+            return self.server.topology_version
+        return self._remote_call("get_topology_version")
+
     def get_partition_coordinator_id(self):
         if self.is_local():
             return self.server.partition_coordinator_id
@@ -99,6 +104,11 @@ class Peer:
         if self.is_local():
             return self.server.split_and_distribute_cluster(cluster_id, split_plan, is_coordinator)
         return self._remote_call("split_and_distribute_cluster", cluster_id, split_plan, is_coordinator)
+
+    def get_clusters(self):
+        if self.is_local():
+            return self.server.get_clusters()
+        return self._remote_call("get_clusters")
 
     def is_local(self):
         return self.server is not None
