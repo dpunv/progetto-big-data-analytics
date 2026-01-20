@@ -6335,3 +6335,131 @@ class TestNetworkConditions:
         finally:
             s0.stop()
             s1.stop()
+
+def test_anti_entropy_recovery_no_hints():
+    """
+    Test recovery of data residing ONLY on non-coordinator nodes 
+    when hinted handoff has failed (hints lost).
+    Scenario:
+    - 4 Nodes, Rep Factor 2.
+    - Initial: 100 vectors.
+    - Partition: [0, 1] (Coord 0) and [2, 3] (Coord 2/3).
+    - Insert 50 vectors to [0,1] and 50 to [2,3].
+    - DESTROY HINTS.
+    - Heal.
+    - Verify complete recovery (200 vectors * 2 replicas = 400 total).
+    """
+    ports = [get_free_port() for _ in range(4)]
+    servers = []
+    try:
+        # 1. Setup 4 servers, replication factor 2
+        # Use a larger 'before_clustering' to wait for all 4
+        for i in range(4):
+            s = Server(i, i==0, 100, 2, port=ports[i]) # id 0 is initial coord
+            servers.append(s)
+            
+        # Connect fully
+        for i in range(4):
+             for j in range(4):
+                 if i != j:
+                     servers[i].add_peer(servers[j])
+        
+        wait_for_full_connectivity(servers)
+        
+        # 2. Insert 100 vectors (will trigger clustering)
+        # Use distinct centers to ensure K-Means separates them well
+        centers = [[10.0, 10.0], [10.0, -10.0], [-10.0, 10.0], [-10.0, -10.0]]
+        data = []
+        for i in range(100):
+            center = centers[i % 4]
+            # Small jitter
+            vec = [center[0] + (i * 0.01), center[1] + (i * 0.01)]
+            data.append((vec, f"init_{i}"))
+            
+        # Send to S0 (Coordinator)
+        # add_to_buffer logic checks 'before_clustering' (100)
+        servers[0].receive_from_client(data)
+        
+        # Wait for clustering to complete
+        # It takes time for the thread to run and distribute
+        print("Waiting for clustering...")
+        for _ in range(50):
+            if servers[0].status == "clustered":
+                break
+            time.sleep(0.2)
+            
+        assert servers[0].status == "clustered"
+        
+        # Wait for distribution to peers
+        time.sleep(2)
+        
+        # 3. Partition the network: [0, 1] vs [2, 3]
+        print("Partitioning network...")
+        partition_network(servers, [[0, 1], [2, 3]])
+        
+        # Wait for failure detection & election
+        # Heartbeat is 3s + jitter. Wait 5s.
+        time.sleep(5)
+        
+        # Verify Election: S0 should be Coord of P1. S3 (max of 2,3) should be Coord of P2.
+        # (Assuming auto-election works, otherwise force for test stability)
+        # In server.py, election happens on network change.
+        
+        # 4. Insert 100 new vectors (50 to each partition)
+        print("Inserting new data into partitions...")
+        
+        # Partition A (0, 1) inserts
+        input_a = []
+        for i in range(50):
+             vec = [12.0 + i*0.1, 12.0] # Near cluster 0
+             input_a.append((vec, f"new_a_{i}"))
+        servers[0].receive_from_client(input_a)
+             
+        # Partition B (2, 3) inserts - send to S3 (likely coord)
+        input_b = []
+        for i in range(50):
+             vec = [-12.0 - i*0.1, -12.0] # Near cluster 3
+             input_b.append((vec, f"new_b_{i}"))
+        
+        # We need to find who is coord in P2 to receive?
+        # Or just send to S3 and let it forward/handle if it thinks it is coord.
+        # S3 has id 3, should be elected.
+        servers[3].receive_from_client(input_b)
+        
+        # Wait for processing
+        time.sleep(2)
+        
+        # 5. DESTROY HINTS
+        print("Sabotaging: Destroying all hinted handoff data...")
+        for s in servers:
+            s.hinted_handoff.clear()
+            
+        # 6. Heal Network
+        print("Healing network...")
+        heal_network(servers)
+        wait_for_full_connectivity(servers)
+        
+        # 7. Trigger Reconciliation
+        # This should happen on heal, but we wait for it to finish.
+        # Anti-entropy runs in threads.
+        print("Reconciling...")
+        time.sleep(10) # Give generous time for full sync
+        
+        # 8. Verify Count
+        # Total vectors = 100 (init) + 50 (A) + 50 (B) = 200 unique vectors.
+        # Replication = 2.
+        # Total expected instances = 400.
+        
+        counts = [s.count() for s in servers]
+        total_count = sum(counts)
+        print(f"Final Counts per Node: {counts}")
+        print(f"Total Count: {total_count}")
+        
+        assert total_count == 400, f"Expected 400 vectors, got {total_count}. Counts: {counts}"
+        
+        # Optional: verify specific non-coord persistence?
+        # If total is 400, it means we didn't lose the partition writes.
+        
+    finally:
+        for s in servers:
+            s.stop()

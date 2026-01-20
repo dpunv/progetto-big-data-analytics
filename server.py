@@ -1213,8 +1213,13 @@ class Server:
             self.deliver_hints()
 
             # 2. If I am coordinator, reconcile with other coordinators
-            if self.is_coordinator:
-                self._reconcile_with_other_coordinators()
+            # RELAXATION: To ensure full convergence (especially between two non-coordinator nodes
+            # that rely on a bridge), we allow everyone to reconcile upon network change.
+            # In a large system, this might be expensive (gossip is better), but for this
+            # implementation, it guarantees that "Follower A" talks to "Follower B".
+            # if self.is_coordinator:
+            self._reconcile_with_other_coordinators()
+
         finally:
             with self._reconcile_lock:
                 self._reconciling = False
@@ -1234,7 +1239,7 @@ class Server:
             try:
                 self.reconcile_with_peer(peer)
             except Exception as e:
-                print(f"Error reconciling with peer {peer.get_id()}: {e}")
+                pass # print(f"Error reconciling with peer {peer.get_id()}: {e}")
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
             executor.map(reconcile_single, peers_to_reconcile)
@@ -1290,7 +1295,6 @@ class Server:
             peer_digest = peer.get_vector_digest()
 
             # 2. Find vectors that should be on peer but aren't
-            # Only send vectors that SHOULD be on peer according to routing
             my_ids = set(my_digest.keys())
             peer_ids = set(peer_digest.keys())
 
@@ -1328,6 +1332,9 @@ class Server:
                     if self._should_be_on_me(vec):
                         self.store.insert(vec)
 
+
+
+
             # 5. Sync Topology (Clusters)
             # Exchange topology version
             try:
@@ -1335,13 +1342,12 @@ class Server:
                  if self.topology_version > peer_topology_ver:
                      # I have newer topology -> send to peer
                      # We only send topology metadata, vectors_for_clusters is empty dict as we rely on anti-entropy for data
-                     print(f"DEBUG: Server {self.id} pushing topology v{self.topology_version} to peer {peer.get_id()} (v{peer_topology_ver})")
                      peer.set_clusters({}, self.clusters, version=self.topology_version)
                  elif peer_topology_ver > self.topology_version:
                      # Peer has newer topology -> pull from peer
-                     print(f"DEBUG: Server {self.id} pulling topology v{peer_topology_ver} from peer {peer.get_id()}")
                      new_clusters = peer.get_clusters()
                      self.set_clusters({}, new_clusters, version=peer_topology_ver)
+
             except Exception as e:
                 print(f"Topology sync with {peer.get_id()} failed: {e}")
 
