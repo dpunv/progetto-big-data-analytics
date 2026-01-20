@@ -3,6 +3,7 @@ import sys
 import time
 
 import pandas as pd
+
 import server as sv
 
 start_time = time.time()
@@ -11,8 +12,12 @@ print("starting client")
 # read the data from parquet file
 df = pd.read_parquet("embeddings.parquet")
 data = [
-    {"embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else list(row["embedding"]),
-     "text": row["sentence"]}
+    {
+        "embedding": row["embedding"].tolist()
+        if hasattr(row["embedding"], "tolist")
+        else list(row["embedding"]),
+        "text": row["sentence"],
+    }
     for _, row in df.iterrows()
 ]
 
@@ -136,7 +141,7 @@ print(
         [" -> ".join([str(distance), payload]) for distance, payload in correspondence]
     ),
 )
-
+time.sleep(1)
 print("counting vectors per server:")
 total = 0
 for s in servers:

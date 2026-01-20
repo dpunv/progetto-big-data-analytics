@@ -500,9 +500,10 @@ class QdrantVectorStore:
                 payload=q_payload,
             )
 
-            client.upload_points(
-                collection_name=self.collection_name, points=[point], wait=True
-            )
+            with qdrant_module.get_lock(self.url):
+                client.upload_points(
+                    collection_name=self.collection_name, points=[point], wait=True
+                )
             return True
 
     def insert_batch(self, vectors) -> int:
@@ -532,12 +533,13 @@ class QdrantVectorStore:
             # qdrant_module.retrieve_vector is single.
             # client.retrieve() returns list of Record.
             try:
-                existing_records = client.retrieve(
-                    collection_name=self.collection_name,
-                    ids=ids,
-                    with_payload=True,
-                    with_vectors=False,
-                )
+                with qdrant_module.get_lock(self.url):
+                    existing_records = client.retrieve(
+                        collection_name=self.collection_name,
+                        ids=ids,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
             except Exception as e:
                 print(f"Error retrieving for batch check: {e}")
                 return 0
@@ -588,11 +590,12 @@ class QdrantVectorStore:
 
             # 3. Batch upload
             try:
-                client.upload_points(
-                    collection_name=self.collection_name,
-                    points=points_to_upload,
-                    wait=True,
-                )
+                with qdrant_module.get_lock(self.url):
+                    client.upload_points(
+                        collection_name=self.collection_name,
+                        points=points_to_upload,
+                        wait=True,
+                    )
                 return len(points_to_upload)
             except Exception as e:
                 print(f"Error in batch upload: {e}")
@@ -635,14 +638,15 @@ class QdrantVectorStore:
         all_points = []
         offset = None
         while True:
-            points, offset = client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=filter_condition,
-                offset=offset,
-                limit=1000,
-                with_payload=True,
-                with_vectors=True,
-            )
+            with qdrant_module.get_lock(self.url):
+                points, offset = client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=filter_condition,
+                    offset=offset,
+                    limit=1000,
+                    with_payload=True,
+                    with_vectors=True,
+                )
             all_points.extend(points)
             if offset is None:
                 break

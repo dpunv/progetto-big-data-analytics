@@ -2,6 +2,7 @@ import logging
 import threading
 from itertools import groupby
 from operator import itemgetter
+import contextlib
 
 from qdrant_client import QdrantClient, models
 
@@ -17,6 +18,26 @@ def get_collection_name(name, cluster):
 
 # Helper to create a client instance.
 _client_cache = {}
+_io_locks = {}
+_io_locks_lock = threading.Lock()
+
+
+def get_lock(url: str):
+    """
+    Get a lock for the specific Qdrant URL/Path.
+    
+    QdrantClient with local storage (path or :memory:) is NOT thread-safe for 
+    concurrent writes and reads (causing numpy broadcast errors).
+    We must serialize access to local instances.
+    HTTP clients are thread-safe (server handles concurrency).
+    """
+    if url.startswith("http"):
+        return contextlib.nullcontext()
+    
+    with _io_locks_lock:
+        if url not in _io_locks:
+            _io_locks[url] = threading.RLock()
+        return _io_locks[url]
 
 
 def get_client(url: str) -> QdrantClient:
@@ -84,13 +105,14 @@ def create_collection(url, collection_name, vector_size: int, distance: str = "C
             "Dot": models.Distance.DOT,
         }
 
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=models.VectorParams(
-                size=vector_size,
-                distance=dist_map.get(distance, models.Distance.COSINE),
-            ),
-        )
+        with get_lock(url):
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(
+                    size=vector_size,
+                    distance=dist_map.get(distance, models.Distance.COSINE),
+                ),
+            )
         logger.info(f"Collection '{collection_name}' created successfully on {url}")
         return True
     except Exception as e:
@@ -102,7 +124,8 @@ def delete_collection(url: str, collection_name: str) -> bool:
     """Delete a collection."""
     try:
         client = get_client(url)
-        client.delete_collection(collection_name)
+        with get_lock(url):
+            client.delete_collection(collection_name)
         logger.info(f"Collection '{collection_name}' deleted on {url}")
         return True
     except Exception as e:
@@ -145,9 +168,10 @@ def query_vectors(url, collection, query, topk):
         ]
 
         # Execute batch search
-        results = client.query_batch_points(
-            collection_name=collection, requests=search_queries
-        )
+        with get_lock(url):
+            results = client.query_batch_points(
+                collection_name=collection, requests=search_queries
+            )
 
         # Convert ScoredPoint objects to dictionaries
         final_results = []
@@ -218,12 +242,13 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
 
     try:
         #logger.info(f"[Qdrant] Trying upload with batch_size= {batch_size}")
-        client.upload_points(
-            collection_name=collection,
-            points=points,
-            batch_size=effective_batch_size,
-            wait=True,
-        )
+        with get_lock(url):
+            client.upload_points(
+                collection_name=collection,
+                points=points,
+                batch_size=effective_batch_size,
+                wait=True,
+            )
         #logger.info(
         #    f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}."
         #)
@@ -235,13 +260,15 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
         )
         import time
         time.sleep(1)
+        time.sleep(1)
         try:
-            client.upload_points(
-                collection_name=collection,
-                points=points,
-                batch_size=batch_size_retry,
-                wait=True,
-            )
+            with get_lock(url):
+                client.upload_points(
+                    collection_name=collection,
+                    points=points,
+                    batch_size=batch_size_retry,
+                    wait=True,
+                )
             logger.info(
                 f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size_retry}."
             )
@@ -255,7 +282,8 @@ def count(url, collection):
     """Count vectors in a collection."""
     client = get_client(url)
     try:
-        count_result = client.count(collection_name=collection, exact=True)
+        with get_lock(url):
+            count_result = client.count(collection_name=collection, exact=True)
         return count_result.count
     except Exception as e:
         logger.error(f"Error counting vectors on {url}: {e}")
@@ -266,12 +294,13 @@ def retrieve_vector(url, collection, vector_id):
     """Retrieve a single vector by ID."""
     client = get_client(url)
     try:
-        points = client.retrieve(
-            collection_name=collection,
-            ids=[vector_id],
-            with_vectors=True,
-            with_payload=True,
-        )
+        with get_lock(url):
+            points = client.retrieve(
+                collection_name=collection,
+                ids=[vector_id],
+                with_vectors=True,
+                with_payload=True,
+            )
         if points:
             return points[0]
         return None
@@ -284,11 +313,12 @@ def delete_vector(url, collection, vector_id):
     """Delete a single vector by ID."""
     client = get_client(url)
     try:
-        client.delete(
-            collection_name=collection,
-            points_selector=models.PointIdsList(points=[vector_id]),
-            wait=True,
-        )
+        with get_lock(url):
+            client.delete(
+                collection_name=collection,
+                points_selector=models.PointIdsList(points=[vector_id]),
+                wait=True,
+            )
         return True
     except Exception as e:
         logger.error(f"Error deleting vector {vector_id} on {url}: {e}")
@@ -308,11 +338,12 @@ def delete_vectors_by_payload(url, collection, key, value):
             ]
         )
         
-        client.delete(
-            collection_name=collection,
-            points_selector=models.FilterSelector(filter=filter_condition),
-            wait=True,
-        )
+        with get_lock(url):
+            client.delete(
+                collection_name=collection,
+                points_selector=models.FilterSelector(filter=filter_condition),
+                wait=True,
+            )
         logger.info(f"Deleted vectors with {key}={value} on {url}")
         return True
     except Exception as e:
@@ -327,13 +358,14 @@ def get_all_vectors(url, collection):
     offset = None
     try:
         while True:
-            points, offset = client.scroll(
-                collection_name=collection,
-                offset=offset,
-                limit=1000,
-                with_payload=True,
-                with_vectors=True,
-            )
+            with get_lock(url):
+                points, offset = client.scroll(
+                    collection_name=collection,
+                    offset=offset,
+                    limit=1000,
+                    with_payload=True,
+                    with_vectors=True,
+                )
             all_points.extend(points)
             if offset is None:
                 break
