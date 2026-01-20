@@ -819,7 +819,7 @@ class Server:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self.endpoint_loop = loop
-            loop.run_until_complete(self.endpoint.start("0.0.0.0", port))
+            loop.run_until_complete(self.endpoint.start(self.ip, port))
             loop.run_forever()
 
         self.endpoint_thread = threading.Thread(target=run_loop, daemon=True)
@@ -830,7 +830,7 @@ class Server:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self.client_loop = loop
-            loop.run_until_complete(self.client_endpoint.start("0.0.0.0", port))
+            loop.run_until_complete(self.client_endpoint.start(self.ip, port))
             loop.run_forever()
 
         self.client_thread = threading.Thread(target=run_loop, daemon=True)
