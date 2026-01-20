@@ -81,7 +81,6 @@ class QUICCommunicator(BaseCommunicator):
                 client = cast(OneShotClientProtocol, protocol)
 
                 try:
-
                     if query == "get_id":
                         result = await client.query(query, args)
 

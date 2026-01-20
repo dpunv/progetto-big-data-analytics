@@ -1,5 +1,5 @@
-from .http_endpoint import HTTPEndpoint
 from .grpc_endpoint import GRPCEndpoint
+from .http_endpoint import HTTPEndpoint
 from .quic_endpoint import QUICEndpoint
 
 

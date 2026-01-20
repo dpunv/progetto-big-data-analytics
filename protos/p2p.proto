@@ -67,7 +67,7 @@ message VectorComplete {
     int64 id = 2;                 // Unique Vector ID
     string payload = 3;           // Associated payload/text
     int32 cluster_id = 4;         // Assigned Cluster ID
-    
+
     // Metadata for Version Vector (Anti-Entropy)
     double timestamp = 5;         // Logical or physical timestamp
     int64 version_node_id = 6;    // ID of the node that last updated this vector

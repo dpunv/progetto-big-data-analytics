@@ -42,8 +42,7 @@ def generate_self_signed_cert(cert_path="server.crt", key_path="server.key"):
         .not_valid_before(datetime.datetime.now(datetime.UTC))
         .not_valid_after(
             # Our certificate will be valid for 10 days
-            datetime.datetime.now(datetime.UTC)
-            + datetime.timedelta(days=10)
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=10)
         )
         .add_extension(
             x509.SubjectAlternativeName([x509.DNSName("localhost")]),

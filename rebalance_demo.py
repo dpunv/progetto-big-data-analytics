@@ -17,6 +17,7 @@ import time
 
 import numpy as np
 import pandas as pd
+
 import server as sv
 
 print("=" * 70)
@@ -39,7 +40,7 @@ print(f"  Initial vectors: {initial_vectors}")
 print(f"  Extra vectors (to create imbalance): {extra_vectors}")
 print(f"  Replication factor: {replication_factor}")
 print(
-    f"  REBALANCE_THRESHOLD: {sv.REBALANCE_THRESHOLD} ({int(sv.REBALANCE_THRESHOLD*100)}%)"
+    f"  REBALANCE_THRESHOLD: {sv.REBALANCE_THRESHOLD} ({int(sv.REBALANCE_THRESHOLD * 100)}%)"
 )
 
 # =============================================================================

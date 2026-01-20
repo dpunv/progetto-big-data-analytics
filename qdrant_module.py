@@ -1,8 +1,8 @@
+import contextlib
 import logging
 import threading
 from itertools import groupby
 from operator import itemgetter
-import contextlib
 
 from qdrant_client import QdrantClient, models
 

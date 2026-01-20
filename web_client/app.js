@@ -112,7 +112,8 @@ async function performQuery() {
   }
 
   queryBtn.disabled = true;
-  queryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
+  queryBtn.innerHTML =
+    '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
   resultsContainer.innerHTML = "";
 
   try {
@@ -134,7 +135,8 @@ async function performQuery() {
     if (data.results && data.results.length > 0) {
       renderResults(data.results, embedTime);
     } else {
-      resultsContainer.innerHTML = '<div class="result-card">No results found.</div>';
+      resultsContainer.innerHTML =
+        '<div class="result-card">No results found.</div>';
     }
   } catch (error) {
     console.error("Query failed:", error);
@@ -182,8 +184,8 @@ async function performAdd() {
 
   addBtn.disabled = true;
   addBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Adding...';
-  addStatus.innerHTML = '';
-  addStatus.className = '';
+  addStatus.innerHTML = "";
+  addStatus.className = "";
 
   try {
     // 1. Generate Embedding
@@ -195,7 +197,7 @@ async function performAdd() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        vectors: [[embedding, text]]
+        vectors: [[embedding, text]],
       }),
     });
 
@@ -204,14 +206,14 @@ async function performAdd() {
     const data = await response.json();
 
     // Success
-    addStatus.innerHTML = '<i class="fa-solid fa-check-circle"></i> Vector added successfully!';
-    addStatus.style.color = 'var(--success-color)';
-    addInput.value = ''; // Clear input
-
+    addStatus.innerHTML =
+      '<i class="fa-solid fa-check-circle"></i> Vector added successfully!';
+    addStatus.style.color = "var(--success-color)";
+    addInput.value = ""; // Clear input
   } catch (error) {
     console.error("Add failed:", error);
     addStatus.innerHTML = `<i class="fa-solid fa-exclamation-circle"></i> Error: ${error.message}`;
-    addStatus.style.color = 'var(--error-color)';
+    addStatus.style.color = "var(--error-color)";
   } finally {
     addBtn.disabled = false;
     addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add Vector';
