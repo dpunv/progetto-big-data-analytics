@@ -1,0 +1,21 @@
+embeddings.json
+embeddings_big.json
+out
+__pycache__
+
+# Coverage reports
+.coverage
+htmlcov/
+benchmark_report.txt
+
+# cert and key files
+*.pem
+*.key
+*.crt
+
+compose.yml
+compose.yaml
+
+embeddings.parquet
+peers.json
+web_client/config.js
