@@ -150,7 +150,7 @@ class TestPeer:
         mock_server.i_am_coord.assert_called_once()
 
         peer.set_clusters({}, {})
-        mock_server.set_clusters.assert_called_once_with({}, {})
+        mock_server.set_clusters.assert_called_once_with({}, {}, version=0)
 
         peer.search_vectors_local([], 5)
         mock_server.search_vectors_local.assert_called_once_with([], 5)
@@ -452,6 +452,12 @@ def test_full_workflow(protocol):
 
         max_retries = 20
         while s1.get_status() != "clustered" and max_retries > 0:
+            time.sleep(0.1)
+            max_retries -= 1
+        
+        # Also wait for s2 to receive the update
+        max_retries = 20
+        while s2.get_status() != "clustered" and max_retries > 0:
             time.sleep(0.1)
             max_retries -= 1
 
@@ -2422,7 +2428,7 @@ class TestReconciliationWithRealCoordinator:
     """Test reconciliation with actual coordinator election."""
 
     def test_reconcile_exception_in_coordinator_loop(self):
-        """Test _reconcile_with_other_coordinators handles exceptions."""
+        """Test _reconcile_with_other_peers handles exceptions."""
         s0 = Server(0, True, 10, 1, port=get_free_port())
 
         try:
@@ -2435,7 +2441,7 @@ class TestReconciliationWithRealCoordinator:
             s0.peers = [Peer(s0.ip, s0.port, server_instance=s0), mock_peer]
 
             # Should not raise
-            s0._reconcile_with_other_coordinators()
+            s0._reconcile_with_other_peers()
         finally:
             s0.stop()
 
@@ -4121,8 +4127,8 @@ class TestVectorStoreEdgeCasesComplete:
 class TestServerReconcileException:
     """Tests for reconciliation exception handling (lines 1100-1101)."""
 
-    def test_reconcile_with_other_coordinators_exception(self):
-        """Test _reconcile_with_other_coordinators logs exception."""
+    def test_reconcile_with_other_peers_exception(self):
+        """Test _reconcile_with_other_peers logs exception."""
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
@@ -4136,7 +4142,7 @@ class TestServerReconcileException:
             s.reconcile_with_peer = MagicMock(side_effect=Exception("Reconcile Error"))
 
             # Should not raise
-            s._reconcile_with_other_coordinators()
+            s._reconcile_with_other_peers()
 
             s.reconcile_with_peer = original_reconcile
         finally:
