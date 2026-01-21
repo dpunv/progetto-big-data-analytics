@@ -15,10 +15,8 @@ class HTTPEndpoint(BaseEndpoint):
         Starts the HTTP web server.
         Configures the routes and handles the server lifecycle.
         """
-        # Set max client size to 100MB to allow large vector payloads
         self.app = web.Application(client_max_size=1024 * 1024 * 100)
 
-        # Register API endpoints
         self.app.router.add_post("/get_id", self.handle_get_id)
         self.app.router.add_post("/similarity", self.handle_similarity)
         self.app.router.add_post("/receive", self.handle_receive)
@@ -35,7 +33,6 @@ class HTTPEndpoint(BaseEndpoint):
         )
         self.app.router.add_post("/respond_to_ping", self.handle_respond_to_ping)
 
-        # Start the app runner
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, ip, port)
@@ -88,23 +85,18 @@ class HTTPEndpoint(BaseEndpoint):
             vectors_in = data.get("vectors")
             status = data.get("status")
 
-            # Reconstruct list of tuples from JSON list of lists
             vectors_tuples = []
             for v_list in vectors_in:
-                # v_list structure: [values, id, payload, cluster_id, [ts, nid], [dests]]
 
-                # Default version and destinations
                 ts = 0.0
                 nid = 0
                 dests = []
 
-                # Extract version info if available
                 if len(v_list) > 4:
                     if v_list[4]:
                         ts = v_list[4][0]
                         nid = v_list[4][1]
 
-                # Extract destinations if available
                 if len(v_list) > 5:
                     if v_list[5]:
                         dests = list(v_list[5])
@@ -115,7 +107,7 @@ class HTTPEndpoint(BaseEndpoint):
                 cid = v_list[3]
 
                 ver_tuple = (ts, nid)
-                dests_set = frozenset(dests)  # Convert back to set for internal logic
+                dests_set = frozenset(dests)
 
                 vec_tuple = (values, vid, payload, cid, ver_tuple, dests_set)
                 vectors_tuples.append(vec_tuple)
@@ -147,8 +139,6 @@ class HTTPEndpoint(BaseEndpoint):
             assignment_raw = data.get("assignment")
             version = data.get("version", 0)
 
-            # Reconstruct clusters dictionary
-            # Keys might be strings in JSON, convert back to int
             clusters = {}
             for cid_str, cdata in clusters_raw.items():
                 cid = int(cid_str)
@@ -157,7 +147,6 @@ class HTTPEndpoint(BaseEndpoint):
 
                 members = []
                 for m_list in members_raw:
-                    # Reconstruct member tuple: (val, id, pl, cid, (ts, nid), dests)
                     ts = 0.0
                     nid = 0
                     dests = frozenset()
@@ -173,7 +162,6 @@ class HTTPEndpoint(BaseEndpoint):
 
                 clusters[cid] = {"center": center, "members": members}
 
-            # Reconstruct assignment list
             assignment = []
             if assignment_raw:
                 for item in assignment_raw:
@@ -204,11 +192,9 @@ class HTTPEndpoint(BaseEndpoint):
                 self.server.search_vectors_local, q_vecs, top_k
             )
 
-            # Serialize results
             json_results = []
             if results:
                 for r in results:
-                    # Convert numpy array to list if needed
                     v_list = r[0].tolist() if hasattr(r[0], "tolist") else list(r[0])
                     json_results.append((v_list, r[1], r[2], r[3]))
 
@@ -246,7 +232,6 @@ class HTTPEndpoint(BaseEndpoint):
         """
         try:
             digest = await self._run_sync(self.server.get_vector_digest)
-            # Convert integer keys to strings for JSON compatibility
             json_digest = {}
             for k, v in digest.items():
                 json_digest[str(k)] = v
@@ -263,14 +248,12 @@ class HTTPEndpoint(BaseEndpoint):
             ids = data.get("ids")
             vecs = await self._run_sync(self.server.get_vectors_by_ids, ids)
 
-            # Serialize vectors to JSON-compatible format
             json_vecs = []
             for v in vecs:
                 v_list = list(v)
                 if hasattr(v_list[0], "tolist"):
                     v_list[0] = v_list[0].tolist()
 
-                # Convert sets to lists
                 if len(v_list) > 5 and isinstance(v_list[5], (set, frozenset)):
                     v_list[5] = list(v_list[5])
                 json_vecs.append(v_list)

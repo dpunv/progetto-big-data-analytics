@@ -8,7 +8,6 @@ from qdrant_client import QdrantClient, models
 
 logger = logging.getLogger(__name__)
 
-# Lock only for client cache access (QdrantClient itself is thread-safe)
 _cache_lock = threading.Lock()
 
 
@@ -16,7 +15,6 @@ def get_collection_name(name, cluster):
     return f"{name}_{cluster}"
 
 
-# Helper to create a client instance.
 _client_cache = {}
 _io_locks = {}
 _io_locks_lock = threading.Lock()
@@ -42,27 +40,22 @@ def get_lock(url: str):
 
 def get_client(url: str) -> QdrantClient:
     """Get or create a QdrantClient for the given URL. Thread-safe."""
-    # Fast path: check without lock
     if url in _client_cache:
         return _client_cache[url]
 
-    # Slow path: acquire lock and create client
     with _cache_lock:
-        # Double-check after acquiring lock
         if url in _client_cache:
             return _client_cache[url]
 
-        # Handle :memory: or local path
         if url == ":memory:":
             client = QdrantClient(location=url)
         elif not url.startswith("http"):
             client = QdrantClient(path=url)
         else:
-            # prefer_grpc=True forces the client to use the gRPC port (usually 6334)
             try:
                 grpc_port = int(url.split(":")[-1]) + 1
             except ValueError:
-                grpc_port = 6334  # Default
+                grpc_port = 6334
 
             client = QdrantClient(
                 url=url,
@@ -98,7 +91,6 @@ def create_collection(url, collection_name, vector_size: int, distance: str = "C
             logger.info(f"Collection '{collection_name}' already exists on {url}")
             return True
 
-        # Map string distance to Qdrant model
         dist_map = {
             "Cosine": models.Distance.COSINE,
             "Euclid": models.Distance.EUCLID,
@@ -152,7 +144,6 @@ def query_vectors(url, collection, query, topk):
     """
     client = get_client(url)
     try:
-        # Create search requests
         search_queries = [
             models.QueryRequest(
                 query=(
@@ -165,13 +156,11 @@ def query_vectors(url, collection, query, topk):
             for query_vector in query
         ]
 
-        # Execute batch search
         with get_lock(url):
             results = client.query_batch_points(
                 collection_name=collection, requests=search_queries
             )
 
-        # Convert ScoredPoint objects to dictionaries
         final_results = []
         for response in results:
             for point in response.points:
@@ -186,7 +175,6 @@ def query_vectors(url, collection, query, topk):
                     }
                 )
 
-        # logger.info(f"[Qdrant] Success: found {len(final_results)} results")
         return final_results
     except Exception as e:
         logger.error(f"[Qdrant] QUERY ERROR on {url}: {e}")
@@ -219,11 +207,7 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
                  (vector_content, vector_id, vector_payload, cluster_id)
     """
     client = get_client(url)
-    # logger.info(
-    #    f"[Qdrant] Attempting to insert {len(vectors)} vectors into {collection} on {url}..."
-    # )
 
-    # Convert your input list to PointStruct objects
     points = [
         models.PointStruct(
             id=vector_id,
@@ -239,7 +223,6 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
         effective_batch_size = batch_size
 
     try:
-        # logger.info(f"[Qdrant] Trying upload with batch_size= {batch_size}")
         with get_lock(url):
             client.upload_points(
                 collection_name=collection,
@@ -247,9 +230,6 @@ def insert_vectors(url, collection, vectors, batch_size_retry, batch_size=256):
                 batch_size=effective_batch_size,
                 wait=True,
             )
-        # logger.info(
-        #    f"[Qdrant] Success: Inserted {len(points)} vectors with batch_size={batch_size}."
-        # )
         return True
 
     except Exception as e:

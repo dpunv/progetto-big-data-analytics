@@ -33,27 +33,22 @@ from typing import Any, Dict, List, Tuple
 import requests
 import server as sv
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURATION ---
-# Each scenario tests the system with different workloads
 
 SCENARIOS = {
-    # Quick verification (5s, 2 threads) to confirm connectivity and basic operations
-    # (insert/query) without stressing the system, before running real tests.
     "sanity_check": {
-        "duration": 5,  # Test duration in seconds
-        "concurrency": 2,  # Number of parallel threads (simultaneous clients)
-        "mix": {"insert": 0.5, "query": 0.5},  # Probability: 50% insert, 50% query
+        "duration": 5,
+        "concurrency": 2,
+        "mix": {"insert": 0.5, "query": 0.5},
         "desc": "Quick check to verify system stability",
     },
     "balanced": {
-        "duration": 30,  # Longer test for statistically significant results
-        "concurrency": 20,  # 20 simulated clients working in parallel
+        "duration": 30,
+        "concurrency": 20,
         "mix": {"insert": 0.5, "query": 0.5},
         "desc": "Balanced read/write workload",
     },
@@ -70,24 +65,14 @@ SCENARIOS = {
         "desc": "Ingestion-heavy (80% inserts)",
     },
     "stress_test": {
-        "duration": 60,  # Prolonged test to see performance degradation
-        "concurrency": 40,  # High concurrency to stress the system
+        "duration": 60,
+        "concurrency": 40,
         "mix": {"insert": 0.4, "query": 0.6},
         "desc": "High concurrency stress test",
     },
 }
 
 
-# --- BENCHMARK CLIENT LOGIC ---
-#
-# IMPORTANT: How load balancing works
-# ====================================
-# Each operation (insert or query) is sent to ONE randomly chosen server
-# among all available servers.
-#
-# This simulates a real load balancer distributing traffic.
-# AGGREGATE metrics (first section of report) sum results from ALL servers.
-# PER-SERVER metrics (final section) show performance of each server.
 
 
 class BenchmarkClient:
@@ -102,8 +87,6 @@ class BenchmarkClient:
             return self.request_id
 
     def get_target_server(self) -> sv.Server:
-        # LOAD BALANCING: randomly choose a server among available ones
-        # Each request may go to a different server!
         return random.choice(self.servers)
 
     def insert(self, vector: List[float], payload_text: str) -> Tuple[float, bool, int]:
@@ -111,7 +94,6 @@ class BenchmarkClient:
         server = self.get_target_server()
         server_id = server.get_id()
 
-        # Format: List[Tuple[Vector, Payload]]
         content = [(vector, payload_text)]
 
         start = time.time()
@@ -149,7 +131,6 @@ def load_data(filepath: str) -> List[Dict[str, Any]]:
     logger.info(f"Loading vectors from {filepath}...")
     try:
         df = pd.read_parquet(filepath)
-        # Convert DataFrame to list of dicts with 'embedding' and 'text' keys
         data = [
             {
                 "embedding": (
@@ -168,7 +149,6 @@ def load_data(filepath: str) -> List[Dict[str, Any]]:
         return []
 
 
-# --- DOCKER CLUSTER ORCHESTRATION ---
 
 
 def generate_compose_and_dirs(num_servers: int, start_port: int = 6333):
@@ -181,7 +161,6 @@ def generate_compose_and_dirs(num_servers: int, start_port: int = 6333):
         grpc_port = http_port + 1
         storage_dir = f"./qdrant_storage_{i}"
 
-        # Create storage directory
         os.makedirs(storage_dir, exist_ok=True)
 
         service_def = f"""  qdrant-{i}:
@@ -242,7 +221,6 @@ def cleanup_cluster(num_servers: int):
     except Exception as e:
         logger.warning(f"Error stopping docker: {e}")
 
-    # Clean up storage directories
     for i in range(num_servers):
         storage_dir = f"./qdrant_storage_{i}"
         if os.path.exists(storage_dir):
@@ -295,23 +273,8 @@ def get_stats_summary(name: str, latencies: List[float], errors: int = 0) -> str
     p95 = statistics.quantiles(latencies, n=20)[18] if n >= 20 else max(latencies)
     p99 = statistics.quantiles(latencies, n=100)[98] if n >= 100 else max(latencies)
 
-    # METRIC 1: Jitter (Standard Deviation)
-    # Measures how much latencies vary from the mean.
-    # - Low jitter = predictable and stable system
-    # - High jitter = highly variable latencies, less reliable system
-    #
-    #    Value     Meaning
-    #    < 40ms    EXCELLENT - Very stable system
-    #    40-90ms   GOOD - Normal variability
-    #    > 90ms    HIGH - Unpredictable system
     jitter = statistics.stdev(latencies) if n >= 2 else 0.0
 
-    # METRIC 2: Tail Latency Ratio (P99/P50)
-    # Measures how much slower the slowest requests (outliers) are vs median.
-    # - Ratio ~1-2x: EXCELLENT, very consistent system, few outliers
-    # - Ratio 3-5x : NORMAL under moderate load
-    # - Ratio >5x  : UNSTABLE, many "unlucky" requests are very slow
-    # Important for guaranteeing SLA (Service Level Agreement) in production.
     tail_ratio = p99 / p50 if p50 > 0 else 0.0
 
     return (
@@ -329,9 +292,9 @@ def get_stats_summary(name: str, latencies: List[float], errors: int = 0) -> str
 def run_benchmark(
     client: BenchmarkClient,
     data: List[Dict[str, Any]],
-    duration: int,  # Total test duration (e.g., 30 seconds)
-    concurrency: int,  # Number of parallel threads (e.g., 10 workers)
-    mix: Dict[str, float],  # Operation probabilities (e.g., 50% insert, 50% query)
+    duration: int,
+    concurrency: int,
+    mix: Dict[str, float],
 ):
     """
     HOW THE BENCHMARK WORKS:
@@ -351,20 +314,18 @@ def run_benchmark(
     - Total: 10 threads × 200 ops = ~2000 total operations
     - Of which ~1000 insert and ~1000 query (for 50/50 mix)
     """
-    stop_event = threading.Event()  # Signal to stop all workers
+    stop_event = threading.Event()
 
-    # Structure to collect all latencies and errors
     results = {
-        "insert": [],  # List of all successful insert latencies
-        "query": [],  # List of all successful query latencies
+        "insert": [],
+        "query": [],
         "errors": {
-            "insert": 0,  # Failed insert counter
-            "query": 0,  # Failed query counter
+            "insert": 0,
+            "query": 0,
         },
-        # NEW: Per-server tracking to identify bottlenecks
-        "per_server": {},  # Dict: {server_id: {'insert': [latencies], 'query': [latencies], 'errors': count}}
+        "per_server": {},
     }
-    results_lock = threading.Lock()  # For thread-safe access to results
+    results_lock = threading.Lock()
 
     insert_ratio = mix.get("insert", 0.0)
     query_ratio = mix.get("query", 0.0)
@@ -374,9 +335,6 @@ def run_benchmark(
         logger.error("Invalid mix configuration: weights sum to 0")
         return results
 
-    # Calculate threshold for deciding insert vs query
-    # E.g.: if insert=0.5, query=0.5 → threshold=0.5
-    # random.random() < 0.5 has 50% probability of being True
     normalized_insert_threshold = insert_ratio / total_weight
 
     def worker():
@@ -394,25 +352,19 @@ def run_benchmark(
         """
         local_results = {"insert": [], "query": []}
         local_errors = {"insert": 0, "query": 0}
-        # NEW: Local per-server tracking
-        local_per_server = {}  # {server_id: {'insert': [], 'query': [], 'errors': 0}}
+        local_per_server = {}
 
-        while not stop_event.is_set():  # Continue until time expires
-            # Probabilistic decision: insert or query?
-            # random.random() generates a number between 0 and 1
+        while not stop_event.is_set():
             op_type = (
                 "insert" if random.random() < normalized_insert_threshold else "query"
             )
 
-            # Choose a random vector from the dataset
             item = random.choice(data)
             vector = item["embedding"]
             text = item.get("text", "")
 
-            # Execute the chosen operation and measure latency
             if op_type == "insert":
                 latency, success, server_id = client.insert(vector, text)
-                # Initialize per-server structure if needed
                 if server_id not in local_per_server:
                     local_per_server[server_id] = {
                         "insert": [],
@@ -427,7 +379,6 @@ def run_benchmark(
                     local_per_server[server_id]["errors"] += 1
             else:
                 latency, success, server_id = client.query(vector)
-                # Initialize per-server structure if needed
                 if server_id not in local_per_server:
                     local_per_server[server_id] = {
                         "insert": [],
@@ -441,13 +392,11 @@ def run_benchmark(
                     local_errors["query"] += 1
                     local_per_server[server_id]["errors"] += 1
 
-        # At the end, aggregate local results into global results
         with results_lock:
             results["insert"].extend(local_results["insert"])
             results["query"].extend(local_results["query"])
             results["errors"]["insert"] += local_errors["insert"]
             results["errors"]["query"] += local_errors["query"]
-            # Aggregate per-server data
             for server_id, data_server in local_per_server.items():
                 if server_id not in results["per_server"]:
                     results["per_server"][server_id] = {
@@ -466,30 +415,19 @@ def run_benchmark(
         f"Workload: {insert_ratio * 100:.1f}% Insert, {query_ratio * 100:.1f}% Query"
     )
 
-    # WORKER ORCHESTRATION:
-    # 1. Create a thread pool
-    # 2. Launch 'concurrency' workers in parallel (e.g., 10 threads)
-    # 3. Wait 'duration' seconds (e.g., 30s)
-    # 4. Signal stop to all workers
-    # 5. Wait for all workers to finish and collect results
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        # Launch all workers simultaneously
         futures = [executor.submit(worker) for _ in range(concurrency)]
 
-        # Let workers run for 'duration' seconds
         time.sleep(duration)
 
-        # Signal all workers to stop
         stop_event.set()
 
-        # Wait for all workers to finish
         for f in futures:
             f.result()
 
     return results
 
 
-# --- SUITE ORCHESTRATION ---
 
 
 def get_vector_count(servers: List[sv.Server]) -> int:
@@ -523,9 +461,8 @@ def get_per_server_summary(per_server_data: Dict[int, Dict]) -> str:
     lines.append("This section shows the TOTAL performance of each server")
     lines.append("across all benchmark scenarios combined.")
 
-    # Calculate metrics for each server
     server_stats = {}
-    all_latencies = []  # For calculating global average
+    all_latencies = []
 
     for server_id, data in per_server_data.items():
         all_lats = data["insert"] + data["query"]
@@ -547,21 +484,17 @@ def get_per_server_summary(per_server_data: Dict[int, Dict]) -> str:
     if not server_stats:
         return "\nNo successful operations recorded per server.\n"
 
-    # Global average for comparison
     global_avg = statistics.mean(all_latencies) if all_latencies else 0
 
     lines.append(f"\nGlobal Average Latency: {global_avg * 1000:.2f} ms")
     lines.append("-" * 60)
 
-    # Report for each server
     for server_id, stats in sorted(server_stats.items()):
-        # Calculate % difference from global average
         diff_pct = (
             ((stats["avg_latency"] - global_avg) / global_avg * 100)
             if global_avg > 0
             else 0
         )
-        # Performance indicator
         status = (
             "[OK]" if diff_pct <= 10 else ("[WARN]" if diff_pct <= 30 else "[SLOW]")
         )
@@ -576,11 +509,9 @@ def get_per_server_summary(per_server_data: Dict[int, Dict]) -> str:
         lines.append(f"  Avg Query Latency: {stats['query_avg'] * 1000:.2f} ms")
         lines.append(f"  Diff from Global: {diff_pct:+.1f}% {status}")
 
-    # Bottleneck analysis
     lines.append("\n" + "-" * 60)
     lines.append("BOTTLENECK ANALYSIS:")
 
-    # Find fastest and slowest servers
     sorted_by_lat = sorted(server_stats.items(), key=lambda x: x[1]["avg_latency"])
     fastest = sorted_by_lat[0]
     slowest = sorted_by_lat[-1]
@@ -666,7 +597,6 @@ def wait_for_coordinator_discovery(servers: List[sv.Server], timeout: int = 30) 
     logger.info("Waiting for coordinator discovery...")
     start_time = time.time()
 
-    # Find which server is the coordinator
     coord_id = None
     for s in servers:
         if s.i_am_coord():
@@ -685,7 +615,7 @@ def wait_for_coordinator_discovery(servers: List[sv.Server], timeout: int = 30) 
         all_found = True
         for server in servers:
             if server.i_am_coord():
-                continue  # Coordinator doesn't need to find itself
+                continue
 
             coord = server.coordinator()
             if coord is None:
@@ -749,7 +679,6 @@ def populate_and_wait_clustering(
     - Timeout errors are normal (system under load) and are ignored
     - Only counts successful insertions
     """
-    # Ensure we insert at least enough to trigger clustering (threshold is 8192)
     min_for_clustering = 8500
     if target_vectors < min_for_clustering:
         logger.info(
@@ -760,19 +689,17 @@ def populate_and_wait_clustering(
     logger.info(f"WARMUP: Populating {target_vectors} vectors to trigger clustering...")
     logger.info("This ensures the system is in a clustered state before benchmarking.")
 
-    concurrency = 20  # 20 parallel threads for fast warmup
+    concurrency = 20
     successful_inserts = 0
     lock = threading.Lock()
 
     def warmup_worker():
         nonlocal successful_inserts
         while True:
-            # Check if we've reached the target
             with lock:
                 if successful_inserts >= target_vectors:
                     return
 
-            # Choose a random vector and try to insert it
             item = random.choice(data)
             vector = item["embedding"]
             text = item.get("text", "")
@@ -782,14 +709,12 @@ def populate_and_wait_clustering(
                 if success:
                     with lock:
                         successful_inserts += 1
-                        # Progress indicator every 100 insertions
                         if successful_inserts % 100 == 0:
                             sys.stdout.write(
                                 f"\rInserted {successful_inserts}/{target_vectors}"
                             )
                             sys.stdout.flush()
             except Exception:
-                # Ignore errors during warmup (normal timeouts under load)
                 pass
 
     logger.info(f"Starting concurrent warmup with {concurrency} threads...")
@@ -799,13 +724,11 @@ def populate_and_wait_clustering(
         for f in futures:
             f.result()
 
-    print()  # Newline
+    print()
     logger.info(f"Warmup complete. {successful_inserts} vectors inserted.")
 
-    # Wait for queues to drain
     wait_for_queues(servers)
 
-    # Wait for all servers to reach clustered state
     wait_for_clustered(servers)
 
 
@@ -826,10 +749,8 @@ def run_suite(
         logger.error("Failed to load data. Aborting.")
         sys.exit(1)
 
-    # Configuration based on client.py
     num_vectors_before_clustering = 8192
 
-    # Start Docker cluster if cluster mode is enabled
     if cluster_mode:
         logger.info("Starting Qdrant cluster with Docker...")
         if not start_docker_cluster(num_servers, start_port):
@@ -837,7 +758,6 @@ def run_suite(
             sys.exit(1)
         logger.info("Qdrant cluster started successfully.")
 
-    # Create servers
     logger.info(
         f"Creating {num_servers} servers with replication factor {replication_factor}..."
     )
@@ -848,15 +768,12 @@ def run_suite(
 
     servers = []
     for i in range(num_servers):
-        # Determine Qdrant URL based on mode
         if cluster_mode:
-            # Each server connects to its own Qdrant container
             port = start_port + (i * 2)
             qdrant_url = f"http://localhost:{port}"
         else:
             qdrant_url = ":memory:"
 
-        # Server with highest ID is initial coordinator
         servers.append(
             sv.Server(
                 i,
@@ -868,7 +785,6 @@ def run_suite(
             )
         )
 
-    # Register peers
     for server in servers:
         for peer in servers:
             if server.get_id() == peer.get_id():
@@ -877,9 +793,6 @@ def run_suite(
 
     logger.info(f"{num_servers} servers started and connected")
 
-    # Wait for coordinator discovery before any operations
-    # This is critical - without this, non-coordinator servers won't be able
-    # to forward vectors to the coordinator and data will be lost
     if not wait_for_coordinator_discovery(servers):
         logger.error("Failed to establish coordinator discovery. Aborting.")
         for s in servers:
@@ -890,7 +803,6 @@ def run_suite(
 
     client = BenchmarkClient(servers)
 
-    # Initial Warmup
     initial_count = get_vector_count(servers)
     logger.info(f"Initial System Vector Count: {initial_count}")
 
@@ -901,7 +813,6 @@ def run_suite(
         f"Post-Warmup Vector Count: {post_warmup_count} (+{post_warmup_count - initial_count})"
     )
 
-    # Write report header
     with open(output_file, "w") as f:
         f.write("========================================================\n")
         f.write("DISTRIBUTED VECTOR DB BENCHMARK SUITE REPORT\n")
@@ -912,7 +823,6 @@ def run_suite(
         f.write(f"Post-Warmup Count: {post_warmup_count}\n")
         f.write("========================================================\n\n")
 
-    # Structure to accumulate per-server data from all scenarios
     all_per_server_data = {}
 
     for name, config in SCENARIOS.items():
@@ -928,14 +838,12 @@ def run_suite(
         )
         total_time = time.time() - start_time
 
-        # Wait for queues to drain before counting
         wait_for_queues(servers, timeout=60)
 
         post_test_count = get_vector_count(servers)
         count_delta = post_test_count - pre_test_count
         logger.info(f"Post-Test Count: {post_test_count} (Delta: +{count_delta})")
 
-        # Calculate summary metrics
         total_ops = (
             len(results["insert"])
             + len(results["query"])
@@ -944,11 +852,6 @@ def run_suite(
         )
         throughput = total_ops / total_time if total_time > 0 else 0
 
-        # ============================================================
-        # GENERATE REPORT - AGGREGATE METRICS (all servers together)
-        # ============================================================
-        # The metrics below are the SUM/AVERAGE of all servers.
-        # Requests were distributed randomly among servers.
 
         server_ids = [s.get_id() for s in servers]
         report_section = [
@@ -967,10 +870,6 @@ def run_suite(
             get_stats_summary("Query", results["query"], results["errors"]["query"]),
         ]
 
-        # ============================================================
-        # GENERATE REPORT - PER-SERVER METRICS (detail per scenario)
-        # ============================================================
-        # Here we show how each individual server performed in this scenario
 
         report_section.append("")
         report_section.append("[PER-SERVER BREAKDOWN - This scenario only]")
@@ -997,13 +896,11 @@ def run_suite(
             "--------------------------------------------------------\n"
         )
 
-        # STREAMING: write immediately after each scenario (skip sanity_check)
         if name != "sanity_check":
             with open(output_file, "a") as f:
                 f.write("\n".join(report_section) + "\n")
-                f.flush()  # Force write to disk
+                f.flush()
 
-        # Accumulate per-server data for FINAL SUMMARY (all scenarios together, except sanity_check)
         if name != "sanity_check":
             for server_id, server_data in results["per_server"].items():
                 if server_id not in all_per_server_data:
@@ -1017,14 +914,11 @@ def run_suite(
                 all_per_server_data[server_id]["errors"] += server_data["errors"]
 
         logger.info(f"Finished {name}. Throughput: {throughput:.2f} req/s")
-        # Cool down between tests
         time.sleep(2)
 
-    # Write per-server report at the end
     with open(output_file, "a") as f:
         f.write(get_per_server_summary(all_per_server_data))
 
-        # Add system-specific metrics
         f.write("\n" + "=" * 60 + "\n")
         f.write("SYSTEM-SPECIFIC METRICS\n")
         f.write("=" * 60 + "\n")
@@ -1042,12 +936,10 @@ def run_suite(
         total_vectors = get_vector_count(servers)
         f.write(f"\nTotal vectors across cluster: {total_vectors}\n")
 
-    # Stop servers
     logger.info("Stopping servers...")
     for s in servers:
         s.stop()
 
-    # Cleanup Docker cluster if cluster mode was enabled
     if cluster_mode:
         cleanup_cluster(num_servers)
 

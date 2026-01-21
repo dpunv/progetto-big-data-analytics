@@ -2,8 +2,10 @@ from abc import ABC, abstractmethod
 
 
 class BaseEndpoint(ABC):
-    """
-    Abstract base class for all endpoints.
+    """Abstract base class for network endpoints.
+
+    Parameters:
+        server_instance: The server instance associated with this endpoint.
     """
 
     def __init__(self, server_instance):
@@ -11,10 +13,10 @@ class BaseEndpoint(ABC):
 
     @abstractmethod
     async def start(self, ip: str, port: int):
-        """
-        Start the endpoint server.
+        """Starts the endpoint server to listen for incoming connections.
 
-        :param ip: IP address to bind to.
-        :param port: Port to bind to.
+        Args:
+            ip (str): The IP address to bind to.
+            port (int): The port number to bind to.
         """
         pass

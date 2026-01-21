@@ -5,7 +5,6 @@ import sys
 import os
 import shutil
 
-# Configuration
 NUM_SERVERS = 8
 START_PORT = 6333
 
@@ -20,7 +19,6 @@ def generate_compose_and_dirs():
         grpc_port = http_port + 1
         storage_dir = f"./qdrant_storage_{i}"
 
-        # Create storage directory
         os.makedirs(storage_dir, exist_ok=True)
 
         service_def = f"""  qdrant-{i}:
@@ -50,10 +48,6 @@ def cleanup():
     except Exception as e:
         print(f"Error stopping docker: {e}")
 
-    # Optional: Clean up storage directories?
-    # User asked to "clean everything", implies data too?
-    # The prompt says "then launch client and finally clean everything".
-    # Usually in testing scenarios yes.
     for i in range(NUM_SERVERS):
         storage_dir = f"./qdrant_storage_{i}"
         if os.path.exists(storage_dir):

@@ -2,6 +2,15 @@ import json
 
 
 def create_peers_config(peers, filename="peers.json"):
+    """Writes the peer configuration to a JSON file.
+
+    Args:
+        peers (list): A list of peer dictionaries (id, url, port).
+        filename (str, optional): The output filename. Defaults to "peers.json".
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
     try:
         with open(filename, "w") as f:
             json.dump(peers, f, indent=4)

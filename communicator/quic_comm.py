@@ -41,17 +41,15 @@ class OneShotClientProtocol(QuicConnectionProtocol):
 
         self._stream_id = self._quic.get_next_available_stream_id()
 
-        chunk_size = 1024  # Size for chunks
+        chunk_size = 1024
         for i in range(0, len(data), chunk_size):
             chunk = data[i : i + chunk_size]
             is_last = i + chunk_size >= len(data)
             self._quic.send_stream_data(self._stream_id, chunk, end_stream=is_last)
         self.transmit()
 
-        # Wait for response
         await self._response_complete.wait()
 
-        # Deserialize response
         try:
             return pickle.loads(self._response_data)
         except Exception as e:

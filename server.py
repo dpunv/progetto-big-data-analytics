@@ -9,15 +9,13 @@ from sklearn.metrics import silhouette_score
 
 from compound_types import *
 
-# Clustering configuration
-SILHOUETTE_SUBSAMPLE_SIZE = 2000  # Max sample size for silhouette score calculation
-MIN_K = 5  # Minimum number of clusters to try
-MAX_K = 30  # Maximum number of clusters to try
+SILHOUETTE_SUBSAMPLE_SIZE = 2000
+MIN_K = 5
+MAX_K = 30
 
-# Rebalancing configuration
-REBALANCE_THRESHOLD = 0.5  # 50% deviation from average triggers rebalance
-REBALANCE_SPLIT_FACTOR = 3  # Split heavy clusters into 3 subclusters
-REBALANCE_CHECK_INTERVAL = 86400  # Check every 86400 seconds (24 hours)
+REBALANCE_THRESHOLD = 0.5
+REBALANCE_SPLIT_FACTOR = 3
+REBALANCE_CHECK_INTERVAL = 86400
 
 import json
 import argparse
@@ -37,17 +35,18 @@ from cluster_index import ClusterIndex
 from communicator import Communicator
 from endpoint import Endpoint
 
-# ============ Phi Accrual Failure Detector ============
 
 
 class PhiAccrualFailureDetector:
-    """
-    Phi Accrual Failure Detector implementation.
+    """Implementation of the Phi Accrual Failure Detector.
 
-    Instead of binary alive/dead, calculates a suspicion level (phi) based on
-    the statistical distribution of heartbeat arrival times.
+    Rather than using a binary determination of node availability, this detector calculates 
+    a suspicion level (phi) based on the statistical distribution of inter-arrival times 
+    of heartbeats. This allows for more flexible failure detection in distributed systems.
 
-    Reference: "The φ Accrual Failure Detector" by Hayashibara et al.
+    Reference:
+        Hayashibara, N., Defago, X., Yaced, R., & Katayama, T. (2004). 
+        The φ Accrual Failure Detector.
     """
 
     def __init__(
@@ -69,16 +68,12 @@ class PhiAccrualFailureDetector:
         self.min_std_deviation_ms = min_std_deviation_ms
         self.first_heartbeat_estimate_ms = first_heartbeat_estimate_ms
 
-        # Sliding window of heartbeat intervals (in milliseconds)
         self.heartbeat_intervals: deque = deque(maxlen=max_sample_size)
 
-        # Timestamp of last heartbeat received
         self.last_heartbeat_time: Optional[float] = None
 
-        # Lock for thread safety
         self.lock = threading.Lock()
 
-        # Cached statistics (updated on each heartbeat)
         self._cached_mean: float = first_heartbeat_estimate_ms
         self._cached_variance: float = 0.0
 
@@ -88,7 +83,7 @@ class PhiAccrualFailureDetector:
         Updates the sliding window with the interval since last heartbeat.
         """
         with self.lock:
-            now = time.time() * 1000  # Convert to milliseconds
+            now = time.time() * 1000
 
             if self.last_heartbeat_time is not None:
                 interval = now - self.last_heartbeat_time
@@ -143,23 +138,17 @@ class PhiAccrualFailureDetector:
         mean = self._cached_mean
         std_dev = max(math.sqrt(self._cached_variance), self.min_std_deviation_ms)
 
-        # Calculate probability using the complementary CDF of normal distribution
-        # P(X > t) = 1 - CDF(t) = 1 - 0.5 * (1 + erf((t - mean) / (std * sqrt(2))))
-        # = 0.5 * erfc((t - mean) / (std * sqrt(2)))
 
         y = (time_diff_ms - mean) / std_dev
 
-        # Using approximation for log10(1 - CDF) for numerical stability
-        # For large y, phi ≈ y^2 / 2 * log10(e) + constant terms
 
-        # Calculate using erfc for better numerical stability
         try:
             p = 0.5 * math.erfc(y / math.sqrt(2))
-            if p < 1e-100:  # Avoid log(0)
-                return 100.0  # Cap phi at very high value
+            if p < 1e-100:
+                return 100.0
             return -math.log10(p)
         except (ValueError, OverflowError):
-            return 100.0  # On any math error, assume highly suspicious
+            return 100.0
 
     def is_available(self) -> bool:
         """
@@ -180,7 +169,15 @@ class PhiAccrualFailureDetector:
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
-    # Optimized to handle both lists and numpy arrays without redundant conversion
+    """Calculates the cosine similarity between two vectors.
+
+    Args:
+        v1 (List[float]): The first vector.
+        v2 (List[float]): The second vector.
+
+    Returns:
+        float: The cosine similarity between v1 and v2. Returns 0.0 if either norm is 0.
+    """
     if isinstance(v1, np.ndarray) and isinstance(v2, np.ndarray):
         dot_product = np.dot(v1, v2)
         norm_a = np.linalg.norm(v1)
@@ -198,16 +195,15 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
 
 
 class HintedHandoff:
-    """
-    Store hints for unreachable nodes. Deliver when connectivity restored.
+    """Manages hinted handoff for partition tolerance.
 
-    Implements the hinted handoff pattern for partition tolerance:
-    when a target node is unreachable, vectors are stored locally and
-    delivered when the node becomes reachable again.
+    Stores vectors destined for unreachable nodes ('hints'). These hints are kept strictly local
+    and are delivered to the target node once it becomes reachable again. This ensures
+    data durability during temporary network partitions or node failures.
     """
 
     def __init__(self):
-        self.hints: Dict[int, List] = {}  # target_id -> List[VectorComplete]
+        self.hints: Dict[int, List] = {}
         self.lock = threading.RLock()
 
     def store_hint(self, target_id: int, vectors: List):
@@ -248,23 +244,21 @@ class HintedHandoff:
         with self.lock:
             self.hints.clear()
 
-    # ============ Peer & Server Implementation ============
 
 
 from peer.peer import Peer
 
 
 class VectorStore:
-    """
-    Thread-safe vector storage with version tracking and deduplication.
+    """Thread-safe storage for vectors with versioning and deduplication support.
 
-    Stores vectors organized by cluster ID, with tracking of vector IDs
-    to prevent duplicates and support version-based conflict resolution.
+    Organizes vectors by cluster ID and tracks vector IDs to prevent duplicates.
+    It supports conflict resolution based on vector versions (timestamp, node_id).
     """
 
     def __init__(self):
-        self.vectors = {}  # map cluster_id -> list of vectors
-        self.vector_ids: Dict[int, Tuple] = {}  # vector_id -> vector tuple (for dedup)
+        self.vectors = {}
+        self.vector_ids: Dict[int, Tuple] = {}
         self.lock = threading.RLock()
 
     def delete_by_cluster(self, cluster_id: int):
@@ -292,32 +286,24 @@ class VectorStore:
             vec_id = vector[1]
             cluster_id = vector[3]
 
-            # Get version (handle both old 4-tuple and new 5-tuple format)
             version = vector[4] if len(vector) > 4 else (0, 0)
 
             if vec_id in self.vector_ids:
-                # Check version, keep newer
                 existing = self.vector_ids[vec_id]
                 existing_version = existing[4] if len(existing) > 4 else (0, 0)
 
                 if version <= existing_version:
-                    return False  # Existing is newer or equal
+                    return False
 
-                # Remove old version
                 self._remove_by_id_internal(vec_id)
 
-            # Insert new vector
-            # OPTIMIZATION: Convert to numpy array immediately upon insertion
-            # Handle variable tuple length (legacy vs new)
             v_data = vector[0]
             if not isinstance(v_data, np.ndarray):
                 v_data = np.array(v_data, dtype=np.float32)
 
-            # Reconstruct vector tuple with numpy array
             if len(vector) == 6:
                 vector = (v_data, vector[1], vector[2], vector[3], vector[4], vector[5])
             elif len(vector) == 5:
-                # Add None for missing destinations if needed, or just keep as is
                 vector = (v_data, vector[1], vector[2], vector[3], vector[4])
             else:
                 vector = (v_data, vector[1], vector[2], vector[3])
@@ -389,8 +375,11 @@ class VectorStore:
 
 
 class QdrantVectorStore:
-    """
-    Qdrant-backed vector storage.
+    """A thread-safe vector storage wrapper backed by Qdrant.
+
+    This class provides an interface to interact with a Qdrant collection, 
+    preserving the same semantics as the in-memory VectorStore but persisting 
+    vectors to Qdrant. It handles version tracking and batched operations.
     """
 
     def __init__(self, url, collection_name, vector_dim):
@@ -421,9 +410,7 @@ class QdrantVectorStore:
         """
         Insert a vector, handling duplicates via version comparison.
         """
-        # vector format: (Vector, VectorId, VectorPayload, cluster_id, version, destinations)
         with self.lock:
-            # Check dim
             v_data = vector[0]
             if isinstance(v_data, list):
                 dim = len(v_data)
@@ -436,18 +423,12 @@ class QdrantVectorStore:
             cluster_id = vector[3]
             version = vector[4] if len(vector) > 4 else (0, 0)
 
-            # Check existing
             existing_point = qdrant_module.retrieve_vector(
                 self.url, self.collection_name, vec_id
             )
 
             if existing_point:
-                # payload is a dict
                 payload = existing_point.payload
-                # recover version from payload
-                # We need to store version in payload
-                # payload structure in qdrant_module insert: {"string": vector_payload, "cluster_id": cluster_id}
-                # We should add "version_ts" and "version_node"
                 v_ts = payload.get("version_ts", 0)
                 v_node = payload.get("version_node", 0)
                 existing_version = (v_ts, v_node)
@@ -455,18 +436,12 @@ class QdrantVectorStore:
                 if version <= existing_version:
                     return False
 
-            # Prepare insert
-            # vector payload is stored in vector[2]
             payload_str = vector[2]
 
-            # Deconstruct version
             v_ts, v_node = version
 
-            # Store everything we need to reconstruct the tuple
-            # We also need 'destinations' if it exists (index 5)
             destinations = vector[5] if len(vector) > 5 else None
 
-            # Create special Qdrant payload
             q_payload = {
                 "string": payload_str,
                 "cluster_id": cluster_id,
@@ -476,21 +451,7 @@ class QdrantVectorStore:
             if destinations:
                 q_payload["destinations"] = list(destinations)
 
-            # Insert using module (we need to bypass insert_vectors wrapper because it constructs payload differently)
-            # OR we modify insert_vectors to accept full payload?
-            # insert_vectors takes: (vector_content, vector_id, vector_payload, cluster_id)
-            # and constructs payload={"string": vector_payload, "cluster_id": cluster_id}
-            # This is too restrictive.
-            # I should use client directly here or update module?
-            # I'll update module later if needed, but for now I can modify this class to use client directly?
-            # No, better to stick to module abstractions if possible or extend module.
-            # But the 'insert_vectors' function in module is very specific.
-            # I will assume I can modify qdrant_module.py again to support generic payload?
-            # OR I can just use insert_vectors_generic if I pack my payload into 'vector_payload' as a dict?
-            # But insert_vectors creates specific dict structure.
 
-            # Let's call client.upload_points directly here since I have logic.
-            # Or use qdrant_module.get_client
 
             client = qdrant_module.get_client(self.url)
 
@@ -514,7 +475,6 @@ class QdrantVectorStore:
             return 0
 
         with self.lock:
-            # 1. Ensure collection exists (check dimension of first vector)
             v0_data = vectors[0][0]
             if isinstance(v0_data, list):
                 dim = len(v0_data)
@@ -522,16 +482,10 @@ class QdrantVectorStore:
                 dim = v0_data.shape[0]
             self._ensure_collection(dim)
 
-            # 2. Retrieve existing versions for all IDs
             ids = [v[1] for v in vectors]
             client = qdrant_module.get_client(self.url)
             from qdrant_client import models
 
-            # Retrieve existing points to check versions
-            # We use scroll logic or retrieve logic?
-            # retrieve takes generic list of IDs.
-            # qdrant_module.retrieve_vector is single.
-            # client.retrieve() returns list of Record.
             try:
                 with qdrant_module.get_lock(self.url):
                     existing_records = client.retrieve(
@@ -552,7 +506,6 @@ class QdrantVectorStore:
                 vec_id = vector[1]
                 version = vector[4] if len(vector) > 4 else (0, 0)
 
-                # Check version conflict
                 if vec_id in existing_map:
                     payload = existing_map[vec_id]
                     v_ts = payload.get("version_ts", 0)
@@ -560,9 +513,8 @@ class QdrantVectorStore:
                     existing_version = (v_ts, v_node)
 
                     if version <= existing_version:
-                        continue  # Skip old version
+                        continue
 
-                # Prepare payload
                 payload_str = vector[2]
                 cluster_id = vector[3]
                 v_ts, v_node = version
@@ -588,7 +540,6 @@ class QdrantVectorStore:
             if not points_to_upload:
                 return 0
 
-            # 3. Batch upload
             try:
                 with qdrant_module.get_lock(self.url):
                     client.upload_points(
@@ -621,9 +572,6 @@ class QdrantVectorStore:
         return [self._point_to_tuple(p) for p in points]
 
     def get_by_cluster(self, cluster_id):
-        # We need to filter by cluster_id.
-        # qdrant_module doesn't export filter search.
-        # Implement using scroll with filter
         client = qdrant_module.get_client(self.url)
         from qdrant_client import models
 
@@ -661,8 +609,6 @@ class QdrantVectorStore:
         return {p.id for p in points}
 
     def _point_to_tuple(self, point):
-        # Reconstruct tuple from PointStruct
-        # Tuple: (Vector, VectorId, VectorPayload, cluster_id, version, destinations)
         payload = point.payload
         vec_data = point.vector
         vec_id = point.id
@@ -675,8 +621,6 @@ class QdrantVectorStore:
 
         version = (v_ts, v_node)
 
-        # Tuple reconstruction
-        # Handle destinations (frozenset)
         if dest:
             dest = frozenset(dest)
             return (vec_data, vec_id, p_str, c_id, version, dest)
@@ -685,6 +629,12 @@ class QdrantVectorStore:
 
 
 class Server:
+    """The main server node in the distributed vector database.
+
+    Manages peer communication, data sharding/clustering, replication, failure detection, 
+    and vector storage operations.
+    """
+
     def __init__(
         self,
         id,
@@ -706,10 +656,8 @@ class Server:
         self.before_clustering = before_clustering
         self.replication_factor = replication_factor
 
-        # Initialize communicator first so it can be passed to peers
         self.communicator = Communicator(endpoint)
 
-        # Local peer (self)
         self.peers = []
         self._add_local_peer()
 
@@ -725,73 +673,57 @@ class Server:
         self.dropped_vectors = 0
         self._cluster_id_counter = 0
 
-        # Partition tolerance state
         self.partition_coordinator_id = id if is_coordinator else None
         self.hinted_handoff = HintedHandoff()
         self.topology_version = 0
 
         self.endpoint = Endpoint(endpoint, self)
 
-        # Start endpoint in a thread to handle async loop
         self._start_endpoint_thread(port)
 
-        # Client Endpoint (Optional)
         self.client_endpoint = None
         if client_port:
             self.client_endpoint = ClientEndpoint(self)
             self._start_client_endpoint(client_port)
 
-        # Network simulation (Client controlled)
         self.simulated_unreachable_peers: Set[int] = set()
         self.active_peers: Set[int] = {
             id
-        }  # Initially assume only self is reachable until gossip
+        }
 
-        # Phi Accrual Failure Detectors (one per peer)
-        # Configuration: threshold=8 (99.9999% certainty), sliding window of 500 samples
         self.failure_detectors: Dict[int, PhiAccrualFailureDetector] = {}
-        self.phi_threshold = 8.0  # Industrial standard threshold
-        self.phi_window_size = 500  # Sliding window size
+        self.phi_threshold = 8.0
+        self.phi_window_size = 500
 
-        # Heartbeat configuration
-        self.heartbeat_interval = 3.0  # Base interval in seconds
-        self.heartbeat_jitter = 0.5  # Jitter: ±0.5 seconds (uniform random)
+        self.heartbeat_interval = 3.0
+        self.heartbeat_jitter = 0.5
 
-        # Track when reconciliation is in progress
         self._reconciling = False
         self._reconcile_lock = threading.Lock()
 
-        # Track when clustering is in progress
         self.clustering_in_progress = False
 
-        # Split-safe queue: vectors arriving for clusters being split
-        # are buffered here and re-routed after split completes
-        self.splitting_clusters: Set[int] = set()  # Cluster IDs currently being split
-        self.pending_vectors: Dict[int, list] = {}  # cluster_id -> [(vector, ...), ...]
-        self.split_queue_lock = threading.Lock()  # Separate lock for split queue
+        self.splitting_clusters: Set[int] = set()
+        self.pending_vectors: Dict[int, list] = {}
+        self.split_queue_lock = threading.Lock()
 
-        # HNSW Index
         self.cluster_index = None
         self.cluster_to_destinations_cache = (
-            None  # Map cluster_id -> frozenset(peer_ids)
+            None
         )
 
-        # Concurrency control
         self.lock = threading.RLock()
         self.queue = queue.Queue()
         self.running = True
 
-        # Worker thread
         self.worker_thread = threading.Thread(target=self.process_queue, daemon=True)
         self.worker_thread.start()
 
-        # Heartbeat thread
         self.heartbeat_thread = threading.Thread(
             target=self.heartbeat_loop, daemon=True
         )
         self.heartbeat_thread.start()
 
-        # Rebalancing monitor thread
         self.rebalance_thread = threading.Thread(
             target=self._rebalance_monitor_loop, daemon=True
         )
@@ -802,14 +734,11 @@ class Server:
         Periodic check for cluster imbalance across nodes.
         Runs every REBALANCE_CHECK_INTERVAL seconds (default: 24 hours).
         """
-        # Sleep for the configured interval
         time.sleep(REBALANCE_CHECK_INTERVAL)
 
         while self.running:
             try:
-                # Only run if clustering has been done
                 if self.status == "clustered" and self.clusters:
-                    # Check if we should run rebalancing
                     if self.trigger_rebalance():
                         print(
                             f"DEBUG: Server {self.id} - Rebalancing triggered successfully"
@@ -817,7 +746,6 @@ class Server:
             except Exception as e:
                 print(f"DEBUG: Server {self.id} - Error in rebalance monitor: {e}")
 
-            # Sleep for the configured interval
             time.sleep(REBALANCE_CHECK_INTERVAL)
 
     def _start_endpoint_thread(self, port):
@@ -843,24 +771,24 @@ class Server:
         self.client_thread.start()
 
     def _add_local_peer(self):
-        # Create a peer instance representing THIS server
         local_peer = Peer(self.ip, self.port, server_instance=self)
         self.peers.append(local_peer)
 
     def add_peer(self, peer_or_ip, port: int = None):
-        """
-        Add a peer to the server.
-        Can accept:
-        1. (ip, port) for remote peer.
-        2. Server instance for local simulation/testing.
+        """Add a peer to the server's peer list.
+
+        This method supports adding both remote peers (via IP and port) and
+        local simulated peers (via Server instance references).
+
+        Args:
+            peer_or_ip: The IP address of the remote peer (str), or a Server instance for local simulation.
+            port (int, optional): The port of the remote peer. Required if peer_or_ip is an IP string.
         """
         with self.lock:
             new_peer = None
             if isinstance(peer_or_ip, str) and port is not None:
-                # Remote Peer
                 new_peer = Peer(peer_or_ip, port, communicator=self.communicator)
             elif hasattr(peer_or_ip, "ip") and hasattr(peer_or_ip, "port"):
-                # Server instance (Simulation)
                 new_peer = Peer(
                     peer_or_ip.ip, peer_or_ip.port, server_instance=peer_or_ip
                 )
@@ -868,37 +796,30 @@ class Server:
                 print(f"Error: Invalid argument to add_peer: {peer_or_ip}, {port}")
                 return
 
-            # Avoid duplications
             for p in self.peers:
                 if p.ip == new_peer.ip and p.port == new_peer.port:
                     return
             self.peers.append(new_peer)
 
-            # For remote peers, attempt immediate ping to populate active_peers
-            # This prevents race conditions where coordinator() is called before heartbeat runs
             if not new_peer.is_local():
                 try:
                     if new_peer.ping():
                         peer_id = new_peer.get_id()
                         self.active_peers.add(peer_id)
-                        # Also initialize failure detector with first heartbeat
                         detector = self._get_or_create_failure_detector(peer_id)
                         detector.heartbeat_received()
                 except Exception:
-                    pass  # Peer not reachable yet, heartbeat loop will retry
+                    pass
 
     def stop(self):
         self.running = False
-        self.queue.put(None)  # Sentinel to unblock queue
+        self.queue.put(None)
         self.worker_thread.join()
 
-        # Stop heartbeat thread
         if hasattr(self, "heartbeat_thread") and self.heartbeat_thread.is_alive():
             self.heartbeat_thread.join(timeout=1)
 
-        # Stop endpoint thread
         if hasattr(self, "endpoint_loop"):
-            # Schedule cleanup and stop
             try:
                 if self.endpoint_loop.is_running():
                     coro = self.endpoint.stop()
@@ -906,7 +827,6 @@ class Server:
                         future = asyncio.run_coroutine_threadsafe(
                             coro, self.endpoint_loop
                         )
-                        # Wait for cleanup with timeout
                         try:
                             future.result(timeout=2)
                         except (concurrent.futures.TimeoutError, Exception) as e:
@@ -914,7 +834,6 @@ class Server:
                                 f"Endpoint stop warning/error for server {self.id}: {e}"
                             )
                     except Exception as e:
-                        # Failed to schedule, close coroutine to avoid warning
                         coro.close()
                         print(
                             f"Error scheduling endpoint stop for server {self.id}: {e}"
@@ -925,7 +844,6 @@ class Server:
                 self.endpoint_loop.call_soon_threadsafe(self.endpoint_loop.stop)
                 self.endpoint_thread.join(timeout=1)
 
-        # Stop client endpoint
         if hasattr(self, "client_loop"):
             try:
                 if self.client_loop.is_running():
@@ -943,7 +861,6 @@ class Server:
                 self.client_loop.call_soon_threadsafe(self.client_loop.stop)
                 self.client_thread.join(timeout=1)
 
-        # Close Qdrant clients
         qdrant_module.close_all_clients()
 
     def process_queue(self):
@@ -952,7 +869,6 @@ class Server:
                 task = self.queue.get()
                 if task is None:
                     break
-                # print(f"DEBUG: Server {self.id} popping task. Method: {task[0].__name__}")
                 method, args = task
                 method(*args)
                 self.queue.task_done()
@@ -1009,18 +925,15 @@ class Server:
         print(f"DEBUG: Server {self.id} - Deleting vectors for cluster {cluster_id}")
         return self.store.delete_by_cluster(cluster_id)
 
-    # ==================== Network Simulation & Gossip ====================
 
     def block_peer(self, peer_id: int):
         """Simulate a network partition blocking this peer."""
         changed = False
         with self.lock:
             self.simulated_unreachable_peers.add(peer_id)
-            # Immediately remove from active peers for faster partition detection
             if peer_id in self.active_peers:
                 self.active_peers.discard(peer_id)
                 changed = True
-        # Trigger network change handler outside of lock to avoid deadlock
         if changed:
             self._handle_network_change()
 
@@ -1029,7 +942,6 @@ class Server:
         changed = False
         with self.lock:
             self.simulated_unreachable_peers.discard(peer_id)
-            # Immediately add back to active_peers if peer exists
             if any(p.get_id() == peer_id for p in self.peers):
                 if peer_id not in self.active_peers:
                     self.active_peers.add(peer_id)
@@ -1039,14 +951,6 @@ class Server:
 
     def respond_to_ping(self) -> bool:
         """Called by other peers to check if I am reachable."""
-        # In a real network, this would just happen.
-        # Here we simulate 'dropping packets' if the sender is blocked.
-        # But wait, ping is called on the object reference.
-        # The caller (sender) checks its own block list before calling, or we check here?
-        # The logic: Sender checks if it CAN send.
-        # But 'ping' implies checking if the OTHER side is alive.
-        # So it simply returns True (I am alive).
-        # The connectivity check happens on the SENDER side based on 'simulated_unreachable_peers'.
         return True
 
     def _get_or_create_failure_detector(
@@ -1064,7 +968,6 @@ class Server:
 
     def _calculate_sleep_with_jitter(self) -> float:
         """Calculate sleep time with jitter to prevent synchronized heartbeats."""
-        # Base interval + uniform random jitter in range [-jitter, +jitter]
         jitter = random.uniform(-self.heartbeat_jitter, self.heartbeat_jitter)
         return max(0.1, self.heartbeat_interval + jitter)
 
@@ -1076,7 +979,6 @@ class Server:
         Phi Accrual provides probabilistic failure detection based on heartbeat history.
         """
         while self.running:
-            # Copy current state for comparison
             with self.lock:
                 previous_active_snapshot = set(self.active_peers)
 
@@ -1089,32 +991,25 @@ class Server:
                 except Exception:
                     return None
 
-                # Self is always reachable
                 if peer_id == self.id:
                     return peer_id
 
-                # Check simulated network conditions (for testing)
                 is_blocked = False
                 with self.lock:
                     if peer_id in self.simulated_unreachable_peers:
                         is_blocked = True
 
                 if is_blocked:
-                    # Simulated partition: don't record heartbeat, let phi rise
                     return None
 
-                # Try to ping and update failure detector
                 detector = self._get_or_create_failure_detector(peer_id)
 
                 try:
                     if peer.ping():
-                        # Successful ping - record heartbeat arrival
                         detector.heartbeat_received()
                 except Exception:
-                    # Failed to connect
                     pass
 
-                # Check if peer is available based on Phi Accrual
                 if detector.is_available():
                     return peer_id
                 return None
@@ -1126,14 +1021,11 @@ class Server:
                 if res is not None:
                     current_active_snapshot.add(res)
 
-            # Detect changes and update state
             if current_active_snapshot != previous_active_snapshot:
                 with self.lock:
                     self.active_peers = current_active_snapshot
-                # print(f"DEBUG: Server {self.id} detected network change. Active: {self.active_peers}")
                 self._handle_network_change()
 
-            # Sleep with jitter at the end, so first check happens immediately
             sleep_time = self._calculate_sleep_with_jitter()
             time.sleep(sleep_time)
 
@@ -1152,12 +1044,8 @@ class Server:
 
     def _handle_network_change(self):
         """React to changes in peer connectivity."""
-        # 1. Elect new coordinator for this partition
         self.elect_partition_coordinator()
 
-        # 2. If peers appeared (healing), trigger reconciliation
-        # Note: This is a simplified check. Real systems might compare old/new sets.
-        # We always attempt reconciliation on change just to be safe/consistent.
         self.on_partition_heal()
 
     def _is_peer_reachable(self, peer: Peer) -> bool:
@@ -1192,34 +1080,24 @@ class Server:
             active = list(self.active_peers)
 
         if not active:
-            # Should at least contain self
             return
 
-        # Elect highest ID as coordinator
         new_coord_id = max(active)
 
         with self.lock:
             self.partition_coordinator_id = new_coord_id
             self.is_coordinator = new_coord_id == self.id
-            # print(f"DEBUG: Server {self.id} election. Active: {active}, Winner: {new_coord_id}")
 
     def on_partition_heal(self):
         """Called when network topology changes (e.g. heal). Trigger reconciliation."""
         with self._reconcile_lock:
             if self._reconciling:
-                return  # Already reconciling
+                return
             self._reconciling = True
 
         try:
-            # 1. Deliver any stored hints
             self.deliver_hints()
 
-            # 2. If I am coordinator, reconcile with other coordinators
-            # RELAXATION: To ensure full convergence (especially between two non-coordinator nodes
-            # that rely on a bridge), we allow everyone to reconcile upon network change.
-            # In a large system, this might be expensive (gossip is better), but for this
-            # implementation, it guarantees that "Follower A" talks to "Follower B".
-            # if self.is_coordinator:
             self._reconcile_with_other_peers()
 
         finally:
@@ -1228,10 +1106,6 @@ class Server:
 
     def _reconcile_with_other_peers(self):
         """Reconcile with all reachable peers to ensure data consistency."""
-        # Optimization: Only reconcile with other potential coordinators (highest ID in their view)
-        # But we don't know their view. So request reconciliation with reachable peers.
-        # To avoid storm, maybe only reconcile with peers that have ID > self.id?
-        # Or just all. Let's stick to all reachable for robustness.
 
         peers_to_reconcile = [
             p for p in self.get_reachable_peers() if p.get_id() > self.id
@@ -1241,7 +1115,7 @@ class Server:
             try:
                 self.reconcile_with_peer(peer)
             except Exception:
-                pass  # print(f"Error reconciling with peer {peer.get_id()}: {e}")
+                pass
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
             executor.map(reconcile_single, peers_to_reconcile)
@@ -1257,11 +1131,9 @@ class Server:
                     try:
                         peer.receive(hints, "handoff")
                     except Exception as e:
-                        # Put hints back if delivery fails
                         self.hinted_handoff.store_hint(target_id, hints)
                         print(f"Failed to deliver hints to {target_id}: {e}")
 
-    # ==================== Vector Versioning & Anti-Entropy ====================
 
     def get_vector_digest(self) -> Dict[int, Tuple[float, int]]:
         """
@@ -1292,58 +1164,44 @@ class Server:
         This prevents over-replication beyond the intended replication factor.
         """
         try:
-            # 1. Exchange digests (minimal network: just ID + version)
             my_digest = self.get_vector_digest()
             peer_digest = peer.get_vector_digest()
 
-            # 2. Find vectors that should be on peer but aren't
             my_ids = set(my_digest.keys())
             peer_ids = set(peer_digest.keys())
 
             to_send = []
             to_request = []
 
-            # Check vectors I have that peer doesn't
             for vid in my_ids - peer_ids:
                 vec = self.store.get_vector(vid)
                 if vec and self._should_be_on_peer(vec, peer.get_id()):
                     to_send.append(vid)
 
-            # Check vectors peer has that I don't - request if they should be on me
             for vid in peer_ids - my_ids:
-                # Request vector from peer to check if it should be on us
                 to_request.append(vid)
 
-            # For common vectors, compare versions (only if routing matches)
             for vid in my_ids & peer_ids:
                 if my_digest[vid] > peer_digest[vid]:
                     vec = self.store.get_vector(vid)
                     if vec and self._should_be_on_peer(vec, peer.get_id()):
                         to_send.append(vid)
 
-            # 3. Send vectors that should be on peer
             if to_send:
                 vectors_to_send = self.get_vectors_by_ids(to_send)
                 peer.receive(vectors_to_send, "reconcile")
 
-            # 4. Request vectors from peer that we might need
             if to_request:
                 requested_vectors = peer.get_vectors_by_ids(to_request)
                 for vec in requested_vectors:
-                    # Only store if routing says it should be on us
                     if self._should_be_on_me(vec):
                         self.store.insert(vec)
 
-            # 5. Sync Topology (Clusters)
-            # Exchange topology version
             try:
                 peer_topology_ver = peer.get_topology_version()
                 if self.topology_version > peer_topology_ver:
-                    # I have newer topology -> send to peer
-                    # We only send topology metadata, vectors_for_clusters is empty dict as we rely on anti-entropy for data
                     peer.set_clusters({}, self.clusters, version=self.topology_version)
                 elif peer_topology_ver > self.topology_version:
-                    # Peer has newer topology -> pull from peer
                     new_clusters = peer.get_clusters()
                     self.set_clusters({}, new_clusters, version=peer_topology_ver)
 
@@ -1358,15 +1216,12 @@ class Server:
         Check if vector should be replicated to the given peer.
         Uses stored destinations if available, otherwise calculates.
         """
-        # Check if vector has stored destinations (index 5)
         if len(vector) > 5 and vector[5]:
             return peer_id in vector[5]
 
-        # No stored destinations - calculate based on routing
         if not self.clusters:
-            return True  # Before clustering, accept everything
+            return True
 
-        # Calculate destinations
         destinations, _ = self._calculate_destinations(vector)
         return peer_id in destinations
 
@@ -1377,7 +1232,6 @@ class Server:
         """
         return self._should_be_on_peer(vector, self.id)
 
-    # ==================== Core Vector Operations ====================
 
     def similarity(self, vector):
         with self.lock:
@@ -1398,24 +1252,17 @@ class Server:
             else:
                 current_peers = (
                     self.get_reachable_peers()
-                )  # Only route to reachable peers
+                )
 
         if not current_peers:
             return {}
 
         candidates_map = {}
-        # Optimization: Use HNSW Index if available to filter peers
         if self.cluster_index and self.cluster_to_destinations_cache:
             try:
-                # Extract vectors for batch search
                 query_data = [v[0] for v in vectors]
                 query_matrix = np.array(query_data, dtype=np.float32)
 
-                # Search for nearest clusters.
-                # We ask for top_k clusters to ensure we find enough candidate peers.
-                # Since each cluster typically has 'reptication_factor' peers (e.g. 3),
-                # finding the single nearest cluster is often enough to get 3 peers.
-                # But to be safe and support higher top_k (e.g. 4), we search for top_k clusters.
                 nearest_clusters_batch = self.cluster_index.search_batch(
                     query_matrix, k=top_k
                 )
@@ -1429,9 +1276,7 @@ class Server:
                     candidates_map[vec_id] = candidates
             except Exception as e:
                 print(f"Error using cluster index for routing: {e}")
-                # Fallback to no filtering (empty map treated as 'use all')
 
-        # Map for fast peer lookup
         current_peers_map = {p.get_id(): p for p in current_peers}
 
         results = {}
@@ -1446,7 +1291,6 @@ class Server:
                     if pid in current_peers_map:
                         peers_to_check.append(current_peers_map[pid])
 
-                # If filtering yielded no reachable peers (e.g. all candidates down), fallback to all reachable
                 if not peers_to_check:
                     peers_to_check = current_peers
             else:
@@ -1474,9 +1318,7 @@ class Server:
         """Calculate intended destination peers for a vector based on similarity routing.
         Returns: (frozenset of peer IDs, cluster_id or -1)
         """
-        # Optimization: Use HNSW Index if available
         if self.cluster_index:
-            # Find nearest cluster(s)
             nearest_cluster_ids = self.cluster_index.find_nearest_clusters(
                 vector[0], k=1
             )
@@ -1489,7 +1331,6 @@ class Server:
                         best_cluster,
                     )
 
-        # Fallback to linear search
         with self.lock:
             all_peers = list(self.peers)
 
@@ -1502,12 +1343,10 @@ class Server:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             peer_similarities = list(executor.map(get_sim, all_peers))
 
-        # Sort by similarity and get top replication_factor
         top_peers = sorted(peer_similarities, key=lambda x: x[1], reverse=True)[
             : self.replication_factor
         ]
 
-        # Fallback cluster ID is unknown (-1) since we only routed by peer similarity
         return frozenset([p[0] for p in top_peers]), -1
 
     def _route_vectors_to_cluster(self, vectors: ListOfVectorsComplete, sender_status):
@@ -1519,41 +1358,32 @@ class Server:
            vectors: list of vectors
            sender_status: status of the sender
         """
-        # print(f"DEBUG: Server {self.id} routing {len(vectors)} vectors")
 
-        # Group vectors by destination
         peer_to_vec = {}
         all_peers = self.get_reachable_peers()
         for p in all_peers:
             peer_to_vec[p.get_id()] = []
 
-        # Find unreachable peers for hints
         unreachable = [
             p.get_id()
             for p in self.peers
             if p.get_id() not in [ap.get_id() for ap in all_peers]
         ]
         for p_id in unreachable:
-            peer_to_vec[p_id] = []  # Initialize for hints
+            peer_to_vec[p_id] = []
 
         routed_count = 0
         dropped_count = 0
 
         for vector in vectors:
-            # Calculate destinations
             destinations, cluster_id = self._calculate_destinations(vector)
 
             if not destinations:
                 dropped_count += 1
 
-            # If we found a valid cluster ID from the index, and the vector doesn't have one yet (or has -1),
-            # update the vector tuple with the new cluster ID.
-            # Vector format is (vec, id, payload, cluster_id, version, [destinations])
-            # Index 3 is cluster_id.
 
             current_cluster_id = vector[3]
             if current_cluster_id == -1 and cluster_id != -1:
-                # Create new tuple with updated cluster ID
                 if len(vector) >= 6:
                     vector = (
                         vector[0],
@@ -1566,10 +1396,7 @@ class Server:
                 else:
                     vector = (vector[0], vector[1], vector[2], cluster_id, vector[4])
 
-            # Update tuple with destinations if it doesn't have them
             if len(vector) == 6:
-                # It has destinations already, but we might have recalculated them?
-                # If we recalculated, we should update field 5
                 vector = (
                     vector[0],
                     vector[1],
@@ -1588,7 +1415,6 @@ class Server:
                     destinations,
                 )
             elif len(vector) == 4:
-                # Legacy format conversion
                 vector = (
                     vector[0],
                     vector[1],
@@ -1598,7 +1424,6 @@ class Server:
                     destinations,
                 )
 
-            # Route to intended destinations only
             for peer_id in destinations:
                 if peer_id in peer_to_vec:
                     peer_to_vec[peer_id].append(vector)
@@ -1619,29 +1444,23 @@ class Server:
                 try:
                     peer.receive(vecs, self.status)
                 except Exception as e:
-                    # On failure, store as hint
                     print(
                         f"DEBUG: Server {self.id} exception sending to {peer.get_id()}: {e}"
                     )
                     self.hinted_handoff.store_hint(peer.get_id(), vecs)
             else:
-                # Unreachable, store hint
                 print(
                     f"DEBUG: Server {self.id} cannot reach {peer.get_id()} (Active: {self.active_peers}), storing {len(vecs)} hints"
                 )
                 self.hinted_handoff.store_hint(peer.get_id(), vecs)
 
-        # Parallelize sending to peers
         with concurrent.futures.ThreadPoolExecutor() as executor:
             executor.map(send_to_single_peer, self.peers)
 
     def receive(self, vectors: ListOfVectorsComplete, sender_status):
-        # Enqueue the task
-        # print(f"DEBUG: Server {self.id} enqueuing {len(vectors)} vectors with status {sender_status}")
         self.queue.put((self._handle_receive, (vectors, sender_status)))
 
     def _handle_receive(self, vectors: ListOfVectorsComplete, sender_status):
-        # print(f"DEBUG: Server {self.id} handling receive, status={sender_status}, count={len(vectors)}")
         if sender_status == "bootstrap":
             if not self.i_am_coord():
                 print(f"Error: bootstrap sent to non coordinator node {self.id}")
@@ -1657,14 +1476,12 @@ class Server:
             self.save_vectors(vectors)
         elif sender_status == "client":
             status = self.get_status()
-            # print(f"DEBUG: Server {self.id} RX from client. Status: {status}")
             if status == "bootstrap":
                 if self.i_am_coord():
                     self.add_to_buffer(vectors)
                 else:
                     coord = self.coordinator()
                     if coord:
-                        # print(f"DEBUG: Server {self.id} forwarding to coord {coord.get_id()}")
                         coord.receive(vectors, "bootstrap")
                     else:
                         print(
@@ -1676,10 +1493,8 @@ class Server:
             else:
                 print("error: status corrupted")
         elif sender_status == "handoff":
-            # Hinted handoff delivery - save vectors directly
             self.save_vectors(vectors)
         elif sender_status == "reconcile":
-            # Anti-entropy reconciliation - save with version checking
             for v in vectors:
                 self.store.insert(v)
         else:
@@ -1690,16 +1505,13 @@ class Server:
         Save vectors to the store. If any vector belongs to a cluster currently
         being split, buffer it for re-routing after split completes.
         """
-        # print(f"DEBUG: Server {self.id} saving {len(vectors)} vectors")
 
-        # Separate vectors: those for splitting clusters go to buffer, others saved normally
         vectors_to_save = []
 
         with self.split_queue_lock:
             for vector in vectors:
                 cluster_id = vector[3]
                 if cluster_id in self.splitting_clusters:
-                    # Buffer this vector - will be re-routed after split
                     if cluster_id not in self.pending_vectors:
                         self.pending_vectors[cluster_id] = []
                     self.pending_vectors[cluster_id].append(vector)
@@ -1709,16 +1521,14 @@ class Server:
                 else:
                     vectors_to_save.append(vector)
 
-        # Save non-buffered vectors
         if vectors_to_save:
             success_count = self.store.insert_batch(vectors_to_save)
             if success_count < len(vectors_to_save):
-                pass  # duplicates skipped defined behavior
+                pass
 
     def receive_from_client(self, vectors: ListOfVectorsWithPayload):
         vectors_with_id = []
         for v, v_p in vectors:
-            # Add version: (timestamp, node_id)
             version = (time.time(), self.id)
             vectors_with_id.append((v, self.get_new_vector_id(), v_p, -1, version))
 
@@ -1735,7 +1545,6 @@ class Server:
         self, vectors_for_clusters, clusters: ListOfVectorsWithId, version=0
     ):
         with self.lock:
-            # Update topology version if provided
             if version > self.topology_version:
                 self.topology_version = version
 
@@ -1744,7 +1553,6 @@ class Server:
             for cluster_info in self.clusters:
                 cluster_id = cluster_info[0]
                 if cluster_id in vectors_for_clusters:
-                    # Batch insert all members
                     members = vectors_for_clusters[cluster_id]["members"]
                     self.store.insert_batch(members)
 
@@ -1752,7 +1560,6 @@ class Server:
             print(f"DEBUG: Server {self.id} transitioned to CLUSTERED status")
 
             vectors_to_send = []
-            # Process any vectors that arrived during clustering
             if self.vector_buffer:
                 print(
                     f"DEBUG: Server {self.id}: Processing {len(self.vector_buffer)} buffered vectors after clustering"
@@ -1768,7 +1575,6 @@ class Server:
 
     def add_to_buffer(self, vectors: ListOfVectorsComplete):
         with self.lock:
-            # print(f"DEBUG: Server {self.id} add_to_buffer {len(vectors)}")
             if not self.i_am_coord():
                 print("error: not coordinator on add_to_buffer")
                 return
@@ -1784,7 +1590,7 @@ class Server:
                     v_b = self.vector_buffer[:]
                     self.vector_buffer = (
                         []
-                    )  # Clear buffer that is being processed for clustering, new vectors will accumulate in buffer
+                    )
 
                     t = threading.Thread(
                         target=self._run_clustering_background, args=(v_b,)
@@ -1795,7 +1601,6 @@ class Server:
         clusters = self.clustering(vectors)
         assignment = self.assign_clusters_to_peers(clusters)
 
-        # Build cluster_id -> destinations mapping
         cluster_to_destinations = {}
         for peer_id, peer_clusters in assignment.items():
             for cluster_id, _ in peer_clusters:
@@ -1803,12 +1608,10 @@ class Server:
                     cluster_to_destinations[cluster_id] = set()
                 cluster_to_destinations[cluster_id].add(peer_id)
 
-        # Add destinations to all vectors in clusters
         for cluster_id, cluster_data in clusters.items():
             destinations = frozenset(cluster_to_destinations.get(cluster_id, set()))
             updated_members = []
             for v in cluster_data["members"]:
-                # Add destinations (index 5)
                 if len(v) >= 5:
                     v_with_dest = (v[0], v[1], v[2], v[3], v[4], destinations)
                 else:
@@ -1826,32 +1629,26 @@ class Server:
         for peer in self.get_reachable_peers():
             peer.set_clusters(clusters, assignment[peer.get_id()])
 
-        # Build HNSW Index
         print(
             f"DEBUG: Server {self.id} building HNSW index for {len(clusters)} clusters"
         )
-        # Ensure dimension is consistent. Use length of first center.
         if clusters:
             first_center = list(clusters.values())[0]["center"]
             dim = len(first_center)
             self.cluster_index = ClusterIndex(dimension=dim)
 
-            # shared types issue: clusters keys are ints, but we need list of (id, vector)
             if isinstance(clusters, dict):
                 cluster_list = [(k, v["center"]) for k, v in clusters.items()]
             else:
-                # Assume list of tuples [(id, data), ...]
-                # And handle data being dict OR list (centroid)
                 cluster_list = []
                 for k, v in clusters:
                     if isinstance(v, dict):
                         cluster_list.append((k, v["center"]))
                     else:
-                        cluster_list.append((k, v))  # v is centroid list
+                        cluster_list.append((k, v))
 
             self.cluster_index.build(cluster_list)
 
-            # Cache destinations
             self.cluster_to_destinations_cache = {
                 k: frozenset(v) for k, v in cluster_to_destinations.items()
             }
@@ -1862,18 +1659,16 @@ class Server:
         Performs K-Means clustering with automatic k selection using silhouette score.
         Tries k values from min_k to max_k and selects the one with the best silhouette score.
         """
-        vects = [v[0] for v in vectors]  # Extract just the vector data
+        vects = [v[0] for v in vectors]
         X = np.array(vects, dtype=np.float32)
         n_samples = X.shape[0]
 
-        # Adjust k range based on available samples
-        effective_min_k = max(2, min_k)  # Silhouette requires at least 2 clusters
+        effective_min_k = max(2, min_k)
         effective_max_k = min(
             max_k, n_samples - 1
-        )  # Can't have more clusters than samples
+        )
 
         if effective_max_k < effective_min_k:
-            # Not enough samples for proper clustering, use single cluster
             print(
                 f"DEBUG: Server {self.id} - Not enough samples ({n_samples}) for clustering, using single cluster"
             )
@@ -1888,7 +1683,6 @@ class Server:
 
         k_range = range(effective_min_k, effective_max_k + 1)
 
-        # Prepare subsampling for silhouette score calculation (for efficiency)
         if n_samples > SILHOUETTE_SUBSAMPLE_SIZE:
             sample_indices = np.random.choice(
                 n_samples, SILHOUETTE_SUBSAMPLE_SIZE, replace=False
@@ -1916,7 +1710,6 @@ class Server:
                 kmeans.fit(X)
                 labels = kmeans.labels_
 
-                # Calculate silhouette score (using subsample if needed)
                 if sample_indices is not None:
                     labels_sample = labels[sample_indices]
                     score = silhouette_score(X_sample, labels_sample)
@@ -1943,12 +1736,9 @@ class Server:
             f"DEBUG: Server {self.id} - Best k={best_k} with silhouette score={best_score:.4f}"
         )
 
-        # Use the best clustering result
         members = [[] for _ in range(best_k)]
 
         for vec, lbl in zip(vectors, best_labels):
-            # Create new tuple with updated cluster index
-            # Handle both old 4-tuple and new 5-tuple format
             if len(vec) > 4:
                 new_vec = (vec[0], vec[1], vec[2], int(lbl), vec[4])
             else:
@@ -1976,7 +1766,6 @@ class Server:
         """
         n_samples = X.shape[0]
 
-        # 1. Initial K-Means
         kmeans = KMeans(n_clusters=k, n_init=1, max_iter=50, random_state=42)
         kmeans.fit(X)
         centers = kmeans.cluster_centers_
@@ -1985,7 +1774,6 @@ class Server:
         from scipy.spatial.distance import cdist
 
         for iteration in range(max_iter):
-            # Check cluster sizes
             counts = np.bincount(labels, minlength=k)
             if np.all(counts <= max_size):
                 print(
@@ -1993,17 +1781,12 @@ class Server:
                 )
                 break
 
-            # Compute squared distances to all centers
-            # dists[i, j] is dist from point i to center j
             dists = cdist(X, centers, metric="sqeuclidean")
 
-            # Sort clusters by how much they violate the constraint (largest first)
             violation_indices = np.argsort(counts)[::-1]
 
             satisfied = True
 
-            # Create a prioritized list of moves
-            # For each point in an overfull cluster, calculate cost to move to next best cluster
 
             for cluster_idx in violation_indices:
                 current_size = counts[cluster_idx]
@@ -2014,23 +1797,15 @@ class Server:
 
                 satisfied = False
 
-                # Identify points currently in this cluster
                 member_indices = np.where(labels == cluster_idx)[0]
 
-                # Calculate utility of moving each member
-                # Cost = Dist_to_Alt - Dist_to_Curr
-                # We want to move points with LOWEST cost (i.e. close to boundary)
 
                 move_proposals = []
 
                 for idx in member_indices:
                     curr_dist = dists[idx, cluster_idx]
 
-                    # Find best alternative cluster that is NOT full
-                    # (In early iterations, many might be full, so just find best non-current)
-                    # To effectively balance, we look at gain.
 
-                    # Sort other clusters by distance
                     sorted_clusters = np.argsort(dists[idx])
 
                     best_alt = -1
@@ -2040,9 +1815,6 @@ class Server:
                         if alt_c == cluster_idx:
                             continue
 
-                        # Only move to a cluster that has space?
-                        # Or just move to best efficient one and let outer loop resolve?
-                        # Let's try to move to one that has space or is smaller
                         if counts[alt_c] < max_size:
                             best_alt = alt_c
                             best_alt_dist = dists[idx, alt_c]
@@ -2052,10 +1824,8 @@ class Server:
                         cost = best_alt_dist - curr_dist
                         move_proposals.append((cost, idx, best_alt))
 
-                # Sort proposals by cost (cheapest moves first)
                 move_proposals.sort(key=lambda x: x[0])
 
-                # Execute moves
                 moves_to_make = min(excess, len(move_proposals))
 
                 for i in range(moves_to_make):
@@ -2067,7 +1837,6 @@ class Server:
             if satisfied:
                 break
 
-            # Update centers based on new labels
             for j in range(k):
                 mask = labels == j
                 if np.any(mask):
@@ -2082,7 +1851,6 @@ class Server:
         if not all_nodes:
             return {}
 
-        # Adjust replication factor if fewer peers than factor
         effective_rep = min(self.replication_factor, len(all_nodes))
         all_combos = list(itertools.combinations(all_nodes, effective_rep))
 
@@ -2134,31 +1902,24 @@ class Server:
         Since replicas are identical, we only need to get results from one replica.
         We submit to all replicas of that cluster but return as soon as one responds.
         """
-        # Route to find the most similar cluster (top_look=1 gets the single best cluster)
         peers_similarity_per_vector = self.route_vectors(
             [(v, v_id) for (v_id, v) in vectors], top_look
         )
         reachable_peers = self.get_reachable_peers()
 
-        # Collect the best peer (cluster) for each vector
-        # Since top_look=1, each vector maps to at most 1 peer
         best_peers_set = set()
         for _, p_data in peers_similarity_per_vector.items():
             if p_data:
-                # p_data is list of (peer_id, similarity, vector) tuples, sorted by similarity
-                best_peer_id = p_data[0][0]  # Get the best peer's ID
+                best_peer_id = p_data[0][0]
                 best_peers_set.add(best_peer_id)
 
-        # Map peer_id to peer object for quick lookup
         peer_map = {peer.get_id(): peer for peer in reachable_peers}
 
-        # Filter to only the best peers that are reachable
         peers_to_query = [peer_map[pid] for pid in best_peers_set if pid in peer_map]
 
         if not peers_to_query:
             return []
 
-        # Group vectors by their target peer
         peer_to_vec = {peer.get_id(): [] for peer in peers_to_query}
         for _, p_data in peers_similarity_per_vector.items():
             if p_data:
@@ -2169,8 +1930,6 @@ class Server:
 
         found_vectors = []
 
-        # Query only the peers that have vectors to search
-        # Since replicas are identical, return as soon as we get results from one peer
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = []
             for peer in peers_to_query:
@@ -2181,25 +1940,20 @@ class Server:
                         )
                     )
 
-            # Return as soon as ANY peer responds with results
-            # (Since replicas are identical, all would return same data)
             for future in concurrent.futures.as_completed(futures):
                 try:
                     result = future.result()
                     if result:
                         found_vectors.extend(result)
-                        # Don't break here - collect all results from targeted clusters
                 except Exception as e:
                     print(f"Error searching on peer: {e}")
 
-        # Deduplicate results based on vector ID (index 1)
         unique_results = {}
         for res in found_vectors:
             v_id = res[1]
             if v_id not in unique_results:
                 unique_results[v_id] = res
 
-        # Sort by similarity (index 3) in descending order
         final_results = sorted(
             unique_results.values(), key=lambda x: x[3], reverse=True
         )
@@ -2208,33 +1962,11 @@ class Server:
 
     def search_vectors_local(self, vectors, top_k=5):
         if self.qdrant_url:
-            # Use Qdrant search
             query_vectors_only = [v[0] for v in vectors]
-            # qdrant_module.query_vectors takes (url, collection, query_list, topk)
             results = qdrant_module.query_vectors(
                 self.qdrant_url, self.store.collection_name, query_vectors_only, top_k
             )
-            # Map Qdrant results to internal format: (Vector, VectorId, VectorPayload, Similarity)
             mapped = []
-            # qdrant_module returns list of dicts: {'id', 'score', 'payload': {'string', 'vector'}}
-            # EXCEPT: query_vectors handles BATCH query.
-            # qdrant_module.query_vectors -> query_batch_points -> returns list of lists?
-            # Wait, qdrant_module.query_vectors docstring says: "Returns a list of lists of ScoredPoint objects."
-            # BUT implementation says:
-            # final_results = [] (flat list)
-            # for response in results: for point in response.points: append
-            # It flattens the results?? This is WRONG for batch query if we want to distinguish results per query vector.
-            # But search_vectors_local is expected to return a single list of results (top k overall? or per vector?)
-            # The existing implementation:
-            # "found = [] ... for i in range(len(vectors)): found.append(...)"
-            # It seems to flatten everything into one list of results?
-            # Yes: "return found".
-            # So flattening is actually desired behavior for this specific method signature in existing server.py?
-            # Let's verify existing implementation logic.
-            # It returns 'found' which accumulates top-k for EACH query vector.
-            # So if I send 2 query vectors, I get top-k for vec1 AND top-k for vec2 in one list.
-            # qdrant_module.query_vectors (as I modified) DOES flatten.
-            # So it matches!
 
             for res in results:
                 v_data = res["payload"]["vector"]
@@ -2246,27 +1978,19 @@ class Server:
         if not current_vectors_data:
             return []
 
-        # Database Matrix (N, D)
-        # All stored vectors are guaranteed to be numpy arrays due to insert() logic
         db_vectors = [v[0] for v in current_vectors_data]
 
-        # Stack into matrix
         try:
             matrix = np.stack(db_vectors)
         except Exception as e:
             print(f"Error creating matrix from vectors: {e}")
             return []
 
-        # Precompute norms for database vectors (N,)
         norms_matrix = np.linalg.norm(matrix, axis=1)
-        # Avoid division by zero
         norms_matrix[norms_matrix == 0] = 1e-10
 
-        # Query Matrix (M, D)
         query_vectors = [v[0] for v in vectors]
 
-        # Convert queries to numpy if needed
-        # Queries usually come from client as lists, or internal as arrays
         try:
             if query_vectors and not isinstance(query_vectors[0], np.ndarray):
                 query_matrix = np.array(query_vectors, dtype=np.float32)
@@ -2276,36 +2000,25 @@ class Server:
             print(f"Error creating query matrix: {e}")
             return []
 
-        # Compute norms for queries (M,)
         norms_query = np.linalg.norm(query_matrix, axis=1)
         norms_query[norms_query == 0] = 1e-10
 
-        # Dot product: (M, D) @ (D, N) -> (M, N)
-        # transpose matrix to (D, N)
         dists = np.dot(query_matrix, matrix.T)
 
-        # Similarities: dists / (norm_q[:, None] * norm_m[None, :])
-        # Broadcasting: (M, 1) * (1, N) -> (M, N)
         sims = dists / (norms_query[:, np.newaxis] * norms_matrix)
 
         found = []
 
-        # For each query
         for i in range(len(vectors)):
-            query_sims = sims[i]  # (N,)
+            query_sims = sims[i]
 
-            # Top K
-            # We want descending order
             if len(query_sims) <= top_k:
                 top_indices = np.argsort(query_sims)[::-1]
             else:
-                # argpartition puts top k at the end
                 top_indices = np.argpartition(query_sims, -top_k)[-top_k:]
-                # Sort the top k
                 top_indices = top_indices[np.argsort(query_sims[top_indices])[::-1]]
 
             for idx in top_indices:
-                # Reconstruct result tuple: (Vector, VectorId, VectorPayload, Similarity)
                 entry = current_vectors_data[idx]
                 found.append((entry[0], entry[1], entry[2], float(query_sims[idx])))
 
@@ -2363,7 +2076,6 @@ class Server:
         vectors_with_qid = [(self.get_id(), v) for v in vectors]
         return self.query(vectors_with_qid, "client", top_k=top_k)
 
-    # ============ Rebalancing Mechanism ============
 
     def get_load_stats(self) -> dict:
         """
@@ -2377,7 +2089,7 @@ class Server:
         """
         stats = {"self": self.store.count(), "peers": {}}
         total = stats["self"]
-        peer_count = 1  # Include self
+        peer_count = 1
 
         for peer in self.get_reachable_peers():
             if peer.get_id() == self.id:
@@ -2415,14 +2127,11 @@ class Server:
         if avg == 0:
             return None
 
-        # es: avg= avg * (1 + 0.5) = 1.5 * avg -> 50% over avg
         overload_threshold = avg * (1 + threshold)
 
-        # Check self
         if stats["self"] > overload_threshold:
             return self.id
 
-        # Check peers
         for peer_id, count in stats["peers"].items():
             if count > overload_threshold:
                 return peer_id
@@ -2440,7 +2149,6 @@ class Server:
             Cluster ID of the heaviest cluster, or None if no clusters.
         """
         if peer_id == self.id:
-            # Check local store
             cluster_counts = {}
             for vec in self.store.get_all():
                 cluster_id = vec[3]
@@ -2470,7 +2178,6 @@ class Server:
         if not destinations:
             return False
 
-        # Only the smallest ID should trigger
         min_id = min(destinations)
         return self.id == min_id
 
@@ -2485,7 +2192,6 @@ class Server:
         if n_subclusters is None:
             n_subclusters = REBALANCE_SPLIT_FACTOR
 
-        # Get vectors from this cluster
         cluster_vectors = self.store.get_by_cluster(cluster_id)
 
         if not cluster_vectors:
@@ -2494,13 +2200,10 @@ class Server:
         n_vectors = len(cluster_vectors)
 
         if n_vectors < n_subclusters:
-            # Can't properly split, but we perform a "migration" to a new ID
             new_id = self._generate_cluster_id()
             center = np.mean([v[0] for v in cluster_vectors], axis=0).tolist()
-            # Destinations: self + replicas
             destinations = [self.id]
 
-            # Select replicas
             candidates = [
                 p.get_id() for p in self.get_reachable_peers() if p.get_id() != self.id
             ]
@@ -2512,15 +2215,10 @@ class Server:
 
             return {new_id: {"center": center, "destinations": destinations}}
 
-        # Extract vector data for K-means
         X = np.array([v[0] for v in cluster_vectors], dtype=np.float32)
 
-        # Calculate max size per cluster (e.g., avg * 1.2)
-        # We want to force a more even split.
         avg_size = n_vectors / n_subclusters
         max_size = int(math.ceil(avg_size * 1.2))
-        # Ensure max_size is at least enough to cover all points if perfectly balanced + buffer
-        # But if max_size * k < n, we have a problem.
         if max_size * n_subclusters < n_vectors:
             max_size = int(math.ceil(n_vectors / n_subclusters)) + 1
 
@@ -2529,13 +2227,10 @@ class Server:
         )
 
         try:
-            # Use constrained K-Means
             centers, labels = self._constrained_kmeans(X, n_subclusters, max_size)
 
-            # Convert centers to list
             centers = centers.tolist()
 
-            # Build labels_by_vector_id map
             labels_by_vector_id = {}
             for i, vec in enumerate(cluster_vectors):
                 vec_id = vec[1]
@@ -2545,7 +2240,7 @@ class Server:
             print(
                 f"DEBUG: Server {self.id} - Constrained K-means failed, falling back to standard: {e}"
             )
-            labels_by_vector_id = None  # Will trigger nearest-centroid fallback
+            labels_by_vector_id = None
             try:
                 kmeans = KMeans(
                     n_clusters=n_subclusters, n_init=1, max_iter=100, random_state=42
@@ -2558,18 +2253,14 @@ class Server:
                 center = np.mean(X, axis=0).tolist()
                 return {new_id: {"center": center, "destinations": [self.id]}}
 
-        # Find underloaded peers
-        # We need enough unique peers for primary + replicas
-        # Pass sender's current load and split info to determine if we should keep one locally
         sender_current_load = self.store.count()
 
-        # Get current destinations of the cluster being split (these replicas will lose vectors)
         cluster_replicas = set()
         if self.cluster_to_destinations_cache:
             cluster_replicas = self.cluster_to_destinations_cache.get(cluster_id, set())
 
         target_peers, sender_should_keep_one = self._get_underloaded_peers(
-            n_subclusters * 2,  # Get more candidates
+            n_subclusters * 2,
             sender_current_load=sender_current_load,
             vectors_being_sent=n_vectors,
             n_subclusters=n_subclusters,
@@ -2578,7 +2269,6 @@ class Server:
         )
         all_peers = [p.get_id() for p in self.get_reachable_peers()]
 
-        # Track how many subclusters we've assigned to self
         subclusters_assigned_to_self = 0
 
         result_plan = {}
@@ -2588,18 +2278,14 @@ class Server:
 
             destinations = []
 
-            # 1. Select Primary
             if i == 0:
-                # First subcluster always stays with sender
                 primary = self.id
                 subclusters_assigned_to_self += 1
             else:
-                # Check if we need to keep at least one more subcluster locally
-                # to prevent sender from becoming too underloaded
                 should_keep_this_one = (
                     sender_should_keep_one
                     and subclusters_assigned_to_self == 0
-                    and i == n_subclusters - 1  # Last chance to keep one
+                    and i == n_subclusters - 1
                 )
 
                 if should_keep_this_one:
@@ -2609,7 +2295,6 @@ class Server:
                         f"DEBUG: Server {self.id} - Keeping subcluster {i} locally to avoid underload"
                     )
                 elif target_peers:
-                    # Pop best candidate that is not self (if possible)
                     candidate = next((p for p in target_peers if p != self.id), self.id)
                     if candidate in target_peers:
                         target_peers.remove(candidate)
@@ -2622,16 +2307,10 @@ class Server:
 
             destinations.append(primary)
 
-            # 2. Select Replicas
             needed = self.replication_factor - 1
             if needed > 0:
-                # Candidates: everyone except primary
                 candidates = [p for p in all_peers if p != primary]
 
-                # Check underloaded first for replicas too?
-                # For simplicity, just pick random from candidates to spread load
-                # Or prefer underloaded?
-                # Let's pick random from candidates to ensure diversity and speed
                 if len(candidates) >= needed:
                     replicas = random.sample(candidates, needed)
                     destinations.extend(replicas)
@@ -2644,7 +2323,6 @@ class Server:
                 "label_idx": i,
             }
 
-        # Include labels mapping if available
         if labels_by_vector_id:
             result_plan["_labels_by_vector_id"] = labels_by_vector_id
 
@@ -2663,22 +2341,17 @@ class Server:
 
         result = self.split_and_distribute_cluster(cluster_id, split_plan)
 
-        # Update local cluster state
         if result:
             with self.lock:
                 self.topology_version += 1
-                # Remove old cluster
                 self.clusters = [c for c in self.clusters if c[0] != cluster_id]
 
-                # Add new clusters
                 for new_id, info in result.items():
                     center = info["center"]
-                    # ensure center is list for consistency
                     if hasattr(center, "tolist"):
                         center = center.tolist()
                     self.clusters.append((new_id, center))
 
-                # Rebuild index
                 if self.cluster_index:
                     self.cluster_index.build(self.clusters)
 
@@ -2700,14 +2373,12 @@ class Server:
             f"DEBUG: Server {self.id} - Received split_and_distribute for cluster {cluster_id} (coordinator={is_coordinator})"
         )
 
-        # Mark cluster as splitting - vectors arriving for this cluster will be buffered
         with self.split_queue_lock:
             self.splitting_clusters.add(cluster_id)
             self.pending_vectors[cluster_id] = []
         print(f"DEBUG: Server {self.id} - Marked cluster {cluster_id} as SPLITTING")
 
         try:
-            # Get vectors from this cluster
             cluster_vectors = self.store.get_by_cluster(cluster_id)
             print(
                 f"DEBUG: Server {self.id} - Found {len(cluster_vectors)} local vectors for cluster {cluster_id}"
@@ -2725,7 +2396,6 @@ class Server:
                     }
                 return ret
 
-            # If only one new cluster in plan, it's a migration/rename
             if len(split_plan) == 1:
                 print(
                     f"DEBUG: Server {self.id} - Executing migration for cluster {cluster_id}"
@@ -2734,7 +2404,6 @@ class Server:
                 info = split_plan[new_id]
                 updated_members = []
                 for v in cluster_vectors:
-                    # Update cluster ID
                     if len(v) >= 6:
                         new_vec = (v[0], v[1], v[2], new_id, v[4], v[5])
                     elif len(v) >= 5:
@@ -2743,12 +2412,10 @@ class Server:
                         new_vec = (v[0], v[1], v[2], new_id, (time.time(), self.id))
                     updated_members.append((new_vec))
 
-                # Remove old
                 for vec in cluster_vectors:
                     self.store.remove_by_id(vec[1])
                 print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
 
-                # Distribute (keep or move)
                 return self._distribute_vectors_from_split(
                     {
                         new_id: {
@@ -2760,7 +2427,6 @@ class Server:
                     is_coordinator=is_coordinator,
                 )
 
-            # Perform assignment of vectors to new centers
             X = np.array([v[0] for v in cluster_vectors], dtype=np.float32)
 
             centers_list = []
@@ -2776,24 +2442,21 @@ class Server:
 
             centers_np = np.array(centers_list, dtype=np.float32)
 
-            # Check if we have pre-computed labels
             labels_by_vector_id = split_plan.get("_labels_by_vector_id")
 
             if labels_by_vector_id and label_idx_to_new_id:
-                # Use pre-computed constrained labels
                 labels = []
                 for v in cluster_vectors:
                     vec_id = v[1]
                     label_idx = labels_by_vector_id.get(
                         vec_id, 0
-                    )  # Default to 0 if missing
+                    )
                     labels.append(label_idx)
                 labels = np.array(labels)
                 print(
                     f"DEBUG: Server {self.id} - Using pre-computed constrained labels"
                 )
             else:
-                # Fallback: nearest centroid assignment
                 dists = np.linalg.norm(
                     X[:, np.newaxis, :] - centers_np[np.newaxis, :, :], axis=2
                 )
@@ -2802,7 +2465,6 @@ class Server:
                     f"DEBUG: Server {self.id} - Using nearest centroid assignment (fallback)"
                 )
 
-            # Group vectors
             result_full = {}
             for idx, new_id in enumerate(new_ids_list):
                 info = split_plan[new_id]
@@ -2816,7 +2478,6 @@ class Server:
                 vec = cluster_vectors[vec_idx]
                 new_id = new_ids_list[label]
 
-                # Update cluster ID
                 if len(vec) >= 6:
                     new_vec = (vec[0], vec[1], vec[2], new_id, vec[4], vec[5])
                 elif len(vec) >= 5:
@@ -2826,18 +2487,15 @@ class Server:
 
                 result_full[new_id]["members"].append(new_vec)
 
-            # Remove old vectors
             for vec in cluster_vectors:
                 self.store.remove_by_id(vec[1])
             print(f"DEBUG: Server {self.id} - Removed old vectors for {cluster_id}")
 
-            # Distribute (keep or move)
             return self._distribute_vectors_from_split(
                 result_full, is_coordinator=is_coordinator
             )
 
         finally:
-            # Always process buffered vectors and unmark cluster, even if error
             self._process_pending_vectors_after_split(cluster_id)
 
     def _process_pending_vectors_after_split(self, old_cluster_id: int):
@@ -2849,9 +2507,7 @@ class Server:
             old_cluster_id: The cluster that was split (no longer exists)
         """
         with self.split_queue_lock:
-            # Get and clear pending vectors
             pending = self.pending_vectors.pop(old_cluster_id, [])
-            # Unmark cluster as splitting
             self.splitting_clusters.discard(old_cluster_id)
 
         if not pending:
@@ -2864,10 +2520,8 @@ class Server:
             f"DEBUG: Server {self.id} - Re-routing {len(pending)} pending vectors after split of cluster {old_cluster_id}"
         )
 
-        # Reset cluster_id to -1 so routing recalculates based on new clusters
         re_routed_vectors = []
         for v in pending:
-            # Reset cluster_id to force recalculation
             if len(v) >= 6:
                 new_v = (v[0], v[1], v[2], -1, v[4], v[5])
             elif len(v) >= 5:
@@ -2876,7 +2530,6 @@ class Server:
                 new_v = (v[0], v[1], v[2], -1, (time.time(), self.id))
             re_routed_vectors.append(new_v)
 
-        # Re-route through normal path - will find new subclusters
         self.send_to_peers(re_routed_vectors)
         print(f"DEBUG: Server {self.id} - Finished re-routing pending vectors")
 
@@ -2893,27 +2546,18 @@ class Server:
             is_coordinator: If True, replicate to all destinations. If False (replica),
                            only handle local retention without replicating.
         """
-        # First, check if we would become too underloaded by sending everything away
-        # Calculate total vectors being redistributed
         total_vectors_in_split = sum(
             len(data["members"]) for data in split_result.values()
         )
 
-        # Check if we're already keeping any subcluster locally
         keeping_any_locally = any(
             self.id in data["destinations"] for data in split_result.values()
         )
 
-        # Determine if we need to force keeping one subcluster
         force_keep_one = False
         if not keeping_any_locally and total_vectors_in_split > 0:
-            # Note: By this point, vectors have already been removed from the store.
-            # So store.count() is the count AFTER removal.
-            # If we don't keep any vectors locally, our final count = store.count() (already reflects removal)
-            # The vectors in split_result are what we're redistributing.
-            projected_load = self.store.count()  # After removal, if we don't keep any
+            projected_load = self.store.count()
 
-            # Get peer loads to calculate average
             peer_loads = []
             for peer in self.get_reachable_peers():
                 if peer.get_id() == self.id:
@@ -2942,29 +2586,19 @@ class Server:
                             f"({projected_load} vs avg {avg_load:.0f}), keeping one subcluster locally"
                         )
 
-        # Track which cluster we'll force-keep (choose smallest to minimize impact)
         force_keep_cluster_id = None
         if force_keep_one:
-            # Pick the smallest subcluster to keep locally
             smallest = min(split_result.items(), key=lambda x: len(x[1]["members"]))
             force_keep_cluster_id = smallest[0]
 
         for new_cluster_id, data in split_result.items():
-            destinations = list(data["destinations"])  # Make a copy to modify
+            destinations = list(data["destinations"])
 
-            # Destination 0 is primary, others are replicas.
-            # But the 'receive' logic on peers handles "clustered" (simple save).
-            # We just need to ensure everyone in destinations handles it.
 
             local_kept = False
-            # Check if we should force-keep this cluster
             should_force_keep = force_keep_cluster_id == new_cluster_id
 
-            # Replica mode: don't replicate to peers, but DO keep vectors locally if we're a destination
-            # The coordinator sends data to destinations, but we also have the same data locally.
-            # We should keep our portion (subclusters where we're a destination).
             if not is_coordinator:
-                # Only keep vectors locally if we're in the destinations for this subcluster
                 if self.id in destinations:
                     for vec in data["members"]:
                         self.store.insert(vec)
@@ -2972,32 +2606,24 @@ class Server:
                         f"DEBUG: Server {self.id} - Replica re-inserting {len(data['members'])} vectors locally (cluster {new_cluster_id})"
                     )
                     local_kept = True
-                # Skip replication to other peers - coordinator handles that
                 continue
 
-            # Coordinator mode below: handle replication
 
-            # If force-keeping, we replace one destination with ourselves to maintain exact count
-            # Remove one destination (preferably not the primary) and add self
             skipped_destination = None
             if should_force_keep and self.id not in destinations:
-                # Skip the last destination (a replica) and keep locally instead
                 if len(destinations) > 1:
-                    skipped_destination = destinations.pop()  # Remove last (a replica)
+                    skipped_destination = destinations.pop()
                     print(
                         f"DEBUG: Server {self.id} - Replacing destination {skipped_destination} with self to avoid underload"
                     )
                 else:
-                    # Only one destination (primary), we'll add ourselves but need to be careful
-                    # In this case, just force-keep in addition (rare edge case)
                     pass
 
             for destination in destinations:
                 if destination == self.id:
-                    # Keep locally
                     if (
                         not local_kept
-                    ):  # Only insert once if self appears multiple times (shouldn't happen but safe)
+                    ):
                         for vec in data["members"]:
                             self.store.insert(vec)
                         print(
@@ -3005,11 +2631,9 @@ class Server:
                         )
                         local_kept = True
                 else:
-                    # Move to peer
                     peer = self._get_peer_by_id(destination)
                     if peer:
                         try:
-                            # Send 'clustered' status so peer just saves them
                             peer.receive(data["members"], "clustered")
                             print(
                                 f"DEBUG: Server {self.id} - Replicated {len(data['members'])} vectors to Server {destination} (cluster {new_cluster_id})"
@@ -3018,18 +2642,12 @@ class Server:
                             print(
                                 f"DEBUG: Server {self.id} - Failed to send to peer {destination}: {e}"
                             )
-                            # If primary failed, we might want to keep locally as fallback?
-                            # But if we have other replicas, maybe it's fine.
-                            # For safety, if ALL remote fails and not local, we should perhaps panic or keep locally.
-                            # But simplistic logic: try best effort.
                             pass
                     else:
                         print(
                             f"DEBUG: Server {self.id} - Peer {destination} not found for replication"
                         )
 
-            # Force-keep: if we determined this server would be underloaded and this is the chosen cluster
-            # This happens when we skipped a destination above
             if should_force_keep and not local_kept:
                 for vec in data["members"]:
                     self.store.insert(vec)
@@ -3038,12 +2656,6 @@ class Server:
                 )
                 local_kept = True
 
-            # Fallback: if we were supposed to send away but failed, should we keep?
-            # Hard to track overall success here without complex logic.
-            # Current logic: if self is in destinations, we kept it.
-            # If self is NOT in destinations, we might have lost data if all peers failed.
-            # Improvement: check if at least one success?
-            # For now, let's stick to simple loop. PROD systems would need acks.
 
         return split_result
 
@@ -3078,11 +2690,7 @@ class Server:
             try:
                 load = peer.count()
 
-                # IMPORTANT: If this peer is a replica of the cluster being split,
-                # subtract those vectors from their count since they will be deleted.
-                # This gives us the "projected load" after the split completes.
                 if cluster_replicas and peer.get_id() in cluster_replicas:
-                    # Get count of vectors in the cluster being split on this peer
                     try:
                         replica_cluster_count = peer.get_cluster_vector_count(
                             cluster_being_split
@@ -3094,8 +2702,6 @@ class Server:
                             f"(replica of cluster {cluster_being_split})"
                         )
                     except Exception:
-                        # Fallback: estimate based on even distribution
-                        # If we can't query, assume cluster is evenly distributed across replicas
                         estimated_replica_vectors = (
                             vectors_being_sent if vectors_being_sent else 0
                         )
@@ -3108,38 +2714,30 @@ class Server:
             except Exception:
                 peer_loads.append((peer.get_id(), float("inf")))
 
-        # Sort by load ascending (least loaded first)
         peer_loads.sort(key=lambda x: x[1])
 
-        # Determine if sender should keep at least one subcluster
         sender_should_keep_one = False
         if (
             sender_current_load is not None
             and vectors_being_sent is not None
             and n_subclusters is not None
         ):
-            # Calculate sender's projected load if it sends everything away
             projected_sender_load = sender_current_load - vectors_being_sent
 
-            # Calculate average load across all peers (including self's projected state)
             all_loads = [load for _, load in peer_loads] + [projected_sender_load]
             if all_loads:
                 avg_load = sum(all_loads) / len(all_loads)
 
-                # If sender would become significantly underloaded (below 70% of avg),
-                # it should keep at least one subcluster
                 underload_threshold = avg_load * 0.7
                 if projected_sender_load < underload_threshold:
-                    # Calculate how many vectors per subcluster (approx)
                     vectors_per_subcluster = (
                         vectors_being_sent / n_subclusters if n_subclusters > 0 else 0
                     )
 
-                    # Check if keeping one subcluster helps
                     projected_with_one = projected_sender_load + vectors_per_subcluster
                     if (
                         projected_with_one >= underload_threshold * 0.8
-                    ):  # Some tolerance
+                    ):
                         sender_should_keep_one = True
                         print(
                             f"DEBUG: Server {self.id} - Sender would be underloaded "
@@ -3179,23 +2777,19 @@ class Server:
         n_subclusters = len(centers)
         centers_np = np.array(centers, dtype=np.float32)
 
-        # Iteratively move vectors from large to small clusters
         max_iterations = 100
         for _ in range(max_iterations):
             sizes = {k: len(v) for k, v in subclusters.items()}
             max_cluster = max(sizes.keys(), key=lambda k: sizes[k])
             min_cluster = min(sizes.keys(), key=lambda k: sizes[k])
 
-            # Check if balanced enough
             if sizes[max_cluster] - sizes[min_cluster] <= 1:
                 break
 
-            # Find best vector index to move from max to min
             best_idx = None
             best_score = -float("inf")
 
             for idx, vec in enumerate(subclusters[max_cluster]):
-                # Score = similarity to min_cluster center
                 vec_np = np.array(vec[0], dtype=np.float32)
                 similarity = cosine_similarity(vec_np, centers_np[min_cluster])
                 if similarity > best_score:
@@ -3203,7 +2797,6 @@ class Server:
                     best_idx = idx
 
             if best_idx is not None:
-                # Remove by index to avoid numpy array comparison
                 vec_to_move = subclusters[max_cluster].pop(best_idx)
                 subclusters[min_cluster].append(vec_to_move)
 
@@ -3211,15 +2804,11 @@ class Server:
 
     def _generate_cluster_id(self) -> int:
         """Generate a unique cluster ID."""
-        # Use timestamp + server ID + counter + random to ensure uniqueness
         with self.lock:
             self._cluster_id_counter += 1
             counter = self._cluster_id_counter
 
-        # High precision timestamp
         ts = int(time.time() * 1000) % 10000000
-        # Format: TTTTTTT (7) + SS (2) + CCC (3) + R (1)
-        # This gives us unique IDs even if called rapidly
         return int(f"{ts}{self.id:02d}{counter % 1000:03d}{random.randint(0, 9)}")
 
     def _update_hnsw_after_split(self, old_cluster_id: int, new_clusters: dict):
@@ -3235,7 +2824,6 @@ class Server:
         if self.cluster_index is None:
             return
 
-        # Get current clusters, remove old, add new
         current_clusters = list(self.clusters) if self.clusters else []
         current_clusters = [
             (cid, center) for cid, center in current_clusters if cid != old_cluster_id
@@ -3244,14 +2832,12 @@ class Server:
         for new_id, data in new_clusters.items():
             current_clusters.append((new_id, data["center"]))
 
-        # Rebuild index
         if current_clusters:
             dim = len(current_clusters[0][1])
             self.cluster_index = ClusterIndex(dimension=dim)
             self.cluster_index.build(current_clusters)
             self.clusters = current_clusters
 
-            # Update destinations cache
             if self.cluster_to_destinations_cache is not None:
                 old_destinations = self.cluster_to_destinations_cache.pop(
                     old_cluster_id, set()
@@ -3267,11 +2853,9 @@ class Server:
         """
         reachable = self.get_reachable_peers()
 
-        # Need at least 2 servers to rebalance
         if len(reachable) < 2:
             return False
 
-        # Detect imbalance
         overloaded_id = self.detect_imbalance()
 
         if overloaded_id is None:
@@ -3281,7 +2865,6 @@ class Server:
             f"DEBUG: Server {self.id} - Detected imbalance, overloaded server: {overloaded_id}"
         )
 
-        # Find heaviest cluster on overloaded server
         heaviest = self.get_heaviest_cluster(overloaded_id)
 
         if heaviest is None:
@@ -3290,23 +2873,19 @@ class Server:
             )
             return False
 
-        # Check if we should be the one to trigger (smallest ID rule)
         if not self.should_trigger_rebalance_for_cluster(heaviest):
             print(f"DEBUG: Server {self.id} - Not responsible for cluster {heaviest}")
             return False
 
         print(f"DEBUG: Server {self.id} - Splitting cluster {heaviest}")
 
-        # Calculate split plan
         split_plan = self._calculate_split_parameters(heaviest, REBALANCE_SPLIT_FACTOR)
 
         if not split_plan:
             return False
 
-        # Execute split locally
         new_clusters = self.split_and_distribute_cluster(heaviest, split_plan)
 
-        # Broadcast cluster update to peers
         self._broadcast_cluster_update(
             new_clusters, old_cluster_id=heaviest, split_plan=split_plan
         )
@@ -3322,7 +2901,6 @@ class Server:
         """
         Send cluster updates to all peers and trigger HNSW rebuild.
         """
-        # Update clusters list
         if self.clusters:
             self.clusters = [
                 (cid, center) for cid, center in self.clusters if cid != old_cluster_id
@@ -3333,7 +2911,6 @@ class Server:
         for new_id, data in new_clusters.items():
             self.clusters.append((new_id, data["center"]))
 
-        # Tell peers to split/distribute as well
         if old_cluster_id is not None and split_plan:
             print(
                 f"DEBUG: Server {self.id} - Broadcasting split_and_distribute for cluster {old_cluster_id}"
@@ -3341,7 +2918,6 @@ class Server:
             for peer in self.get_reachable_peers():
                 if peer.get_id() != self.id:
                     try:
-                        # Send the split plan so they can do it themselves (as replica, not coordinator)
                         peer.split_and_distribute_cluster(
                             old_cluster_id, split_plan, is_coordinator=False
                         )
@@ -3350,7 +2926,6 @@ class Server:
                             f"DEBUG: Server {self.id} - Failed to send split command to peer {peer.get_id()}: {e}"
                         )
 
-        # Tell peers to update their cluster index
         for peer in self.get_reachable_peers():
             if peer.get_id() != self.id:
                 try:
@@ -3381,17 +2956,13 @@ class Server:
         if not reachable:
             return {self.id} | force_include
 
-        # Start with authentication result
         result = set(force_include)
 
-        # If we already satisfied replication factor, return
         if len(result) >= self.replication_factor:
             return result
 
-        # Get peer loads
         peer_loads = []
         for peer in reachable:
-            # Skip if already in result
             if peer.get_id() in result:
                 continue
 
@@ -3405,10 +2976,8 @@ class Server:
 
             peer_loads.append((peer.get_id(), count))
 
-        # Sort by load
         peer_loads.sort(key=lambda x: x[1])
 
-        # Fill remaining spots
         needed = self.replication_factor - len(result)
         for pid, _ in peer_loads[:needed]:
             result.add(pid)
@@ -3448,8 +3017,6 @@ def main():
         help="JSON file with peer configurations ({id, ip, port})",
     )
 
-    # These params are hardcoded in startup.py logic or client.py, but server needs them
-    # Server init: before_clustering, replication_factor
     parser.add_argument(
         "--before-clustering", type=int, default=8192, help="Vectors before clustering"
     )
@@ -3459,7 +3026,6 @@ def main():
 
     args = parser.parse_args()
 
-    # startup.py passes '--intra-port' but Server init takes 'port' for internal comms
     server = Server(
         id=args.id,
         is_coordinator=args.coordinator,
@@ -3476,7 +3042,6 @@ def main():
     )
 
     if args.peers and not args.coordinator:
-        # Args.peers comes as "ip:port" of coordinator
         try:
             p_ip, p_port = args.peers.split(":")
             server.add_peer(p_ip, int(p_port))
@@ -3505,7 +3070,6 @@ def main():
         except Exception as e:
             print(f"[ID {args.id}] Error reading peers file {args.peers_file}: {e}")
 
-    # Keep main thread alive
     try:
         while True:
             time.sleep(1)

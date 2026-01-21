@@ -6,16 +6,17 @@ if TYPE_CHECKING:
 
 
 class Peer:
-    """
-    Peer class representing a node in the network.
-    Can represent the local server (self) or a remote server.
+    """Represents a node in the distributed network.
+
+    It abstracts communication with a peer, which can be either the local server instance 
+    (direct method calls) or a remote node (network calls via the communicator).
     """
 
     def __init__(self, ip: str, port: int, server_instance=None, communicator=None):
         self.ip = ip
         self.port = port
-        self.server = server_instance  # If set, this is the local peer
-        self.communicator = communicator  # Used for remote communication
+        self.server = server_instance
+        self.communicator = communicator
 
     def get_id(self) -> int:
         if self.is_local():
@@ -120,10 +121,21 @@ class Peer:
         return self.server is not None
 
     def _remote_call(self, method_name: str, *args):
-        """
-        Helper to make remote calls via communicator.
-        Serializes args, sends, receives response, deserializes.
-        Sync wrapper around Async communicator.
+        """Helper for making synchronous remote calls via the communicator.
+
+        Handles argument serialization, network transmission, response reception, 
+        errror checking, and deserialization. It manages the asyncio event loop 
+        needed for the asynchronous communicator.
+
+        Args:
+            method_name (str): The name of the method to invoke on the remote peer.
+            *args: Arbitrary arguments for the method.
+
+        Returns:
+             Any: The result returned by the remote method.
+
+        Raises:
+            Exception: If the communicator is missing or the remote call fails.
         """
         if not self.communicator:
             raise Exception(f"No communicator for remote peer {self.ip}:{self.port}")
@@ -133,7 +145,6 @@ class Peer:
                 self.communicator.send(self.ip, self.port, method_name, *args)
             )
         except RuntimeError:
-            # Fallback for nested loops
             loop = asyncio.get_event_loop()
             resp = loop.run_until_complete(
                 self.communicator.send(self.ip, self.port, method_name, *args)

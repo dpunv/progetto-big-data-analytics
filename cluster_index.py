@@ -12,6 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 class ClusterIndex:
+    """An HNSW-based index for fast retrieval of nearest clusters.
+    
+    This index is used to route queries to the appropriate clusters by storing 
+    cluster centroids and allowing approximate nearest neighbor search.
+    """
+
     def __init__(
         self,
         dimension: int,
@@ -42,10 +48,6 @@ class ClusterIndex:
         )
         self.hnsw_index.set_ef(50)
 
-        # cluster[0] is ID (can be string or int), cluster[1] is vector
-        # hnswlib requires integer labels. We need a mapping if IDs are strings.
-        # But in our system cluster IDs seem to be integers (or castable to int).
-        # Let's verify usage. In server.py: "int(lbl)" is used. So they are ints.
 
         indices = []
         centroids = []
@@ -74,8 +76,6 @@ class ClusterIndex:
         Returns a list of cluster IDs.
         """
         if self.hnsw_index is None:
-            # Fallback or error? For safety, return empty or raise.
-            # If not built, maybe we shouldn't be routing yet.
             return []
 
         current_count = self.hnsw_index.element_count
@@ -89,10 +89,8 @@ class ClusterIndex:
             self.hnsw_index.set_ef(k)
 
         query = np.array(query_vector, dtype=np.float32)
-        # knn_query returns (labels, distances)
         cluster_ids, _ = self.hnsw_index.knn_query(query, k=k)
 
-        # cluster_ids is a numpy array of shape (1, k)
         return [int(id) for id in cluster_ids[0]]
 
     def search_batch(self, query_vectors: np.ndarray, k: int = 1) -> List[List[int]]:

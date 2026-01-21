@@ -11,17 +11,13 @@ ListOfVectorsWithId = List[VectorWithId]
 ListOfVectorsWithPayload = List[VectorWithPayload]
 ListOfVectorsComplete = List[VectorComplete]
 
-# Partition tolerance types
-VectorVersion = Tuple[float, int]  # (timestamp, originating_node_id)
-VectorDestinations = FrozenSet[int]  # Set of intended destination node IDs
+VectorVersion = Tuple[float, int]
+VectorDestinations = FrozenSet[int]
 
-# Full vector with version and destinations:
-# (vector, id, payload, cluster_id, version, destinations)
 VectorFull = Tuple[
     Vector, VectorId, VectorPayload, int, VectorVersion, VectorDestinations
 ]
 ListOfVectorsFull = List[VectorFull]
 
-# Legacy type for backwards compatibility
 VectorVersioned = Tuple[Vector, VectorId, VectorPayload, int, VectorVersion]
 ListOfVectorsVersioned = List[VectorVersioned]

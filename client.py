@@ -9,7 +9,6 @@ import server as sv
 start_time = time.time()
 
 print("starting client")
-# read the data from parquet file
 df = pd.read_parquet("embeddings.parquet")
 data = [
     {
@@ -23,7 +22,6 @@ data = [
     for _, row in df.iterrows()
 ]
 
-# configuration
 num_vectors = 16000
 num_vectors_before_clustering = 5000
 num_servers = 8
@@ -34,26 +32,18 @@ print("data read")
 
 import os
 
-# Qdrant Storage Configuration
-# Options: ":memory:" for in-memory, or a local path (e.g., "./qdrant_data") for persistence.
-# qdrant_url = ":memory:"
 base_qdrant_url = "./qdrant_data"
-# Override for previous hardcoded value
-# base_qdrant_url = ":memory:"
 print("configuration defined")
 
-# Check for multi-node mode (env var set by run.py)
 multi_node_mode = os.environ.get("MULTI_NODE_MODE", "false").lower() == "true"
 if multi_node_mode:
     print("Running in MULTI-NODE mode (separate Qdrant instances)")
 else:
     print(f"Running in SINGLE-INSTANCE mode: {base_qdrant_url}")
 
-# create servers
 servers = []
 for i in range(num_servers):
     if multi_node_mode:
-        # http://localhost:6333, 6335, ...
         port = 6333 + (i * 2)
         node_url = f"http://localhost:{port}"
     else:
@@ -71,7 +61,6 @@ for i in range(num_servers):
     )
 print("servers started")
 
-# register peers
 for server in servers:
     for peer in servers:
         if server.get_id() == peer.get_id():
@@ -81,7 +70,6 @@ print("peers registered")
 time.sleep(5)
 
 
-# add vectors
 def send_batch(server_idx, batch_vectors, batch_idx, total_batches):
     servers[server_idx].receive_from_client(batch_vectors)
     print(f"batch {batch_idx}/{total_batches} sent")
@@ -104,8 +92,6 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
 
 print("all batch sent")
 
-# Give some time for async processing on server side to complete
-# Wait for queues to drain
 print("Waiting for servers to process all vectors...")
 while True:
     total_queue = sum(s.get_queue_size() for s in servers)
@@ -116,7 +102,6 @@ while True:
     time.sleep(1)
 print("\nProcessing complete")
 
-# query a vector:
 query_vector = [vectors[0][0]]
 results = [
     (id, payload, distance)
@@ -152,7 +137,6 @@ for s in servers:
 print(f"total: {total}")
 print(f"expected: {num_vectors * replication_factor}")
 
-# Stop servers
 for s in servers:
     s.stop()
 
