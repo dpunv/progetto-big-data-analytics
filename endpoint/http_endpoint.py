@@ -145,6 +145,7 @@ class HTTPEndpoint(BaseEndpoint):
             data = await request.json()
             clusters_raw = data.get("clusters")
             assignment_raw = data.get("assignment")
+            version = data.get("version", 0)
 
             # Reconstruct clusters dictionary
             # Keys might be strings in JSON, convert back to int
@@ -178,7 +179,9 @@ class HTTPEndpoint(BaseEndpoint):
                 for item in assignment_raw:
                     assignment.append((item[0], item[1]))
 
-            await self._run_sync(self.server.set_clusters, clusters, assignment)
+            await self._run_sync(
+                self.server.set_clusters, clusters, assignment, version
+            )
             return self.json_response(None)
         except Exception as e:
             print(f"Error SetClusters: {e}")

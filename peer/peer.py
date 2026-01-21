@@ -37,10 +37,10 @@ class Peer:
             return self.server.i_am_coord()
         return self._remote_call("i_am_coord")
 
-    def set_clusters(self, clusters, assignment):
+    def set_clusters(self, clusters, assignment, version=0):
         if self.is_local():
-            return self.server.set_clusters(clusters, assignment)
-        return self._remote_call("set_clusters", clusters, assignment)
+            return self.server.set_clusters(clusters, assignment, version=version)
+        return self._remote_call("set_clusters", clusters, assignment, version)
 
     def search_vectors_local(self, vectors, top_k):
         if self.is_local():

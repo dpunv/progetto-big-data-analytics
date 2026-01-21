@@ -1220,13 +1220,13 @@ class Server:
             # In a large system, this might be expensive (gossip is better), but for this
             # implementation, it guarantees that "Follower A" talks to "Follower B".
             # if self.is_coordinator:
-            self._reconcile_with_other_coordinators()
+            self._reconcile_with_other_peers()
 
         finally:
             with self._reconcile_lock:
                 self._reconciling = False
 
-    def _reconcile_with_other_coordinators(self):
+    def _reconcile_with_other_peers(self):
         """Reconcile with all reachable peers to ensure data consistency."""
         # Optimization: Only reconcile with other potential coordinators (highest ID in their view)
         # But we don't know their view. So request reconciliation with reachable peers.
@@ -1234,7 +1234,7 @@ class Server:
         # Or just all. Let's stick to all reachable for robustness.
 
         peers_to_reconcile = [
-            p for p in self.get_reachable_peers() if p.get_id() != self.id
+            p for p in self.get_reachable_peers() if p.get_id() > self.id
         ]
 
         def reconcile_single(peer):

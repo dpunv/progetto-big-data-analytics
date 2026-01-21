@@ -56,7 +56,8 @@ class QUICServerProtocol(QuicConnectionProtocol):
     async def set_clusters(self, args):
         clusters = args[0]
         assignment = args[1]
-        await self._run(self.server_instance.set_clusters, clusters, assignment)
+        version = args[2] if len(args) > 2 else 0
+        await self._run(self.server_instance.set_clusters, clusters, assignment, version)
         return None
 
     async def search_vectors_local(self, args):
