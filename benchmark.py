@@ -73,8 +73,6 @@ SCENARIOS = {
 }
 
 
-
-
 class BenchmarkClient:
     def __init__(self, servers: List[sv.Server]):
         self.servers = servers
@@ -147,8 +145,6 @@ def load_data(filepath: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
         return []
-
-
 
 
 def generate_compose_and_dirs(num_servers: int, start_port: int = 6333):
@@ -428,8 +424,6 @@ def run_benchmark(
     return results
 
 
-
-
 def get_vector_count(servers: List[sv.Server]) -> int:
     """Get total vector count across all servers."""
     try:
@@ -628,9 +622,7 @@ def wait_for_coordinator_discovery(servers: List[sv.Server], timeout: int = 30) 
 
         time.sleep(0.5)
 
-    logger.warning(
-        "Timeout waiting for coordinator discovery. Vectors may be dropped!"
-    )
+    logger.warning("Timeout waiting for coordinator discovery. Vectors may be dropped!")
     return False
 
 
@@ -852,7 +844,6 @@ def run_suite(
         )
         throughput = total_ops / total_time if total_time > 0 else 0
 
-
         server_ids = [s.get_id() for s in servers]
         report_section = [
             "--------------------------------------------------------",
@@ -869,7 +860,6 @@ def run_suite(
             get_stats_summary("Insert", results["insert"], results["errors"]["insert"]),
             get_stats_summary("Query", results["query"], results["errors"]["query"]),
         ]
-
 
         report_section.append("")
         report_section.append("[PER-SERVER BREAKDOWN - This scenario only]")

@@ -8,31 +8,26 @@ from compound_types import *
 from server import Peer, Server, cosine_similarity
 
 
-
-
 def partition_network(servers, groups):
     """
     Simulate partition by blocking peers.
     groups: List[List[int]] - list of groups of server IDs that can communicate.
     """
-    
+
     {s.id: s for s in servers}
 
-    
     assigned = set()
     for g in groups:
         assigned.update(g)
 
     for s1 in servers:
-        
+
         my_group = set()
         for g in groups:
             if s1.id in g:
                 my_group = set(g)
                 break
 
-        
-        
         if not my_group:
             my_group = {s1.id}
 
@@ -45,13 +40,13 @@ def partition_network(servers, groups):
             else:
                 s1.unblock_peer(s2.id)
 
-    time.sleep(1.0)  
+    time.sleep(1.0)
 
 
 def heal_network(servers):
     """Restore full connectivity."""
     for s in servers:
-        
+
         for other in servers:
             if s.id != other.id:
                 s.unblock_peer(other.id)
@@ -69,11 +64,8 @@ def wait_for_full_connectivity(servers):
         if c == expected_count:
             return
         time.sleep(0.2)
-    
+
     print("Warning: timed out waiting for full connectivity")
-
-
-
 
 
 def test_cosine_similarity():
@@ -89,9 +81,8 @@ def test_cosine_similarity():
     assert cosine_similarity(v4, v4) == 0.0
 
     v5 = [1.0, 1.0]
-    
-    assert cosine_similarity(v1, v5) == pytest.approx(1.0 / (1.0 * np.sqrt(2)))
 
+    assert cosine_similarity(v1, v5) == pytest.approx(1.0 / (1.0 * np.sqrt(2)))
 
 
 _next_port = 30000
@@ -106,7 +97,7 @@ def get_free_port():
 
 @pytest.fixture
 def server_node():
-    
+
     port = get_free_port()
     s = Server(
         id=1,
@@ -116,11 +107,11 @@ def server_node():
         port=port,
         qdrant_url=":memory:",
     )
-    
+
     import qdrant_module
 
     qdrant_module.delete_collection(s.qdrant_url, s.store.collection_name)
-    
+
     s.store.collection_created = False
 
     yield s
@@ -168,33 +159,28 @@ class TestPeer:
 
         peer = Peer("127.0.0.1", get_free_port(), server_instance=mock_server)
 
-        
         result = peer.get_vector_digest()
         mock_server.get_vector_digest.assert_called_once()
         assert result == {1: (1.0, 0)}
 
-        
         result = peer.get_vectors_by_ids([1, 2])
         mock_server.get_vectors_by_ids.assert_called_once_with([1, 2])
 
-        
         result = peer.get_partition_coordinator_id()
         assert result == 42
 
-        
         result = peer.ping()
         mock_server.respond_to_ping.assert_called_once()
         assert result
 
 
 class TestServerUnit:
-    
 
     def test_initialization(self, server_node):
         assert server_node.id == 1
         assert server_node.is_coordinator is True
         assert server_node.status == "bootstrap"
-        assert len(server_node.peers) == 1  
+        assert len(server_node.peers) == 1
         assert server_node.peers[0].server == server_node
 
     def test_add_peer(self, server_node):
@@ -213,11 +199,7 @@ class TestServerUnit:
         vid1 = server_node.get_new_vector_id()
         vid2 = server_node.get_new_vector_id()
         assert vid1 != vid2
-        
-        
-        
-        
-        
+
         assert vid1 == 11
         assert vid2 == 21
 
@@ -228,7 +210,7 @@ class TestServerUnit:
 
     def test_count(self, server_node):
         assert server_node.count() == 0
-        
+
         server_node.store.insert(([1.0], 1, "a", 0, (1.0, 1)))
         server_node.store.insert(([2.0], 2, "b", 0, (1.0, 1)))
         server_node.store.insert(([3.0], 3, "c", 1, (1.0, 1)))
@@ -238,29 +220,23 @@ class TestServerUnit:
         assert server_node.similarity([1.0, 0.0]) == 0.0
 
     def test_similarity_with_clusters(self, server_node):
-        
+
         server_node.clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
         sim = server_node.similarity([1.0, 0.0])
         assert sim == pytest.approx(1.0)
 
         sim = server_node.similarity([0.0, 1.0])
-        assert sim == pytest.approx(1.0)  
+        assert sim == pytest.approx(1.0)
 
-        
-        
-        
         sim = server_node.similarity([0.9, 0.1])
-        
-        
+
         assert sim > 0.9
 
     def test_clustering_logic(self, server_node):
-        
-        
-        
+
         vectors = []
         for i in range(20):
-            
+
             base = [1.0, 0.0] if i < 10 else [0.0, 1.0]
             noisy = [
                 base[0] + np.random.uniform(-0.1, 0.1),
@@ -271,40 +247,31 @@ class TestServerUnit:
         clusters_dict = server_node.clustering(vectors, min_k=2, max_k=2)
         assert len(clusters_dict) == 2
 
-        
-        
         for cid, data in clusters_dict.items():
             assert "center" in data
             assert "members" in data
             assert len(data["members"]) > 0
-            
+
             for m in data["members"]:
                 assert m[3] == cid
 
     def test_assign_clusters_to_peers(self, server_node):
-        
+
         other_node = Server(2, False, 10, 2, port=get_free_port())
         server_node.add_peer(other_node)
         server_node.active_peers.add(2)
 
-        
-        
         clusters = {
             0: {"center": [1, 0], "members": [1] * 10},
             1: {"center": [0, 1], "members": [1] * 20},
             2: {"center": [1, 1], "members": [1] * 30},
         }
 
-        
-        
-        
-
         assignment = server_node.assign_clusters_to_peers(clusters)
 
         assert 1 in assignment
         assert 2 in assignment
 
-        
         cluster_counts = {0: 0, 1: 0, 2: 0}
         for node_id in assignment:
             for cluster_id, center in assignment[node_id]:
@@ -316,8 +283,7 @@ class TestServerUnit:
         other_node.stop()
 
     def test_save_vectors(self, server_node):
-        
-        
+
         vecs = [
             ([1.0, 0.0], 1, "A", 0),
             ([0.0, 1.0], 2, "B", 0),
@@ -325,10 +291,8 @@ class TestServerUnit:
         ]
         server_node.save_vectors(vecs)
 
-        
         assert server_node.store.count() == 3
 
-        
         c0 = server_node.store.get_by_cluster(0)
         assert len(c0) == 2
 
@@ -336,20 +300,19 @@ class TestServerUnit:
         assert len(c1) == 1
 
     def test_search_vectors_local(self, server_node):
-        
+
         vecs = [([1.0, 0.0], 1, "A", 0), ([0.0, 1.0], 2, "B", 0)]
         server_node.save_vectors(vecs)
 
-        
         query = [([1.0, 0.0], 100)]
         results = server_node.search_vectors_local(query, top_k=2)
-        
+
         assert len(results) == 2
         assert results[0][2] == "A"
         assert results[0][3] == pytest.approx(1.0)
 
     def test_route_vectors(self, server_node):
-        
+
         p1 = MagicMock()
         p1.get_id.return_value = 1
         p1.similarity.return_value = 0.9
@@ -360,28 +323,21 @@ class TestServerUnit:
 
         server_node.peers = [p1, p2]
 
-        vectors = [([1.0, 0.0], 99)]  
-
-        
-        
-        
+        vectors = [([1.0, 0.0], 99)]
 
         results = server_node.route_vectors(vectors, top_k=1)
-        
+
         assert 99 in results
         top_peers = results[99]
         assert len(top_peers) == 1
-        assert top_peers[0][0] == 1  
-
-
-
+        assert top_peers[0][0] == 1
 
 
 @pytest.mark.parametrize("protocol", ["HTTP", "GRPC", "QUIC"])
 def test_full_workflow(protocol):
     s1_port = get_free_port()
     s2_port = get_free_port()
-    
+
     s1 = Server(
         1,
         True,
@@ -399,63 +355,29 @@ def test_full_workflow(protocol):
         endpoint=protocol,
     )
 
-    
     time.sleep(1)
 
-    
     s1.add_peer("127.0.0.1", s2_port)
     s2.add_peer("127.0.0.1", s1_port)
 
-    
-    
-    
-    
-    
-    
-
     time.sleep(2)
-    
-    
 
     try:
-        
-        
-        
-        
-
-        
 
         data = []
         for i in range(10):
             vec = [float(i), 1.0]
             data.append((vec, f"payload_{i}"))
 
-        
-        
-        
-        
-
         s2.receive_from_client(data[:5])
 
-        
         time.sleep(1)
-
-        
-        
-        
-        
-        
-
-        
-        
-        
 
         max_retries = 20
         while s1.get_status() != "clustered" and max_retries > 0:
             time.sleep(0.1)
             max_retries -= 1
-        
-        
+
         max_retries = 20
         while s2.get_status() != "clustered" and max_retries > 0:
             time.sleep(0.1)
@@ -465,38 +387,18 @@ def test_full_workflow(protocol):
         assert s2.get_status() == "clustered"
         assert len(s1.clusters) > 0
 
-        
-        
         total_stored = s1.count() + s2.count()
-        
+
         assert total_stored == 10
 
-        
-        
-        
-
-        q_vec = [0.0, 1.0]  
+        q_vec = [0.0, 1.0]
         results = s2.query_from_client([q_vec])
-
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
 
         assert len(results) > 0
 
-        
-        
         r = results[0]
         assert len(r) == 4
-        assert isinstance(r[3], float)  
+        assert isinstance(r[3], float)
 
     finally:
         s1.stop()
@@ -505,14 +407,6 @@ def test_full_workflow(protocol):
 
 def test_receive_error_conditions():
     s = Server(1, True, 10, 1, port=get_free_port())
-
-    
-    
-    
-    
-    
-    
-    
 
     vec = ([1.0, 0.0], 1, "A", 0)
     s.receive([vec], "clustered")
@@ -523,12 +417,11 @@ def test_receive_error_conditions():
 
 
 def test_coordinator_finding():
-    s1 = Server(1, False, 10, 1, port=get_free_port())  
-    s2 = Server(2, True, 10, 1, port=get_free_port())  
+    s1 = Server(1, False, 10, 1, port=get_free_port())
+    s2 = Server(2, True, 10, 1, port=get_free_port())
     s1.add_peer(s2)
     s1.active_peers.add(2)
 
-    
     found = s1.coordinator()
     assert found.get_id() == 2
 
@@ -544,14 +437,11 @@ def test_server_shutdown_cleanly(protocol):
 
 
 def test_query_routing_bootstrap_mode():
-    
-    s1 = Server(1, True, 10, 1, port=get_free_port())  
 
-    
+    s1 = Server(1, True, 10, 1, port=get_free_port())
+
     s1.vector_buffer = [([1.0, 0.0], 1, "A", -1)]
 
-    
-    
     results = s1.query_from_client([[1.0, 0.0]])
     assert len(results) == 1
     assert results[0][2] == "A"
@@ -647,7 +537,6 @@ def test_query_inter_peer_logic():
     s = Server(1, True, 10, 1, port=get_free_port())
     s.vector_buffer = [([1.0, 0.0], 1, "A", -1)]
 
-    
     res = s.query([(99, [1.0, 0.0])], "bootstrap")
     assert len(res) == 1
 
@@ -692,46 +581,36 @@ def test_search_vectors_error_handling(server_node):
     server_node.peers.append(bad_peer)
     server_node.status = "clustered"
 
-    
     res = server_node.search_vectors([(1, [1.0, 0.0])], top_k=5, top_look=1)
     assert res == []
 
 
 def test_coverage_gap_listeners():
-    
-    s_nc = Server(2, False, 10, 1, port=get_free_port())  
-    s_nc.receive([], "bootstrap")  
-    
 
-    
+    s_nc = Server(2, False, 10, 1, port=get_free_port())
+    s_nc.receive([], "bootstrap")
+
     s_c = Server(1, True, 10, 1, port=get_free_port())
     s_c.status = "invalid_status"
     s_c._handle_receive([], "bootstrap")
 
-    
     s_c.status = "bootstrap"
-    
+
     with patch.object(s_c, "add_to_buffer") as mock_add:
-        
+
         s_c._handle_receive([], "client")
         mock_add.assert_called()
 
-    
     s_c.status = "invalid_status"
     s_c._handle_receive([], "client")
 
-    
     s_c._handle_receive([], "unknown_status")
 
-    
     s_c.status = "invalid_status"
     s_c.query([], "client")
 
-    
-    
-    
     s_c.status = "clustered"
-    
+
     with patch.object(s_c, "search_vectors") as mock_search:
         mock_search.return_value = []
         s_c.query([], "clustered")
@@ -739,11 +618,6 @@ def test_coverage_gap_listeners():
 
     s_nc.stop()
     s_c.stop()
-
-
-
-
-
 
 
 from server import HintedHandoff
@@ -756,13 +630,9 @@ class TestPartitionLogic:
         s1 = Server(1, True, 10, 2, port=get_free_port())
         s1.block_peer(2)
 
-        
-        
-        
         p2 = MagicMock()
         p2.get_id.return_value = 2
 
-        
         assert 2 in s1.simulated_unreachable_peers
 
         s1.unblock_peer(2)
@@ -785,7 +655,7 @@ class TestHintedHandoff:
 
         retrieved = hh.get_hints_for(99)
         assert len(retrieved) == 1
-        assert not hh.has_hints_for(99)  
+        assert not hh.has_hints_for(99)
 
     def test_multiple_hints_same_target(self):
         hh = HintedHandoff()
@@ -813,7 +683,7 @@ class TestHintedHandoff:
 
         peeked = hh.peek_hints_for(99)
         assert len(peeked) == 1
-        assert hh.has_hints_for(99)  
+        assert hh.has_hints_for(99)
 
     def test_clear_all(self):
         hh = HintedHandoff()
@@ -829,26 +699,25 @@ class TestCoordinatorElection:
 
     def _create_cluster(self, n=4):
         servers = [Server(i, i == 0, 10, 2, port=get_free_port()) for i in range(n)]
-        
+
         for s in servers:
             for p in servers:
                 if s.get_id() != p.get_id():
                     s.add_peer(p)
-        
+
         time.sleep(1)
         return servers
 
     def _partition(self, servers, groups):
-        
+
         for i, s1 in enumerate(servers):
-            
+
             my_group = None
             for g in groups:
                 if s1.id in g:
                     my_group = g
                     break
 
-            
             for s2 in servers:
                 if s1.id == s2.id:
                     continue
@@ -857,7 +726,6 @@ class TestCoordinatorElection:
                 else:
                     s1.unblock_peer(s2.id)
 
-        
         time.sleep(1.5)
 
     def _heal(self, servers):
@@ -871,16 +739,12 @@ class TestCoordinatorElection:
         servers = self._create_cluster(4)
 
         try:
-            
-            self._partition(servers, [[0, 1], [2, 3]])
 
-            
-            
+            self._partition(servers, [[0, 1], [2, 3]])
 
             assert servers[1].is_coordinator
             assert not servers[0].is_coordinator
 
-            
             assert servers[3].is_coordinator
             assert not servers[2].is_coordinator
 
@@ -890,22 +754,15 @@ class TestCoordinatorElection:
 
     def test_coordinator_in_minority_partition(self):
         """Test when original coordinator ends up isolated."""
-        
+
         servers = self._create_cluster(4)
 
-        
-        
-        
-        
-
         try:
-            
+
             self._partition(servers, [[0], [1, 2, 3]])
 
-            
             assert servers[3].is_coordinator
 
-            
             assert servers[0].is_coordinator
 
         finally:
@@ -917,16 +774,14 @@ class TestCoordinatorElection:
         servers = self._create_cluster(4)
 
         try:
-            
+
             self._partition(servers, [[0, 1], [2, 3]])
 
             assert servers[1].is_coordinator
             assert servers[3].is_coordinator
 
-            
             self._heal(servers)
 
-            
             assert servers[3].is_coordinator
             assert not servers[1].is_coordinator
 
@@ -974,44 +829,36 @@ class TestAntiEntropy:
 
     def test_reconciliation_syncs_missing_vectors(self):
         """Test that reconciliation transfers missing vectors."""
-        
+
         s0 = Server(0, True, 10, 2, port=get_free_port())
         s1 = Server(1, False, 10, 2, port=get_free_port())
         s0.add_peer(s1)
         s1.add_peer(s0)
 
         try:
-            
+
             s0.clusters = [(0, [0.5])]
             s1.clusters = [(0, [0.5])]
 
-            
             s0.store.insert(([1.0], 1, "a", 0, (1.0, 0)))
             s0.store.insert(([2.0], 2, "b", 0, (2.0, 0)))
 
-            
             s1.store.insert(([3.0], 3, "c", 0, (3.0, 1)))
 
-            
-            peer1 = s0.peers[1]  
+            peer1 = s0.peers[1]
             s0.reconcile_with_peer(peer1)
 
             time.sleep(0.2)
 
-            
             assert (
                 s1.store.count() == 3
             ), f"s1 should have all 3 vectors, has {s1.store.count()}"
 
-            
-            
-            
-            peer0 = s1.peers[1]  
+            peer0 = s1.peers[1]
             s1.reconcile_with_peer(peer0)
 
             time.sleep(0.2)
 
-            
             assert (
                 s0.store.count() == 3
             ), f"s0 should have all 3 vectors, has {s0.store.count()}"
@@ -1028,21 +875,18 @@ class TestAntiEntropy:
         s1.add_peer(s0)
 
         try:
-            
+
             s0.clusters = [(0, [0.5])]
             s1.clusters = [(0, [0.5])]
 
-            
             s0.store.insert(([1.0], 1, "old", 0, (1.0, 0)))
-            s1.store.insert(([1.0], 1, "new", 0, (5.0, 1)))  
+            s1.store.insert(([1.0], 1, "new", 0, (5.0, 1)))
 
-            
-            peer0 = s1.peers[1]  
+            peer0 = s1.peers[1]
             s1.reconcile_with_peer(peer0)
 
             time.sleep(0.2)
 
-            
             vec = s0.store.get_vector(1)
             assert (
                 vec[2] == "new"
@@ -1060,11 +904,9 @@ class TestAntiEntropy:
         s1.add_peer(s0)
 
         try:
-            
+
             s1.store.insert(([1.0], 1, "data", 0, (1.0, 1)))
 
-            
-            
             original_receive = s0.receive
 
             call_count = [0]
@@ -1076,25 +918,21 @@ class TestAntiEntropy:
                         raise Exception("Simulated Network Cut during Sync")
                 return original_receive(vectors, status)
 
-            
             with patch.object(s0, "receive", side_effect=failing_receive):
 
-                
                 print("Triggering failing reconciliation...")
                 try:
-                    s1.reconcile_with_peer(s1.peers[1])  
+                    s1.reconcile_with_peer(s1.peers[1])
                 except Exception as e:
                     print(f"Caught expected error: {e}")
 
-                
                 assert s0.count() == 0, "S0 should not have data after failed sync"
 
-                
                 print("Triggering retry reconciliation...")
                 s1.reconcile_with_peer(s1.peers[1])
 
                 time.sleep(0.5)
-                
+
                 assert s0.count() == 1, "S0 should have data after successful retry"
 
         finally:
@@ -1116,40 +954,32 @@ class TestEventualConsistency:
                     s.add_peer(p)
 
         try:
-            
+
             for s in servers:
                 s.status = "clustered"
                 s.clusters = [(0, [0.5, 0.5])]
 
             wait_for_full_connectivity(servers)
 
-            
             partition_network(servers, [[0, 1], [2, 3]])
             time.sleep(0.1)
 
-            
             vectors_left = [([float(i), 0.0], f"left_{i}") for i in range(10)]
             vectors_right = [([0.0, float(i)], f"right_{i}") for i in range(10)]
 
             servers[0].receive_from_client(vectors_left)
             servers[2].receive_from_client(vectors_right)
 
-            time.sleep(0.5)  
+            time.sleep(0.5)
 
-            
             servers[0].count() + servers[1].count()
             servers[2].count() + servers[3].count()
 
-            
             heal_network(servers)
             time.sleep(0.5)
 
-            
             sum(s.count() for s in servers)
 
-            
-            
-            
             all_vector_ids = set()
             for s in servers:
                 for v in s.store.get_all():
@@ -1179,32 +1009,24 @@ class TestEventualConsistency:
 
             wait_for_full_connectivity([s0, s1])
 
-            
             partition_network([s0, s1], [[0], [1]])
             time.sleep(0.1)
 
-            
             s0.receive_from_client([([1.0, 0.0], "from_s0")])
 
-            
             s1.receive_from_client([([0.0, 1.0], "from_s1")])
 
             time.sleep(0.2)
 
-            
             assert s0.count() == 1
             assert s1.count() == 1
 
-            
             heal_network([s0, s1])
             time.sleep(0.3)
 
-            
-            
             all_ids_s0 = s0.store.get_all_ids()
             all_ids_s1 = s1.store.get_all_ids()
 
-            
             all_ids = all_ids_s0 | all_ids_s1
             assert len(all_ids) == 2
 
@@ -1217,21 +1039,19 @@ class TestEventualConsistency:
         Test that cluster metadata (IDs and centroids) converges if rebalancing
         happens on one side of a partition.
         """
-        
+
         s0 = Server(0, True, 100, 2, port=get_free_port())
         s1 = Server(1, False, 100, 2, port=get_free_port())
         s0.add_peer(s1)
         s1.add_peer(s0)
 
         try:
-            
-            
+
             vectors = []
             for i in range(50):
                 vec = (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
                 s0.store.insert(vec)
 
-            
             initial_clusters = [(0, [25.0, 25.0])]
             s0.clusters = list(initial_clusters)
             s1.clusters = list(initial_clusters)
@@ -1240,16 +1060,12 @@ class TestEventualConsistency:
 
             wait_for_full_connectivity([s0, s1])
 
-            
             partition_network([s0, s1], [[0], [1]])
             time.sleep(0.5)
 
-            
-            
             print("Triggering split on S0...")
             s0.balanced_split_cluster(cluster_id=0, n_subclusters=2)
 
-            
             ids_s0 = set(c[0] for c in s0.clusters)
             ids_s1 = set(c[0] for c in s1.clusters)
             assert (
@@ -1258,16 +1074,11 @@ class TestEventualConsistency:
             assert 0 not in ids_s0, "S0 should have replaced Cluster 0"
             assert 0 in ids_s1, "S1 should still have Cluster 0"
 
-            
             print("Healing network...")
             heal_network([s0, s1])
 
-            
-            
-            
             time.sleep(2.0)
 
-            
             final_ids_s0 = set(c[0] for c in s0.clusters)
             final_ids_s1 = set(c[0] for c in s1.clusters)
 
@@ -1307,7 +1118,7 @@ class TestPartitionHealVectorConsistency:
         """Generate random vectors for testing."""
         vectors = []
         for i in range(count):
-            
+
             vec = np.random.randn(dimension).tolist()
             vectors.append((vec, f"{prefix}_{i}"))
         return vectors
@@ -1333,9 +1144,8 @@ class TestPartitionHealVectorConsistency:
         initial_vectors = 1000
         partition_vectors_per_side = 100
         dimension = 64
-        clustering_threshold = 500  
+        clustering_threshold = 500
 
-        
         servers = [
             Server(
                 i,
@@ -1355,17 +1165,14 @@ class TestPartitionHealVectorConsistency:
         try:
             wait_for_full_connectivity(servers)
 
-            
             coordinator_idx = num_servers - 1
 
-            
             print(
                 f"[Phase 1] Inserting {initial_vectors} initial vectors to coordinator (server {coordinator_idx})..."
             )
             initial_vecs = self._generate_vectors(initial_vectors, dimension, "init")
             servers[coordinator_idx].receive_from_client(initial_vecs)
 
-            
             print("[Phase 1] Waiting for clustering...")
             assert self._wait_for_clustering(
                 servers, timeout=180
@@ -1374,7 +1181,6 @@ class TestPartitionHealVectorConsistency:
                 f"[Phase 1] Clustering complete. Status: {[s.status for s in servers]}"
             )
 
-            
             time.sleep(3.0)
             count_after_clustering = self._total_vector_count(servers)
             unique_after_clustering = self._count_unique_vectors(servers)
@@ -1382,12 +1188,10 @@ class TestPartitionHealVectorConsistency:
                 f"[Phase 1] After clustering: {unique_after_clustering} unique, {count_after_clustering} total"
             )
 
-            
             print("[Phase 2] Creating network partition...")
             partition_network(servers, [[0, 1], [2, 3]])
             time.sleep(1.0)
 
-            
             print(
                 f"[Phase 3] Inserting {partition_vectors_per_side * 2} vectors during partition..."
             )
@@ -1408,10 +1212,9 @@ class TestPartitionHealVectorConsistency:
                 f"[Phase 3] Before heal: {unique_before_heal} unique, {count_before_heal} total"
             )
 
-            
             print("[Phase 4] Healing network partition...")
             heal_network(servers)
-            time.sleep(5.0)  
+            time.sleep(5.0)
 
             count_after_heal = self._total_vector_count(servers)
             unique_after_heal = self._count_unique_vectors(servers)
@@ -1419,7 +1222,6 @@ class TestPartitionHealVectorConsistency:
                 f"[Phase 4] After heal: {unique_after_heal} unique, {count_after_heal} total"
             )
 
-            
             total_vectors_sent = initial_vectors + partition_vectors_per_side * 2
             expected_total_count = total_vectors_sent * replication_factor
 
@@ -1451,9 +1253,8 @@ class TestPartitionHealVectorConsistency:
         initial_vectors = 5000
         partition_vectors_per_partition = 333
         dimension = 64
-        clustering_threshold = 500  
+        clustering_threshold = 500
 
-        
         servers = [
             Server(
                 i,
@@ -1474,26 +1275,22 @@ class TestPartitionHealVectorConsistency:
             wait_for_full_connectivity(servers)
             coordinator_idx = num_servers - 1
 
-            
             print(
                 f"[Phase 1] Inserting {initial_vectors} initial vectors to coordinator..."
             )
             initial_vecs = self._generate_vectors(initial_vectors, dimension, "init")
             servers[coordinator_idx].receive_from_client(initial_vecs)
 
-            
             print("[Phase 1] Waiting for clustering...")
             assert self._wait_for_clustering(
                 servers, timeout=180
             ), "Clustering did not complete"
             time.sleep(3.0)
 
-            
             print("[Phase 2] Creating three-way partition...")
             partition_network(servers, [[0, 1], [2, 3], [4, 5]])
             time.sleep(1.0)
 
-            
             print(
                 f"[Phase 3] Inserting {partition_vectors_per_partition * 3} vectors during partition..."
             )
@@ -1518,7 +1315,6 @@ class TestPartitionHealVectorConsistency:
                 f"[Phase 3] Before heal: {unique_before_heal} unique, {count_before_heal} total"
             )
 
-            
             print("[Phase 4] Healing network...")
             heal_network(servers)
             time.sleep(10.0)
@@ -1529,7 +1325,6 @@ class TestPartitionHealVectorConsistency:
                 f"[Phase 4] After heal: {unique_after_heal} unique, {count_after_heal} total"
             )
 
-            
             total_vectors_sent = initial_vectors + partition_vectors_per_partition * 3
             expected_total_count = total_vectors_sent * replication_factor
 
@@ -1559,7 +1354,6 @@ class TestPartitionHealVectorConsistency:
         dimension = 64
         clustering_threshold = 500
 
-        
         servers = [
             Server(
                 i,
@@ -1580,7 +1374,6 @@ class TestPartitionHealVectorConsistency:
             wait_for_full_connectivity(servers)
             coordinator_idx = num_servers - 1
 
-            
             print(
                 f"[Init] Inserting {initial_vectors} initial vectors to coordinator..."
             )
@@ -1592,15 +1385,12 @@ class TestPartitionHealVectorConsistency:
 
             total_vectors_sent = initial_vectors
 
-            
             for cycle in range(num_cycles):
                 print(f"[Cycle {cycle+1}] Starting partition cycle...")
 
-                
                 partition_network(servers, [[0, 1], [2, 3]])
                 time.sleep(1.0)
 
-                
                 cycle_vecs = self._generate_vectors(
                     vectors_per_cycle, dimension, f"cycle{cycle}"
                 )
@@ -1608,7 +1398,6 @@ class TestPartitionHealVectorConsistency:
                 total_vectors_sent += vectors_per_cycle
                 time.sleep(1.0)
 
-                
                 heal_network(servers)
                 time.sleep(3.0)
 
@@ -1618,7 +1407,6 @@ class TestPartitionHealVectorConsistency:
                     f"[Cycle {cycle+1}] After heal: {current_unique} unique, {current_total} total"
                 )
 
-            
             time.sleep(2.0)
             final_unique = self._count_unique_vectors(servers)
             final_total = self._total_vector_count(servers)
@@ -1654,7 +1442,6 @@ class TestPartitionHealVectorConsistency:
         dimension = 64
         clustering_threshold = 500
 
-        
         servers = [
             Server(
                 i,
@@ -1675,7 +1462,6 @@ class TestPartitionHealVectorConsistency:
             wait_for_full_connectivity(servers)
             coordinator_idx = num_servers - 1
 
-            
             print(
                 f"[Init] Inserting {initial_vectors} initial vectors to coordinator..."
             )
@@ -1685,19 +1471,16 @@ class TestPartitionHealVectorConsistency:
             assert self._wait_for_clustering(servers, timeout=180), "Clustering failed"
             time.sleep(2.0)
 
-            
             print("[Partition] Creating asymmetric partition (1 vs 4 nodes)...")
             partition_network(servers, [[0], [1, 2, 3, 4]])
             time.sleep(1.0)
 
-            
             print(f"[Insert] Adding {vectors_to_isolated} vectors to isolated node...")
             isolated_vecs = self._generate_vectors(
                 vectors_to_isolated, dimension, "isolated"
             )
             servers[0].receive_from_client(isolated_vecs)
 
-            
             print(
                 f"[Insert] Adding {vectors_to_majority} vectors to majority partition..."
             )
@@ -1711,12 +1494,10 @@ class TestPartitionHealVectorConsistency:
             unique_before = self._count_unique_vectors(servers)
             print(f"[Before Heal] Unique: {unique_before}, Total: {count_before}")
 
-            
             print("[Heal] Healing network...")
             heal_network(servers)
             time.sleep(5.0)
 
-            
             total_vectors_sent = (
                 initial_vectors + vectors_to_isolated + vectors_to_majority
             )
@@ -1753,7 +1534,6 @@ class TestPartitionHealVectorConsistency:
         dimension = 64
         clustering_threshold = 500
 
-        
         servers = [
             Server(
                 i,
@@ -1774,7 +1554,6 @@ class TestPartitionHealVectorConsistency:
             wait_for_full_connectivity(servers)
             coordinator_idx = num_servers - 1
 
-            
             print(
                 f"[Init] Inserting {initial_vectors} vectors with RF={replication_factor} to coordinator..."
             )
@@ -1784,18 +1563,15 @@ class TestPartitionHealVectorConsistency:
             assert self._wait_for_clustering(servers, timeout=180), "Clustering failed"
             time.sleep(3.0)
 
-            
             print("[Partition] Creating four-way partition...")
             partition_network(servers, [[0, 1], [2, 3], [4, 5], [6, 7]])
             time.sleep(1.0)
 
-            
             print(f"[Insert] Adding {partition_vectors} vectors during partition...")
             partition_vecs = self._generate_vectors(
                 partition_vectors, dimension, "part"
             )
 
-            
             part_chunk = partition_vectors // 4
             servers[0].receive_from_client(partition_vecs[:part_chunk])
             servers[2].receive_from_client(partition_vecs[part_chunk : part_chunk * 2])
@@ -1805,12 +1581,10 @@ class TestPartitionHealVectorConsistency:
             servers[6].receive_from_client(partition_vecs[part_chunk * 3 :])
             time.sleep(3.0)
 
-            
             print("[Heal] Healing network...")
             heal_network(servers)
             time.sleep(10.0)
 
-            
             total_vectors_sent = initial_vectors + partition_vectors
             expected_total = total_vectors_sent * replication_factor
 
@@ -1853,14 +1627,12 @@ class TestRecursivePartitions:
                     s.add_peer(p)
 
         try:
-            
+
             wait_for_full_connectivity(servers)
 
-            
             partition_network(servers, [[0], [1], [2]])
             time.sleep(0.1)
 
-            
             for s in servers:
                 assert (
                     s.is_coordinator
@@ -1883,22 +1655,18 @@ class TestRecursivePartitions:
         try:
             wait_for_full_connectivity(servers)
 
-            
             assert servers[2].is_coordinator
 
-            
             partition_network(servers, [[0], [1, 2]])
             time.sleep(0.1)
 
-            assert servers[0].is_coordinator  
-            assert servers[2].is_coordinator  
+            assert servers[0].is_coordinator
+            assert servers[2].is_coordinator
             assert not servers[1].is_coordinator
 
-            
             partition_network(servers, [[0], [1], [2]])
             time.sleep(0.1)
 
-            
             for s in servers:
                 assert s.is_coordinator
 
@@ -1921,41 +1689,33 @@ class TestRecursivePartitions:
 
             s0, s1, s2 = servers
 
-            
             for s in servers:
                 s.status = "clustered"
                 s.clusters = [(0, [0.5, 0.5])]
 
-            
             partition_network(servers, [[0], [1], [2]])
             time.sleep(0.1)
 
-            
             s0.receive_from_client([([1.0, 0.0], "v0")])
             s1.receive_from_client([([0.5, 0.5], "v1")])
             s2.receive_from_client([([0.0, 1.0], "v2")])
             time.sleep(0.2)
 
-            
             assert s0.count() == 1
             assert s1.count() == 1
             assert s2.count() == 1
 
-            
             partition_network(servers, [[0, 1], [2]])
             time.sleep(0.3)
 
-            
             ids_01 = s0.store.get_all_ids() | s1.store.get_all_ids()
             assert (
                 len(ids_01) >= 2
             ), "After partial heal, partitions 0 and 1 should have synced"
 
-            
             heal_network(servers)
             time.sleep(0.3)
 
-            
             all_ids = (
                 s0.store.get_all_ids() | s1.store.get_all_ids() | s2.store.get_all_ids()
             )
@@ -1978,37 +1738,28 @@ class TestRecursivePartitions:
         try:
             wait_for_full_connectivity(servers)
 
-            
-            
             for s in servers:
                 s.status = "clustered"
                 s.clusters = [(0, [0.5, 0.5])]
-                s.replication_factor = 3  
+                s.replication_factor = 3
 
-            
             partition_network(servers, [[0, 1], [2]])
             time.sleep(0.1)
 
-            
-            
             servers[0].receive_from_client([([1.0, 0.0], "test")])
             time.sleep(0.3)
 
-            
             hints_for_2 = (
                 servers[0].hinted_handoff.count() + servers[1].hinted_handoff.count()
             )
             assert hints_for_2 > 0, "Hints should be stored for unreachable node"
 
-            
             heal_network(servers)
             time.sleep(0.3)
 
-            
             assert servers[0].hinted_handoff.count() == 0
             assert servers[1].hinted_handoff.count() == 0
 
-            
             assert servers[2].count() > 0
 
         finally:
@@ -2024,22 +1775,17 @@ class TestNetworkOptimization:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(100):
-                large_payload = "x" * 1000  
+                large_payload = "x" * 1000
                 s.store.insert(([float(i)] * 100, i, large_payload, 0, (float(i), 0)))
 
-            
             digest = s.get_vector_digest()
 
-            
-            
             import sys
 
             sys.getsizeof(digest)
 
-            
-            
             assert len(digest) == 100
 
         finally:
@@ -2050,12 +1796,12 @@ class TestNetworkOptimization:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             result1 = s.store.insert(([1.0], 1, "a", 0, (1.0, 0)))
             result2 = s.store.insert(([1.0], 1, "a", 0, (1.0, 0)))
 
             assert result1
-            assert not result2  
+            assert not result2
             assert s.store.count() == 1
 
         finally:
@@ -2066,18 +1812,15 @@ class TestNetworkOptimization:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s.store.insert(([1.0], 1, "v1", 0, (1.0, 0)))
 
-            
             result_old = s.store.insert(([1.0], 1, "v0", 0, (0.5, 0)))
             assert not result_old
 
-            
             result_new = s.store.insert(([1.0], 1, "v2", 0, (2.0, 0)))
             assert result_new
 
-            
             assert s.store.count() == 1
             vec = s.store.get_vector(1)
             assert vec[2] == "v2"
@@ -2086,26 +1829,19 @@ class TestNetworkOptimization:
             s.stop()
 
 
-
-
-
 def test_server_without_network():
     """Test server works normally without network simulator."""
     s = Server(0, True, 10, 1, port=get_free_port())
 
     try:
-        
+
         assert s._is_peer_reachable(s.peers[0])
 
-        
         reachable = s.get_reachable_peers()
         assert len(reachable) == 1
 
     finally:
         s.stop()
-
-
-
 
 
 class TestPeerAdditionalMethods:
@@ -2127,7 +1863,7 @@ class TestVectorStoreEdgeCases:
         from server import VectorStore
 
         store = VectorStore()
-        
+
         store.remove_by_id(999)
         assert store.count() == 0
 
@@ -2164,10 +1900,10 @@ class TestServerHelperMethods:
 
     def test_coordinator_returns_none_when_no_coordinator(self):
         """Test coordinator() when no coordinator is reachable."""
-        s = Server(0, False, 10, 1, port=get_free_port())  
+        s = Server(0, False, 10, 1, port=get_free_port())
 
         try:
-            
+
             result = s.coordinator()
             assert result is None
         finally:
@@ -2207,14 +1943,12 @@ class TestServerHelperMethods:
         s1.add_peer(s0)
 
         try:
-            
-            
+
             s0.active_peers = {0, 1}
             assert len(s0.get_unreachable_peers()) == 0
 
-            
             s0.block_peer(1)
-            
+
             time.sleep(0.6)
 
             unreachable = s0.get_unreachable_peers()
@@ -2263,7 +1997,7 @@ class TestServerHelperMethods:
         s.peers = []
         try:
             result = s._calculate_destinations(([1.0], 1, "a", 0, (1.0, 0)))
-            
+
             assert result[0] == frozenset()
         finally:
             s.stop()
@@ -2277,13 +2011,11 @@ class TestReconciliationEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s._reconciling = True
 
-            
             s.on_partition_heal()
 
-            
             s._reconciling = False
         finally:
             s.stop()
@@ -2297,7 +2029,6 @@ class TestReconciliationEdgeCases:
             mock_peer.get_id.return_value = 1
             mock_peer.get_vector_digest.side_effect = Exception("Digest failed!")
 
-            
             s.reconcile_with_peer(mock_peer)
         finally:
             s.stop()
@@ -2305,7 +2036,7 @@ class TestReconciliationEdgeCases:
     def test_should_be_on_peer_no_destinations(self):
         """Test _should_be_on_peer when vector has no stored destinations."""
         s = Server(0, True, 10, 1, port=get_free_port())
-        s.clusters = [(0, [1.0, 0.0])]  
+        s.clusters = [(0, [1.0, 0.0])]
 
         mock_peer = MagicMock()
         mock_peer.get_id.return_value = 0
@@ -2313,7 +2044,7 @@ class TestReconciliationEdgeCases:
         s.peers = [mock_peer]
 
         try:
-            
+
             vec = ([1.0, 0.0], 1, "a", 0)
             result = s._should_be_on_peer(vec, 0)
             assert isinstance(result, bool)
@@ -2340,7 +2071,6 @@ class TestSendToPeersExceptionHandling:
             vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1]))
             s.send_to_peers([vec])
 
-            
             assert s.hinted_handoff.has_hints_for(1)
         finally:
             s.stop()
@@ -2354,21 +2084,18 @@ class TestHandoffEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             s.hinted_handoff.store_hint(1, [vec])
 
-            
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 1
             mock_peer.receive.side_effect = Exception("Delivery failed!")
 
             s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
 
-            
             s.deliver_hints()
 
-            
             assert s.hinted_handoff.has_hints_for(1)
         finally:
             s.stop()
@@ -2412,14 +2139,13 @@ class TestClientNoCoordinatorForward:
         s = Server(0, False, 10, 1, port=get_free_port())
 
         try:
-            
-            s.peers = [Peer(s.ip, s.port, server_instance=s)]  
+
+            s.peers = [Peer(s.ip, s.port, server_instance=s)]
 
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             s.receive([vec], "client")
             time.sleep(0.1)
 
-            
         finally:
             s.stop()
 
@@ -2434,13 +2160,12 @@ class TestReconciliationWithRealCoordinator:
         try:
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 1
-            
+
             s0.reconcile_with_peer = MagicMock(
                 side_effect=Exception("Reconcile failed!")
             )
             s0.peers = [Peer(s0.ip, s0.port, server_instance=s0), mock_peer]
 
-            
             s0._reconcile_with_other_peers()
         finally:
             s0.stop()
@@ -2454,7 +2179,7 @@ class TestClusteringEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s.vector_buffer = [([1.0], 1, "a", -1, (1.0, 0))]
             s.clustering_in_progress = True
 
@@ -2466,7 +2191,6 @@ class TestClusteringEdgeCases:
 
             s._handle_set_clusters(clusters, [(0, [1.0])])
 
-            
             assert len(s.vector_buffer) == 0
             assert not s.clustering_in_progress
         finally:
@@ -2475,7 +2199,7 @@ class TestClusteringEdgeCases:
     def test_assign_clusters_no_nodes(self):
         """Test assign_clusters_to_peers with no reachable nodes."""
         s = Server(0, True, 10, 1, port=get_free_port())
-        s.peers = []  
+        s.peers = []
 
         try:
             clusters = {0: {"center": [1.0], "members": []}}
@@ -2490,12 +2214,12 @@ class TestQueryEdgeCases:
 
     def test_query_bootstrap_no_coordinator(self):
         """Test query bootstrap mode when coordinator not found returns empty."""
-        s = Server(0, False, 10, 1, port=get_free_port())  
+        s = Server(0, False, 10, 1, port=get_free_port())
 
         try:
-            
+
             result = s.query([(1, [1.0])], "client")
-            
+
             assert result is None or result == []
         finally:
             s.stop()
@@ -2509,7 +2233,7 @@ class TestShouldBeOnPeerVariants:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1, 2]))
 
             assert s._should_be_on_peer(vec, 1)
@@ -2521,19 +2245,15 @@ class TestShouldBeOnPeerVariants:
     def test_should_be_on_peer_no_clusters(self):
         """Test _should_be_on_peer when clusters not yet formed."""
         s = Server(0, True, 10, 1, port=get_free_port())
-        s.clusters = []  
+        s.clusters = []
 
         try:
-            
+
             vec = ([1.0], 1, "a", 0, (1.0, 0))
 
-            
             assert s._should_be_on_peer(vec, 1)
         finally:
             s.stop()
-
-
-
 
 
 from cluster_index import ClusterIndex
@@ -2545,7 +2265,7 @@ class TestClusterIndex:
     def test_build_empty_clusters(self):
         """Test build() with empty cluster list triggers warning."""
         ci = ClusterIndex(dimension=2)
-        ci.build([])  
+        ci.build([])
         assert ci.hnsw_index is None
 
     def test_build_valid_clusters(self):
@@ -2561,12 +2281,11 @@ class TestClusterIndex:
         """Test build() handles non-integer cluster IDs gracefully."""
         ci = ClusterIndex(dimension=2)
         clusters = [
-            ("invalid_string", [1.0, 0.0]),  
-            (1, [0.0, 1.0]),  
+            ("invalid_string", [1.0, 0.0]),
+            (1, [0.0, 1.0]),
         ]
         ci.build(clusters)
 
-        
         assert ci.hnsw_index.element_count == 1
 
     def test_build_all_invalid_ids(self):
@@ -2574,7 +2293,7 @@ class TestClusterIndex:
         ci = ClusterIndex(dimension=2)
         clusters = [("invalid1", [1.0, 0.0]), ("invalid2", [0.0, 1.0])]
         ci.build(clusters)
-        
+
         assert ci.hnsw_index.element_count == 0
 
     def test_find_nearest_clusters_no_index(self):
@@ -2589,7 +2308,6 @@ class TestClusterIndex:
         clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
         ci.build(clusters)
 
-        
         result = ci.find_nearest_clusters([1.0, 0.0], k=10)
         assert len(result) == 2
 
@@ -2608,11 +2326,9 @@ class TestClusterIndex:
         clusters = [(i, [float(i), float(i)]) for i in range(100)]
         ci.build(clusters)
 
-        
         ci.hnsw_index.set_ef(10)
         result = ci.find_nearest_clusters([50.0, 50.0], k=20)
 
-        
         assert ci.hnsw_index.ef >= 20
         assert len(result) == 20
 
@@ -2622,7 +2338,6 @@ class TestClusterIndex:
         clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0]), (2, [0.5, 0.5])]
         ci.build(clusters)
 
-        
         result = ci.find_nearest_clusters([1.0, 0.0], k=1)
         assert result[0] == 0
 
@@ -2643,7 +2358,7 @@ class TestClusterIndex:
         result = ci.search_batch(query, k=10)
 
         assert len(result) == 2
-        assert len(result[0]) == 2  
+        assert len(result[0]) == 2
 
     def test_search_batch_k_zero(self):
         """Test search_batch() with k=0 returns empty lists."""
@@ -2691,7 +2406,7 @@ class TestClusterIndex:
         data = ci.to_serializable()
 
         assert data["index_data"] is not None
-        assert isinstance(data["index_data"], str)  
+        assert isinstance(data["index_data"], str)
 
     def test_from_serializable_no_index(self):
         """Test from_serializable() without index data."""
@@ -2710,13 +2425,12 @@ class TestClusterIndex:
 
     def test_from_serializable_with_index(self):
         """Test from_serializable() with valid index data."""
-        
+
         ci1 = ClusterIndex(dimension=2)
         clusters = [(0, [1.0, 0.0]), (1, [0.0, 1.0])]
         ci1.build(clusters)
         data = ci1.to_serializable()
 
-        
         ci2 = ClusterIndex.from_serializable(data)
 
         assert ci2.hnsw_index is not None
@@ -2732,11 +2446,8 @@ class TestClusterIndex:
             "index_data": "invalid_base64_data_that_is_not_a_valid_pickle",
         }
 
-        
         ci = ClusterIndex.from_serializable(data)
         assert ci.hnsw_index is None
-
-
 
 
 import os
@@ -2757,7 +2468,7 @@ class TestQdrantModule:
         """Test get_client() with :memory: URL."""
         client = qdrant_module.get_client(":memory:")
         assert client is not None
-        
+
         qdrant_module._client_cache.clear()
 
     def test_get_client_caching(self):
@@ -2775,11 +2486,9 @@ class TestQdrantModule:
         url = ":memory:"
         collection = "test_exists"
 
-        
         result1 = qdrant_module.create_collection(url, collection, 2)
         assert result1
 
-        
         result2 = qdrant_module.create_collection(url, collection, 2)
         assert result2
 
@@ -2792,9 +2501,7 @@ class TestQdrantModule:
         qdrant_module.create_collection(url, "test_cosine", 2, "Cosine")
         qdrant_module.create_collection(url, "test_euclid", 2, "Euclid")
         qdrant_module.create_collection(url, "test_dot", 2, "Dot")
-        qdrant_module.create_collection(
-            url, "test_unknown", 2, "Unknown"
-        )  
+        qdrant_module.create_collection(url, "test_unknown", 2, "Unknown")
 
         qdrant_module._client_cache.clear()
 
@@ -2813,10 +2520,8 @@ class TestQdrantModule:
         """Test delete_collection() for non-existent collection - Qdrant doesn't throw."""
         url = ":memory:"
 
-        
-        
         result = qdrant_module.delete_collection(url, "nonexistent_collection")
-        
+
         assert result
         qdrant_module._client_cache.clear()
 
@@ -2896,7 +2601,6 @@ class TestQdrantModule:
         result = qdrant_module.delete_vector(url, collection, 1)
         assert result
 
-        
         count = qdrant_module.count(url, collection)
         assert count == 0
 
@@ -2918,7 +2622,6 @@ class TestQdrantModule:
 
         qdrant_module.create_collection(url, collection, 2)
 
-        
         vectors = [([float(i), float(i)], i, f"payload_{i}", 0) for i in range(5)]
         qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
 
@@ -2949,7 +2652,7 @@ class TestQdrantModule:
         ]
         qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
 
-        query = [([1.0, 0.0], 0)]  
+        query = [([1.0, 0.0], 0)]
         results = qdrant_module.query_vectors(url, collection, query, topk=2)
 
         assert len(results) > 0
@@ -2974,7 +2677,6 @@ class TestQdrantModule:
             client = qdrant_module.get_client(local_path)
             assert client is not None
 
-            
             client.close()
             qdrant_module._client_cache.clear()
 
@@ -2983,7 +2685,6 @@ class TestQdrantModule:
         url = ":memory:"
         base_collection = "test_generic_query"
 
-        
         qdrant_module.create_collection(
             url, qdrant_module.get_collection_name(base_collection, 0), 2
         )
@@ -2991,7 +2692,6 @@ class TestQdrantModule:
             url, qdrant_module.get_collection_name(base_collection, 1), 2
         )
 
-        
         vectors_c0 = [([1.0, 0.0], 1, "A", 0)]
         vectors_c1 = [([0.0, 1.0], 2, "B", 1)]
 
@@ -3008,8 +2708,6 @@ class TestQdrantModule:
             batch_size_retry=1,
         )
 
-        
-        
         queries = [([1.0, 0.0], 0), ([0.0, 1.0], 1)]
 
         results = qdrant_module.query_vectors_generic(
@@ -3024,7 +2722,6 @@ class TestQdrantModule:
         url = ":memory:"
         base_collection = "test_generic_insert"
 
-        
         qdrant_module.create_collection(
             url, qdrant_module.get_collection_name(base_collection, 0), 2
         )
@@ -3032,18 +2729,16 @@ class TestQdrantModule:
             url, qdrant_module.get_collection_name(base_collection, 1), 2
         )
 
-        
         vectors = [
-            ([1.0, 0.0], 1, "A", 0),  
-            ([0.0, 1.0], 2, "B", 1),  
-            ([0.5, 0.5], 3, "C", 0),  
+            ([1.0, 0.0], 1, "A", 0),
+            ([0.0, 1.0], 2, "B", 1),
+            ([0.5, 0.5], 3, "C", 0),
         ]
 
         qdrant_module.insert_vectors_generic(
             url, base_collection, vectors, batch_size_retry=1
         )
 
-        
         count_c0 = qdrant_module.count(
             url, qdrant_module.get_collection_name(base_collection, 0)
         )
@@ -3063,10 +2758,8 @@ class TestQdrantModule:
 
         qdrant_module.create_collection(url, collection, 2)
 
-        
         vectors = [([float(i), float(i)], i, f"payload_{i}", 0) for i in range(10)]
 
-        
         result = qdrant_module.insert_vectors(
             url, collection, vectors, batch_size_retry=1, batch_size=3
         )
@@ -3076,8 +2769,6 @@ class TestQdrantModule:
         assert count == 10
 
         qdrant_module._client_cache.clear()
-
-
 
 
 import asyncio
@@ -3317,8 +3008,6 @@ class TestPeerRemoteCalls:
         assert not remote_peer.is_local()
 
 
-
-
 from utils.cert_utils import generate_self_signed_cert
 
 
@@ -3336,7 +3025,6 @@ class TestCertUtils:
             assert os.path.exists(cert_path)
             assert os.path.exists(key_path)
 
-            
             with open(cert_path, "rb") as f:
                 cert_content = f.read()
             with open(key_path, "rb") as f:
@@ -3351,28 +3039,21 @@ class TestCertUtils:
             cert_path = os.path.join(tmpdir, "test.crt")
             key_path = os.path.join(tmpdir, "test.key")
 
-            
             with open(cert_path, "w") as f:
                 f.write("existing cert")
             with open(key_path, "w") as f:
                 f.write("existing key")
 
-            
             cert_mtime_before = os.path.getmtime(cert_path)
             key_mtime_before = os.path.getmtime(key_path)
 
-            
             generate_self_signed_cert(cert_path=cert_path, key_path=key_path)
 
-            
             cert_mtime_after = os.path.getmtime(cert_path)
             key_mtime_after = os.path.getmtime(key_path)
 
             assert cert_mtime_before == cert_mtime_after
             assert key_mtime_before == key_mtime_after
-
-
-
 
 
 from server import (
@@ -3388,26 +3069,22 @@ class TestPhiAccrualFailureDetector:
     def test_phi_no_heartbeat(self):
         """Test phi() returns 0.0 when no heartbeat received (line 112)."""
         detector = PhiAccrualFailureDetector()
-        
+
         assert detector.phi() == 0.0
 
     def test_reset_method(self):
         """Test reset() method (lines 160-164)."""
         detector = PhiAccrualFailureDetector()
 
-        
         detector.heartbeat_received()
         time.sleep(0.01)
         detector.heartbeat_received()
 
-        
         assert detector.last_heartbeat_time is not None
         assert len(detector.heartbeat_intervals) > 0
 
-        
         detector.reset()
 
-        
         assert detector.last_heartbeat_time is None
         assert len(detector.heartbeat_intervals) == 0
         assert detector._cached_mean == detector.first_heartbeat_estimate_ms
@@ -3416,9 +3093,9 @@ class TestPhiAccrualFailureDetector:
     def test_update_statistics_empty_intervals(self):
         """Test _update_statistics() with empty intervals (line 90)."""
         detector = PhiAccrualFailureDetector()
-        
+
         detector._update_statistics()
-        
+
         assert detector._cached_mean == detector.first_heartbeat_estimate_ms
 
     def test_update_statistics_single_interval(self):
@@ -3426,53 +3103,44 @@ class TestPhiAccrualFailureDetector:
         detector = PhiAccrualFailureDetector()
         detector.heartbeat_intervals.append(1000.0)
         detector._update_statistics()
-        
+
         assert detector._cached_variance == 0.0
 
     def test_calculate_phi_math_edge_cases(self):
         """Test _calculate_phi() with edge cases (lines 146-147)."""
         detector = PhiAccrualFailureDetector()
 
-        
-        result = detector._calculate_phi(1e10)  
+        result = detector._calculate_phi(1e10)
         assert result > 0
 
-        
         detector.heartbeat_received()
         time.sleep(0.01)
         detector.heartbeat_received()
 
-        
         result = detector._calculate_phi(1e15)
-        
+
         assert result <= 100.0
 
     def test_is_available_when_suspicious(self):
         """Test is_available() returns False when phi >= threshold."""
-        detector = PhiAccrualFailureDetector(threshold=0.001)  
+        detector = PhiAccrualFailureDetector(threshold=0.001)
 
-        
         detector.heartbeat_received()
-        time.sleep(0.1)  
+        time.sleep(0.1)
 
-        
-        
         assert isinstance(detector.is_available(), bool)
 
     def test_heartbeat_received_updates_stats(self):
         """Test heartbeat_received() updates statistics properly."""
         detector = PhiAccrualFailureDetector()
 
-        
         detector.heartbeat_received()
         assert detector.last_heartbeat_time is not None
 
-        
         time.sleep(0.01)
         detector.heartbeat_received()
         assert len(detector.heartbeat_intervals) == 1
 
-        
         time.sleep(0.01)
         detector.heartbeat_received()
         assert len(detector.heartbeat_intervals) == 2
@@ -3499,10 +3167,9 @@ class TestCosineSimilarityNumpyBranch:
 
     def test_cosine_similarity_mixed_types(self):
         """Test cosine_similarity with list and numpy array mix."""
-        v1 = [1.0, 0.0]  
-        v2 = np.array([1.0, 0.0])  
+        v1 = [1.0, 0.0]
+        v2 = np.array([1.0, 0.0])
 
-        
         result = cosine_similarity(v1, v2)
         assert result == pytest.approx(1.0)
 
@@ -3514,7 +3181,6 @@ class TestQdrantVectorStoreComplete:
         """Test insert with numpy array (line 397)."""
         store = QdrantVectorStore(":memory:", "test_numpy", 2)
 
-        
         vec = (np.array([1.0, 2.0]), 1, "payload", 0, (1.0, 0))
         result = store.insert(vec)
         assert result
@@ -3525,16 +3191,13 @@ class TestQdrantVectorStoreComplete:
         """Test insert with version conflict detection (lines 410-420)."""
         store = QdrantVectorStore(":memory:", "test_conflict", 2)
 
-        
         vec1 = ([1.0, 2.0], 1, "v1", 0, (1.0, 0))
         store.insert(vec1)
 
-        
         vec2 = ([1.0, 2.0], 1, "v0", 0, (0.5, 0))
         result = store.insert(vec2)
         assert not result
 
-        
         vec3 = ([1.0, 2.0], 1, "v2", 0, (2.0, 0))
         result = store.insert(vec3)
         assert result
@@ -3545,15 +3208,13 @@ class TestQdrantVectorStoreComplete:
         """Test insert with destinations (line 441)."""
         store = QdrantVectorStore(":memory:", "test_dest", 2)
 
-        
         vec = ([1.0, 2.0], 1, "payload", 0, (1.0, 0), frozenset([1, 2, 3]))
         result = store.insert(vec)
         assert result
 
-        
         retrieved = store.get_vector(1)
         assert retrieved is not None
-        assert 5 in range(len(retrieved))  
+        assert 5 in range(len(retrieved))
 
         qdrant_module._client_cache.clear()
 
@@ -3561,19 +3222,17 @@ class TestQdrantVectorStoreComplete:
         """Test insert_batch with version conflicts (lines 479-565)."""
         store = QdrantVectorStore(":memory:", "test_batch_conflict", 2)
 
-        
         vec1 = ([1.0, 2.0], 1, "v1", 0, (1.0, 0))
         store.insert(vec1)
 
-        
         vectors = [
-            ([1.0, 2.0], 1, "v0", 0, (0.5, 0)),  
-            ([3.0, 4.0], 2, "v2", 0, (1.0, 0)),  
-            ([5.0, 6.0], 3, "v3", 0, (1.0, 0)),  
+            ([1.0, 2.0], 1, "v0", 0, (0.5, 0)),
+            ([3.0, 4.0], 2, "v2", 0, (1.0, 0)),
+            ([5.0, 6.0], 3, "v3", 0, (1.0, 0)),
         ]
 
         count = store.insert_batch(vectors)
-        assert count == 2  
+        assert count == 2
 
         qdrant_module._client_cache.clear()
 
@@ -3590,11 +3249,9 @@ class TestQdrantVectorStoreComplete:
         """Test insert_batch when all vectors are skipped (lines 552-553)."""
         store = QdrantVectorStore(":memory:", "test_batch_skip", 2)
 
-        
         store.insert(([1.0, 2.0], 1, "v1", 0, (5.0, 0)))
         store.insert(([3.0, 4.0], 2, "v2", 0, (5.0, 0)))
 
-        
         vectors = [
             ([1.0, 2.0], 1, "old", 0, (1.0, 0)),
             ([3.0, 4.0], 2, "old", 0, (1.0, 0)),
@@ -3632,10 +3289,8 @@ class TestQdrantVectorStoreComplete:
         """Test get_vector (lines 572-576)."""
         store = QdrantVectorStore(":memory:", "test_get", 2)
 
-        
         assert store.get_vector(1) is None
 
-        
         store.insert(([1.0, 2.0], 1, "payload", 0, (1.0, 0)))
         result = store.get_vector(1)
         assert result is not None
@@ -3659,11 +3314,9 @@ class TestQdrantVectorStoreComplete:
         """Test _point_to_tuple with destinations (lines 634-636)."""
         store = QdrantVectorStore(":memory:", "test_tuple", 2)
 
-        
         vec = ([1.0, 2.0], 1, "payload", 0, (1.0, 0), frozenset([1, 2]))
         store.insert(vec)
 
-        
         result = store.get_vector(1)
         assert result is not None
         assert len(result) == 6
@@ -3689,12 +3342,10 @@ class TestQdrantVectorStoreComplete:
 
     def test_ensure_collection_error(self):
         """Test _ensure_collection error case (line 383)."""
-        
-        
-        store = QdrantVectorStore(":memory:", "test_ensure", 2)
-        store.collection_created = True  
 
-        
+        store = QdrantVectorStore(":memory:", "test_ensure", 2)
+        store.collection_created = True
+
         store._ensure_collection(2)
 
         qdrant_module._client_cache.clear()
@@ -3718,12 +3369,12 @@ class TestServerWithClientEndpoint:
         )
 
         try:
-            
+
             assert s.client_endpoint is not None
             assert hasattr(s, "client_thread")
             assert s.client_thread.is_alive()
 
-            time.sleep(0.5)  
+            time.sleep(0.5)
         finally:
             s.stop()
 
@@ -3745,12 +3396,10 @@ class TestServerStopComplete:
             client_port=client_port,
         )
 
-        time.sleep(0.5)  
+        time.sleep(0.5)
 
-        
         s.stop()
 
-        
         assert not s.worker_thread.is_alive()
 
     def test_stop_handles_exceptions(self):
@@ -3759,10 +3408,8 @@ class TestServerStopComplete:
 
         time.sleep(0.2)
 
-        
-        s.endpoint = None  
+        s.endpoint = None
 
-        
         s.stop()
 
 
@@ -3774,15 +3421,13 @@ class TestServerHeartbeatEdgeCases:
         s = Server(1, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             phi = s.get_peer_phi(99)
             assert phi == 0.0
 
-            
             s.failure_detectors[2] = PhiAccrualFailureDetector()
             s.failure_detectors[2].heartbeat_received()
 
-            
             phi = s.get_peer_phi(2)
             assert phi >= 0.0
         finally:
@@ -3793,14 +3438,13 @@ class TestServerHeartbeatEdgeCases:
         s = Server(1, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             bad_peer = MagicMock()
             bad_peer.get_id.side_effect = Exception("ID Error")
             s.peers.append(bad_peer)
 
-            time.sleep(1.5)  
+            time.sleep(1.5)
 
-            
             assert s.running
         finally:
             s.stop()
@@ -3814,13 +3458,11 @@ class TestServerElectionEdgeCases:
         s = Server(1, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s.active_peers = set()
 
-            
             s.elect_partition_coordinator()
 
-            
         finally:
             s.stop()
 
@@ -3833,22 +3475,19 @@ class TestServerDeliverHintsException:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             s.hinted_handoff.store_hint(1, [vec])
 
-            
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 1
             mock_peer.receive.side_effect = Exception("Delivery failed!")
 
             s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
-            s.active_peers = {0, 1}  
+            s.active_peers = {0, 1}
 
-            
             s.deliver_hints()
 
-            
             assert s.hinted_handoff.has_hints_for(1)
         finally:
             s.stop()
@@ -3871,11 +3510,9 @@ class TestServerSendToPeersEdgeCases:
             s.active_peers = {0, 1}
             s.status = "clustered"
 
-            
             vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1]))
             s.send_to_peers([vec])
 
-            
             mock_peer.receive.assert_called()
         finally:
             s.stop()
@@ -3895,7 +3532,6 @@ class TestServerSendToPeersEdgeCases:
             s.status = "clustered"
             s.clusters = [(0, [1.0])]
 
-            
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             s.send_to_peers([vec])
         finally:
@@ -3915,7 +3551,6 @@ class TestServerCalculateDestinationsEdgeCases:
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             result = s._calculate_destinations(vec)
 
-            
             assert result[0] == frozenset()
         finally:
             s.stop()
@@ -3926,10 +3561,10 @@ class TestServerHandleReceiveEdgeCases:
 
     def test_handle_receive_client_drops_when_no_coord(self):
         """Test _handle_receive client drops vectors when no coordinator (lines 1387-1388)."""
-        s = Server(0, False, 10, 1, port=get_free_port())  
+        s = Server(0, False, 10, 1, port=get_free_port())
 
         try:
-            
+
             s.peers = [Peer(s.ip, s.port, server_instance=s)]
 
             initial_dropped = s.dropped_vectors
@@ -3937,7 +3572,6 @@ class TestServerHandleReceiveEdgeCases:
             vec = ([1.0], 1, "a", -1, (1.0, 0))
             s._handle_receive([vec], "client")
 
-            
             assert s.dropped_vectors == initial_dropped + 1
         finally:
             s.stop()
@@ -3951,17 +3585,15 @@ class TestServerClusteringEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vectors = [
                 ([1.0, 0.0], 1, "a", -1, (1.0, 0)),
                 ([0.5, 0.5], 2, "b", -1, (1.0, 0)),
                 ([0.0, 1.0], 3, "c", -1, (1.0, 0)),
             ]
 
-            
             result = s.clustering(vectors, min_k=5, max_k=10)
 
-            
             assert len(result) == 1
             assert 0 in result
             assert len(result[0]["members"]) == 3
@@ -3973,9 +3605,7 @@ class TestServerClusteringEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
-            
-            
+
             vectors = []
             for i in range(50):
                 base = [1.0, 0.0] if i % 2 == 0 else [0.0, 1.0]
@@ -3985,7 +3615,6 @@ class TestServerClusteringEdgeCases:
                 ]
                 vectors.append((noisy, i, f"p{i}", -1, (1.0, 0)))
 
-            
             result = s.clustering(vectors, min_k=2, max_k=5)
 
             assert len(result) >= 2
@@ -3997,16 +3626,14 @@ class TestServerClusteringEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vectors = [
                 ([1.0, 0.0], 1, "a", -1, (1.0, 0)),
-                ([1.0, 0.0], 2, "b", -1, (1.0, 0)),  
+                ([1.0, 0.0], 2, "b", -1, (1.0, 0)),
             ]
 
-            
             result = s.clustering(vectors, min_k=2, max_k=2)
 
-            
             assert isinstance(result, dict)
         finally:
             s.stop()
@@ -4030,10 +3657,8 @@ class TestServerSearchEdgeCases:
             s.status = "clustered"
             s.clusters = [(0, [1.0, 0.0])]
 
-            
             result = s.search_vectors([(1, [1.0, 0.0])], top_k=5, top_look=2)
 
-            
             assert isinstance(result, list)
         finally:
             s.stop()
@@ -4043,16 +3668,12 @@ class TestServerSearchEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
-            s.store.insert((np.array([1.0, 2.0]), 1, "a", 0, (1.0, 0)))
-            s.store.insert(
-                (np.array([1.0, 2.0, 3.0]), 2, "b", 0, (1.0, 0))
-            )  
 
-            
+            s.store.insert((np.array([1.0, 2.0]), 1, "a", 0, (1.0, 0)))
+            s.store.insert((np.array([1.0, 2.0, 3.0]), 2, "b", 0, (1.0, 0)))
+
             result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
 
-            
             assert result == []
         finally:
             s.stop()
@@ -4062,13 +3683,12 @@ class TestServerSearchEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(20):
                 s.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
                 )
 
-            
             result = s.search_vectors_local([([10.0, 10.0], 1)], top_k=5)
 
             assert len(result) == 5
@@ -4080,7 +3700,7 @@ class TestServerSearchEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
             assert result == []
         finally:
@@ -4094,7 +3714,7 @@ class TestVectorStoreEdgeCasesComplete:
         """Test insert with 4-tuple (old format)."""
         store = VectorStore()
 
-        vec = ([1.0], 1, "a", 0)  
+        vec = ([1.0], 1, "a", 0)
         result = store.insert(vec)
 
         assert result
@@ -4120,7 +3740,6 @@ class TestVectorStoreEdgeCasesComplete:
 
         store.remove_by_id(1)
 
-        
         assert 0 not in store.vectors
 
 
@@ -4137,11 +3756,9 @@ class TestServerReconcileException:
             s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
             s.active_peers = {0, 1}
 
-            
             original_reconcile = s.reconcile_with_peer
             s.reconcile_with_peer = MagicMock(side_effect=Exception("Reconcile Error"))
 
-            
             s._reconcile_with_other_peers()
 
             s.reconcile_with_peer = original_reconcile
@@ -4159,7 +3776,6 @@ class TestServerCalculateSleepWithJitter:
         try:
             result = s._calculate_sleep_with_jitter()
 
-            
             assert result >= 0.1
             assert result <= s.heartbeat_interval + s.heartbeat_jitter
         finally:
@@ -4173,7 +3789,6 @@ class TestServerMainFunction:
         """Verify main function exists and is callable."""
         from server import main
 
-        
         assert callable(main)
 
     def test_main_with_help(self):
@@ -4192,11 +3807,7 @@ class TestServerMainFunction:
             timeout=30,
         )
 
-        
         assert "usage" in result.stdout.lower() or result.returncode == 0
-
-
-
 
 
 class TestAddPeerEdgeCases:
@@ -4207,11 +3818,9 @@ class TestAddPeerEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
-            s.add_peer(12345)  
 
-            
-            
+            s.add_peer(12345)
+
             assert len(s.peers) == 1
         finally:
             s.stop()
@@ -4223,11 +3832,9 @@ class TestAddPeerEdgeCases:
         try:
             other = Server(1, False, 10, 1, port=get_free_port())
 
-            
             s.add_peer(other)
-            s.add_peer(other)  
+            s.add_peer(other)
 
-            
             assert len(s.peers) == 2
 
             other.stop()
@@ -4244,20 +3851,17 @@ class TestServerEndpointStopExceptions:
         s = Server(0, True, 10, 1, port=port)
 
         try:
-            time.sleep(0.5)  
-
-            
+            time.sleep(0.5)
 
             async def slow_stop():
-                await asyncio.sleep(10)  
+                await asyncio.sleep(10)
 
             s.endpoint.stop = slow_stop
 
-            
             s.stop()
 
         except Exception:
-            pass  
+            pass
 
 
 class TestHeartbeatPingException:
@@ -4268,17 +3872,15 @@ class TestHeartbeatPingException:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 99
             mock_peer.ping.side_effect = Exception("Network unreachable")
 
             s.peers.append(mock_peer)
 
-            
             time.sleep(0.2)
 
-            
             assert s.running
         finally:
             s.stop()
@@ -4288,17 +3890,12 @@ class TestHeartbeatPingException:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
-            fd = PhiAccrualFailureDetector(
-                threshold=0.0001
-            )  
+
+            fd = PhiAccrualFailureDetector(threshold=0.0001)
             fd.heartbeat_received()
-            time.sleep(0.1)  
+            time.sleep(0.1)
 
             s.failure_detectors[99] = fd
-
-            
-            
 
         finally:
             s.stop()
@@ -4320,13 +3917,11 @@ class TestRouteVectorsClusterIndexException:
             s.active_peers = {0, 1}
             s.clusters = [(0, [1.0, 0.0])]
 
-            
             mock_index = MagicMock()
             mock_index.search_batch.side_effect = Exception("Index Error!")
             s.cluster_index = mock_index
             s.cluster_to_destinations_cache = {0: {0, 1}}
 
-            
             result = s.route_vectors([([1.0, 0.0], 1)], top_k=1)
 
             assert 1 in result
@@ -4350,18 +3945,15 @@ class TestRouteVectorsCandidateFallback:
             s.active_peers = {0, 1}
             s.clusters = [(0, [1.0, 0.0])]
 
-            
             mock_index = MagicMock()
-            
+
             mock_index.search_batch.return_value = [[0]]
             s.cluster_index = mock_index
-            
+
             s.cluster_to_destinations_cache = {0: {99, 100}}
 
-            
             result = s.route_vectors([([1.0, 0.0], 1)], top_k=1)
 
-            
             assert 1 in result
         finally:
             s.stop()
@@ -4374,18 +3966,14 @@ class TestCalculatePhiMathErrors:
         """Test _calculate_phi when p becomes very small (triggers cap)."""
         detector = PhiAccrualFailureDetector()
 
-        
         detector.heartbeat_received()
         time.sleep(0.005)
         detector.heartbeat_received()
         time.sleep(0.005)
         detector.heartbeat_received()
 
-        
-        
-        result = detector._calculate_phi(1e12)  
+        result = detector._calculate_phi(1e12)
 
-        
         assert result == 100.0
 
 
@@ -4411,7 +3999,6 @@ class TestHandleReceiveComplexPaths:
             vec = ([1.0], 1, "a", -1, (1.0, 0))
             s._handle_receive([vec], "bootstrap")
 
-            
         finally:
             s.stop()
 
@@ -4434,7 +4021,6 @@ class TestHandleReceiveComplexPaths:
             vec = ([1.0], 1, "a", -1, (1.0, 0))
             s._handle_receive([vec], "client")
 
-            
         finally:
             s.stop()
 
@@ -4447,18 +4033,16 @@ class TestSaveVectorsDuplicatesPath:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s.store.insert((np.array([1.0]), 1, "a", 0, (1.0, 0)))
 
-            
             vectors = [
-                (np.array([1.0]), 1, "a", 0, (0.5, 0)),  
-                (np.array([2.0]), 2, "b", 0, (1.0, 0)),  
+                (np.array([1.0]), 1, "a", 0, (0.5, 0)),
+                (np.array([2.0]), 2, "b", 0, (1.0, 0)),
             ]
 
             s.save_vectors(vectors)
 
-            
             assert s.store.count() == 2
         finally:
             s.stop()
@@ -4472,7 +4056,7 @@ class TestClusteringEdgeCasesAdditional:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vectors = [
                 ([1.0, 0.0], 1, "a", -1, (1.0, 0)),
                 ([0.0, 1.0], 2, "b", -1, (1.0, 0)),
@@ -4480,7 +4064,6 @@ class TestClusteringEdgeCasesAdditional:
 
             result = s.clustering(vectors, min_k=10, max_k=20)
 
-            
             assert len(result) == 1
         finally:
             s.stop()
@@ -4489,14 +4072,13 @@ class TestClusteringEdgeCasesAdditional:
         """Test clustering with subsampling (lines 1581-1583, 1603-1604)."""
         s = Server(0, True, 10, 1, port=get_free_port())
 
-        
         import server as server_module
 
         original_size = server_module.SILHOUETTE_SUBSAMPLE_SIZE
         server_module.SILHOUETTE_SUBSAMPLE_SIZE = 10
 
         try:
-            
+
             vectors = []
             for i in range(30):
                 base = [1.0, 0.0] if i < 15 else [0.0, 1.0]
@@ -4522,18 +4104,13 @@ class TestSearchVectorsLocalQueryMatrixError:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s.store.insert((np.array([1.0, 2.0]), 1, "a", 0, (1.0, 0)))
             s.store.insert((np.array([3.0, 4.0]), 2, "b", 0, (1.0, 0)))
 
-            
-            
-            
-
-            
             with patch("numpy.stack", side_effect=Exception("Shape mismatch")):
                 result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
-                
+
                 assert result == []
         finally:
             s.stop()
@@ -4544,11 +4121,10 @@ class TestEnsureCollectionError:
 
     def test_ensure_collection_returns_false(self):
         """Test _ensure_collection when create_collection fails."""
-        
+
         with patch.object(qdrant_module, "create_collection", return_value=False):
             store = QdrantVectorStore(":memory:", "test_fail", 2)
 
-            
             assert not store.collection_created
 
         qdrant_module._client_cache.clear()
@@ -4561,12 +4137,10 @@ class TestQdrantInsertBatchRetrieveError:
         """Test insert_batch handles retrieve error (lines 507-509)."""
         QdrantVectorStore(":memory:", "test_err", 2)
 
-        
         original_get_client = qdrant_module.get_client
 
         def mock_get_client(url):
             client = original_get_client(url)
-            
 
             def failing_retrieve(*args, **kwargs):
                 raise Exception("Retrieve Error!")
@@ -4582,7 +4156,7 @@ class TestQdrantInsertBatchRetrieveError:
             ]
 
             count = store2.insert_batch(vectors)
-            
+
             assert count == 0
 
         qdrant_module._client_cache.clear()
@@ -4595,16 +4169,13 @@ class TestQdrantInsertBatchUploadError:
         """Test insert_batch handles upload error (lines 563-565)."""
         store = QdrantVectorStore(":memory:", "test_upload_err", 2)
 
-        
         store.insert(([0.5, 0.5], 100, "existing", 0, (1.0, 0)))
 
-        
         original_get_client = qdrant_module.get_client
 
         def mock_get_client(url):
             client = original_get_client(url)
 
-            
             def failing_upload(*args, **kwargs):
                 raise Exception("Upload Error!")
 
@@ -4619,13 +4190,10 @@ class TestQdrantInsertBatchUploadError:
             ]
 
             count = store2.insert_batch(vectors)
-            
+
             assert count == 0
 
         qdrant_module._client_cache.clear()
-
-
-
 
 
 class TestClusteringWithOldFormatVectors:
@@ -4636,21 +4204,19 @@ class TestClusteringWithOldFormatVectors:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vectors = [
                 ([1.0, 0.0], 1, "a", -1),
                 ([0.0, 1.0], 2, "b", -1),
             ]
 
-            
             result = s.clustering(vectors, min_k=20, max_k=30)
 
-            
             assert len(result) == 1
             assert 0 in result
-            
+
             for member in result[0]["members"]:
-                assert len(member) >= 5  
+                assert len(member) >= 5
         finally:
             s.stop()
 
@@ -4663,23 +4229,18 @@ class TestHeartbeatPingDetectorPath:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 99
-            mock_peer.ping.return_value = True  
+            mock_peer.ping.return_value = True
 
             s.peers.append(mock_peer)
 
-            
-            detector = PhiAccrualFailureDetector(
-                threshold=0.0
-            )  
+            detector = PhiAccrualFailureDetector(threshold=0.0)
             s.failure_detectors[99] = detector
 
-            
             time.sleep(0.5)
 
-            
             assert s.running
         finally:
             s.stop()
@@ -4693,19 +4254,18 @@ class TestCalculateDestinationsEmptyPeersComplete:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 1
             mock_peer.similarity.return_value = 0.9
 
             s.peers = [Peer(s.ip, s.port, server_instance=s), mock_peer]
-            s.cluster_index = None  
+            s.cluster_index = None
             s.clusters = [(0, [1.0])]
 
             vec = ([1.0], 1, "a", 0, (1.0, 0))
             result = s._calculate_destinations(vec)
 
-            
             assert len(result) > 0
         finally:
             s.stop()
@@ -4716,11 +4276,11 @@ class TestHandleReceiveForwardToCoord:
 
     def test_handle_receive_forwards_to_coordinator(self):
         """Test _handle_receive client forwards to coordinator (line 1423)."""
-        
+
         s = Server(0, False, 10, 1, port=get_free_port())
 
         try:
-            
+
             mock_coord = MagicMock()
             mock_coord.get_id.return_value = 1
             mock_coord.i_am_coord.return_value = True
@@ -4728,12 +4288,11 @@ class TestHandleReceiveForwardToCoord:
 
             s.peers = [Peer(s.ip, s.port, server_instance=s), mock_coord]
             s.active_peers = {0, 1}
-            s.status = "bootstrap"  
+            s.status = "bootstrap"
 
             vec = ([1.0], 1, "a", -1, (1.0, 0))
             s._handle_receive([vec], "client")
 
-            
             mock_coord.receive.assert_called()
         finally:
             s.stop()
@@ -4748,10 +4307,9 @@ class TestHandleReceiveStatusCorrupted:
 
         try:
             vec = ([1.0], 1, "a", 0, (1.0, 0))
-            
+
             s._handle_receive([vec], "completely_invalid_status")
 
-            
         finally:
             s.stop()
 
@@ -4769,7 +4327,6 @@ class TestServerStopClientEndpointException:
         try:
             time.sleep(0.5)
 
-            
             if s.client_endpoint:
 
                 async def slow_stop():
@@ -4778,7 +4335,7 @@ class TestServerStopClientEndpointException:
                 s.client_endpoint.stop = slow_stop
 
         finally:
-            
+
             s.stop()
 
 
@@ -4792,18 +4349,16 @@ class TestServerStopEndpointScheduleError:
         try:
             time.sleep(0.3)
 
-            
             if hasattr(s, "endpoint_loop"):
                 original_run = asyncio.run_coroutine_threadsafe
 
                 def failing_run(*args, **kwargs):
                     raise Exception("Schedule Error!")
 
-                
                 asyncio.run_coroutine_threadsafe = failing_run
 
         finally:
-            
+
             asyncio.run_coroutine_threadsafe = (
                 original_run
                 if "original_run" in dir()
@@ -4822,7 +4377,7 @@ class TestClusteringExceptionHandling:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             vectors = []
             for i in range(20):
                 base = [1.0, 0.0] if i < 10 else [0.0, 1.0]
@@ -4832,19 +4387,17 @@ class TestClusteringExceptionHandling:
                 ]
                 vectors.append((noisy, i, f"p{i}", -1, (1.0, 0)))
 
-            
             call_count = [0]
 
             def failing_silhouette(*args, **kwargs):
                 call_count[0] += 1
-                if call_count[0] == 1:  
+                if call_count[0] == 1:
                     raise ValueError("Silhouette computation failed!")
                 return sklearn_silhouette(*args, **kwargs)
 
             with patch("server.silhouette_score", failing_silhouette):
                 result = s.clustering(vectors, min_k=2, max_k=3)
 
-                
                 assert isinstance(result, dict)
                 assert len(result) > 0
         finally:
@@ -4859,18 +4412,17 @@ class TestSearchVectorsLocalQueryError:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(5):
                 s.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
                 )
 
-            
             with patch(
                 "numpy.array", side_effect=Exception("Array conversion failed!")
             ):
                 result = s.search_vectors_local([([1.0, 0.0], 1)], top_k=5)
-                
+
                 assert result == []
         finally:
             s.stop()
@@ -4891,7 +4443,6 @@ class TestQdrantBatchWithDestinations:
         count = store.insert_batch(vectors)
         assert count == 2
 
-        
         vec1 = store.get_vector(1)
         assert len(vec1) == 6
 
@@ -4905,7 +4456,6 @@ class TestQdrantInsertBatchNumpyDim:
         """Test insert_batch with numpy array dimension extraction."""
         store = QdrantVectorStore(":memory:", "test_batch_np", 2)
 
-        
         vectors = [
             (np.array([1.0, 2.0]), 1, "a", 0, (1.0, 0)),
         ]
@@ -4923,20 +4473,13 @@ class TestPhiCalculateOverflow:
         """Test _calculate_phi returns 100.0 on math error."""
         detector = PhiAccrualFailureDetector()
 
-        
         detector.heartbeat_received()
         time.sleep(0.001)
         detector.heartbeat_received()
 
-        
         with patch("math.erfc", side_effect=ValueError("Math domain error")):
             result = detector._calculate_phi(1000.0)
             assert result == 100.0
-
-
-
-
-
 
 
 class TestRebalancingDetection:
@@ -4947,7 +4490,7 @@ class TestRebalancingDetection:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(10):
                 s.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
@@ -4971,7 +4514,7 @@ class TestRebalancingDetection:
         s3 = Server(2, False, 100, 1, port=get_free_port())
 
         try:
-            
+
             s1.add_peer(s2)
             s1.add_peer(s3)
             s2.add_peer(s1)
@@ -4981,7 +4524,6 @@ class TestRebalancingDetection:
 
             wait_for_full_connectivity([s1, s2, s3])
 
-            
             for i in range(50):
                 s1.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
@@ -5015,7 +4557,6 @@ class TestRebalancingDetection:
             s2.add_peer(s1)
             wait_for_full_connectivity([s1, s2])
 
-            
             for i in range(20):
                 s1.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
@@ -5026,7 +4567,7 @@ class TestRebalancingDetection:
                 )
 
             result = s1.detect_imbalance()
-            assert result is None  
+            assert result is None
         finally:
             s1.stop()
             s2.stop()
@@ -5041,7 +4582,6 @@ class TestRebalancingDetection:
             s2.add_peer(s1)
             wait_for_full_connectivity([s1, s2])
 
-            
             for i in range(80):
                 s1.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
@@ -5052,7 +4592,7 @@ class TestRebalancingDetection:
                 )
 
             result = s1.detect_imbalance()
-            assert result == 0  
+            assert result == 0
         finally:
             s1.stop()
             s2.stop()
@@ -5062,7 +4602,7 @@ class TestRebalancingDetection:
         s = Server(0, True, 100, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(5):
                 s.store.insert((np.array([float(i), 0.0]), i, f"p{i}", 0, (1.0, 0)))
             for i in range(5, 20):
@@ -5073,7 +4613,7 @@ class TestRebalancingDetection:
                 )
 
             result = s.get_heaviest_cluster(0)
-            assert result == 1  
+            assert result == 1
         finally:
             s.stop()
 
@@ -5086,17 +4626,17 @@ class TestBalancedSplitting:
         s = Server(0, True, 100, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(20):
                 s.store.insert(
                     (np.array([float(i) / 10, float(i) / 10]), i, f"p{i}", 5, (1.0, 0))
                 )
-            s.clusters = [(5, [1.0, 1.0])]  
+            s.clusters = [(5, [1.0, 1.0])]
 
             result = s.balanced_split_cluster(cluster_id=5, n_subclusters=2)
 
             assert len(result) == 2
-            
+
             for _, data in result.items():
                 assert "center" in data
                 assert "members" in data
@@ -5118,11 +4658,10 @@ class TestBalancedSplitting:
 
             result = s.balanced_split_cluster(cluster_id=3, n_subclusters=2)
 
-            
             result_ids = set()
             for _, data in result.items():
                 for member in data["members"]:
-                    result_ids.add(member[1])  
+                    result_ids.add(member[1])
 
             assert result_ids == original_ids
         finally:
@@ -5133,7 +4672,7 @@ class TestBalancedSplitting:
         s = Server(0, True, 100, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(40):
                 s.store.insert(
                     (np.array([float(i), float(i) * 2]), i, f"p{i}", 7, (1.0, 0))
@@ -5143,10 +4682,10 @@ class TestBalancedSplitting:
             result = s.balanced_split_cluster(cluster_id=7, n_subclusters=2)
 
             sizes = [len(data["members"]) for data in result.values()]
-            
+
             max_size = max(sizes)
             min_size = min(sizes)
-            assert max_size - min_size <= 10  
+            assert max_size - min_size <= 10
         finally:
             s.stop()
 
@@ -5163,10 +4702,9 @@ class TestBalancedSplitting:
 
             result = s.balanced_split_cluster(cluster_id=10, n_subclusters=2)
 
-            
             new_ids = list(result.keys())
             assert len(new_ids) == 2
-            assert all(cid != 10 for cid in new_ids)  
+            assert all(cid != 10 for cid in new_ids)
         finally:
             s.stop()
 
@@ -5175,9 +4713,7 @@ class TestBalancedSplitting:
         s = Server(0, True, 100, 1, port=get_free_port())
 
         try:
-            
-            
-            
+
             vectors = []
             blob_size = 20
             for i in range(blob_size):
@@ -5191,21 +4727,15 @@ class TestBalancedSplitting:
                     )
                 )
 
-            
             outlier_idx = blob_size
             vectors.append(
                 (np.array([1000.0, 1000.0]), outlier_idx, "outlier", 0, (1.0, 0))
             )
 
-            
             for v in vectors:
                 s.store.insert(v)
 
             s.clusters = [(0, [0.0, 0.0])]
-
-            
-            
-            
 
             result = s.balanced_split_cluster(cluster_id=0, n_subclusters=2)
 
@@ -5218,15 +4748,8 @@ class TestBalancedSplitting:
             max_size = max(sizes)
             min_size = min(sizes)
 
-            
-            
-            
-            
-            
-            
-
-            assert max_size <= 14  
-            assert min_size >= 7  
+            assert max_size <= 14
+            assert min_size >= 7
 
         finally:
             s.stop()
@@ -5245,7 +4768,6 @@ class TestRebalancingOrchestration:
             s2.add_peer(s1)
             wait_for_full_connectivity([s1, s2])
 
-            
             for i in range(80):
                 vec = (
                     np.array([float(i % 10), float(i % 10)]),
@@ -5267,23 +4789,17 @@ class TestRebalancingOrchestration:
                 s2.store.insert(vec)
 
             s1.clusters = [(j, [float(j), float(j)]) for j in range(5)]
-            s1.cluster_to_destinations_cache = {
-                j: {0, 1} for j in range(5)
-            }  
+            s1.cluster_to_destinations_cache = {j: {0, 1} for j in range(5)}
             s2.clusters = s1.clusters.copy()
             s2.cluster_to_destinations_cache = s1.cluster_to_destinations_cache.copy()
             s2.status = "clustered"
             s1.status = "clustered"
 
-            
             result = s1.trigger_rebalance()
 
-            assert result is True  
+            assert result is True
 
-            
-            
-            
-            assert len(s1.clusters) > 5  
+            assert len(s1.clusters) > 5
         finally:
             s1.stop()
             s2.stop()
@@ -5293,13 +4809,12 @@ class TestRebalancingOrchestration:
         s = Server(0, True, 100, 1, port=get_free_port())
 
         try:
-            
+
             for i in range(30):
                 s.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", i % 3, (1.0, 0))
                 )
 
-            
             from cluster_index import ClusterIndex
 
             s.cluster_index = ClusterIndex(dimension=2)
@@ -5309,15 +4824,13 @@ class TestRebalancingOrchestration:
 
             initial_cluster_ids = {cid for cid, _ in s.clusters}
 
-            
             new_clusters = s.balanced_split_cluster(cluster_id=0, n_subclusters=2)
 
-            
             assert s.cluster_index is not None
-            
+
             current_cluster_ids = {cid for cid, _ in s.clusters}
-            assert 0 not in current_cluster_ids  
-            
+            assert 0 not in current_cluster_ids
+
             assert len(new_clusters) > 0
         finally:
             s.stop()
@@ -5332,13 +4845,11 @@ class TestRebalancingOrchestration:
             s2.add_peer(s1)
             wait_for_full_connectivity([s1, s2])
 
-            
             target_vec = np.array([5.0, 5.0])
             for i in range(50):
                 vec = (np.array([float(i), float(i)]), i, f"p{i}", i % 3, (1.0, 0))
                 s1.store.insert(vec)
 
-            
             s1.clusters = [(j, [float(j * 17), float(j * 17)]) for j in range(3)]
             s1.status = "clustered"
             from cluster_index import ClusterIndex
@@ -5351,27 +4862,21 @@ class TestRebalancingOrchestration:
             s2.cluster_to_destinations_cache = s1.cluster_to_destinations_cache.copy()
             s2.status = "clustered"
 
-            
             results_before = s1.search_vectors_local(
                 [(target_vec.tolist(), 999)], top_k=5
             )
             assert len(results_before) > 0
 
-            
             s1.trigger_rebalance()
 
-            
             results_after = s1.search_vectors_local(
                 [(target_vec.tolist(), 999)], top_k=5
             )
             assert len(results_after) > 0
 
-            
-            
-            
             for r in results_after:
-                
-                assert r[3] > 0  
+
+                assert r[3] > 0
         finally:
             s1.stop()
             s2.stop()
@@ -5391,7 +4896,6 @@ class TestRebalancingOrchestration:
             s3.add_peer(s2)
             wait_for_full_connectivity([s1, s2, s3])
 
-            
             for srv in [s1, s2, s3]:
                 for i in range(10):
                     base_id = srv.id * 100 + i
@@ -5407,12 +4911,11 @@ class TestRebalancingOrchestration:
                 srv.clusters = [(5, [5.0, 5.0])]
                 srv.cluster_to_destinations_cache = {5: {0, 1, 2}}
 
-            
             should_s1_trigger = s1.should_trigger_rebalance_for_cluster(5)
             should_s2_trigger = s2.should_trigger_rebalance_for_cluster(5)
             should_s3_trigger = s3.should_trigger_rebalance_for_cluster(5)
 
-            assert should_s1_trigger is True  
+            assert should_s1_trigger is True
             assert should_s2_trigger is False
             assert should_s3_trigger is False
         finally:
@@ -5437,7 +4940,6 @@ class TestRebalancingEdgeCases:
             initial_count = s.store.count()
             result = s.trigger_rebalance()
 
-            
             assert result is False
             assert s.store.count() == initial_count
         finally:
@@ -5448,13 +4950,11 @@ class TestRebalancingEdgeCases:
         s = Server(0, True, 100, 1, port=get_free_port())
 
         try:
-            s.clusters = [(0, [0.0, 0.0])]  
+            s.clusters = [(0, [0.0, 0.0])]
             s.cluster_to_destinations_cache = {0: {0}}
 
-            
             result = s.balanced_split_cluster(cluster_id=0, n_subclusters=2)
 
-            
             assert isinstance(result, dict)
         finally:
             s.stop()
@@ -5469,7 +4969,6 @@ class TestRebalancingEdgeCases:
             s2.add_peer(s1)
             wait_for_full_connectivity([s1, s2])
 
-            
             for i in range(50):
                 s1.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", 0, (1.0, 0))
@@ -5481,7 +4980,6 @@ class TestRebalancingEdgeCases:
 
             result = s1.trigger_rebalance()
 
-            
             assert result is False
         finally:
             s1.stop()
@@ -5492,15 +4990,14 @@ class TestRebalancingEdgeCases:
         s = Server(0, True, 100, 1, port=get_free_port())
 
         try:
-            
+
             s.store.insert((np.array([1.0, 1.0]), 1, "p1", 9, (1.0, 0)))
             s.clusters = [(9, [1.0, 1.0])]
 
             result = s.balanced_split_cluster(cluster_id=9, n_subclusters=2)
 
-            
             assert isinstance(result, dict)
-            
+
             total_members = sum(
                 len(data.get("members", [])) for data in result.values()
             )
@@ -5529,7 +5026,7 @@ class TestRebalancingIntegration:
         s3 = Server(2, False, 2000, 2, port=get_free_port())
 
         try:
-            
+
             s1.add_peer(s2)
             s1.add_peer(s3)
             s2.add_peer(s1)
@@ -5538,7 +5035,6 @@ class TestRebalancingIntegration:
             s3.add_peer(s2)
             wait_for_full_connectivity([s1, s2, s3])
 
-            
             np.random.seed(42)
             vectors = []
             for i in range(50000):
@@ -5552,9 +5048,8 @@ class TestRebalancingIntegration:
                     (vec, i, f"payload_{i}", cluster_pattern, (time.time(), 0))
                 )
 
-            
-            split1 = int(50000 * 0.6)  
-            split2 = int(50000 * 0.85)  
+            split1 = int(50000 * 0.6)
+            split2 = int(50000 * 0.85)
 
             for i, vec in enumerate(vectors[:split1]):
                 s1.store.insert(vec)
@@ -5574,11 +5069,8 @@ class TestRebalancingIntegration:
             assert initial_s2 == 12500
             assert initial_s3 == 7500
 
-            
             clusters = [(j, [float(j * 10), float(j * 10)]) for j in range(10)]
-            dest_cache = {
-                j: {0, 1, 2} for j in range(10)
-            }  
+            dest_cache = {j: {0, 1, 2} for j in range(10)}
             for srv in [s1, s2, s3]:
                 srv.clusters = clusters.copy()
                 srv.cluster_to_destinations_cache = dest_cache.copy()
@@ -5588,38 +5080,31 @@ class TestRebalancingIntegration:
                 srv.cluster_index = ClusterIndex(dimension=2)
                 srv.cluster_index.build(clusters)
 
-            
             imbalanced_id = s1.detect_imbalance()
-            assert imbalanced_id == 0  
+            assert imbalanced_id == 0
 
-            
             result = s1.trigger_rebalance()
             assert result is True
 
-            
             time.sleep(2.0)
 
-            
             final_s1 = s1.store.count()
             final_s2 = s2.store.count()
             final_s3 = s3.store.count()
 
             print(f"Final distribution: S1={final_s1}, S2={final_s2}, S3={final_s3}")
 
-            
-            
-            assert len(s1.clusters) > 10  
+            assert len(s1.clusters) > 10
 
-            
-            test_query = np.array([50.0, 50.0])  
+            test_query = np.array([50.0, 50.0])
             search_results = s1.search_vectors_local(
                 [(test_query.tolist(), 999999)], top_k=10
             )
 
             assert len(search_results) > 0
-            
+
             for r in search_results:
-                
+
                 assert r[3] > 0
 
             print("50k vector rebalancing integration test PASSED")
@@ -5639,7 +5124,6 @@ class TestRebalancingIntegration:
             s2.add_peer(s1)
             wait_for_full_connectivity([s1, s2])
 
-            
             for i in range(100):
                 s1.store.insert(
                     (np.array([float(i), float(i)]), i, f"p{i}", i % 5, (1.0, 0))
@@ -5690,7 +5174,7 @@ class TestRebalancingIntegration:
 
             def do_rebalance():
                 try:
-                    time.sleep(0.1)  
+                    time.sleep(0.1)
                     s1.trigger_rebalance()
                 except Exception as e:
                     errors.append(e)
@@ -5706,10 +5190,8 @@ class TestRebalancingIntegration:
             for t in threads:
                 t.join(timeout=30)
 
-            
             assert len(errors) == 0, f"Concurrent operations failed: {errors}"
 
-            
             assert all(r >= 0 for r in results)
 
         finally:
@@ -5731,17 +5213,15 @@ class TestRebalancingIntegration:
             s3.add_peer(s2)
             wait_for_full_connectivity([s1, s2, s3])
 
-            
             for i in range(60):
                 vec = (np.array([float(i), float(i)]), i, f"p{i}", i % 3, (1.0, 0))
                 s1.store.insert(vec)
-                
+
                 if i % 2 == 0:
                     s2.store.insert(vec)
                 else:
                     s3.store.insert(vec)
 
-            
             clusters = [(j, [float(j * 20), float(j * 20)]) for j in range(3)]
             for srv in [s1, s2, s3]:
                 srv.clusters = clusters.copy()
@@ -5752,14 +5232,10 @@ class TestRebalancingIntegration:
                 srv.cluster_index = ClusterIndex(dimension=2)
                 srv.cluster_index.build(clusters)
 
-            
             s1.trigger_rebalance()
 
-            
             time.sleep(1.0)
 
-            
-            
             for srv in [s1, s2, s3]:
                 assert srv.cluster_index is not None
                 assert srv.cluster_to_destinations_cache is not None
@@ -5770,9 +5246,6 @@ class TestRebalancingIntegration:
             s3.stop()
 
 
-
-
-
 class TestVectorStoreDeleteByCluster:
     """Tests for VectorStore.delete_by_cluster (lines 272-280)."""
 
@@ -5780,18 +5253,15 @@ class TestVectorStoreDeleteByCluster:
         """Test delete_by_cluster removes all vectors from a cluster."""
         store = VectorStore()
 
-        
         store.insert(([1.0], 1, "a", 0, (1.0, 0)))
         store.insert(([2.0], 2, "b", 0, (1.0, 0)))
         store.insert(([3.0], 3, "c", 1, (1.0, 0)))
 
         assert store.count() == 3
 
-        
         result = store.delete_by_cluster(0)
         assert result is True
 
-        
         assert store.count() == 1
         assert not store.has_vector(1)
         assert not store.has_vector(2)
@@ -5803,11 +5273,9 @@ class TestVectorStoreDeleteByCluster:
 
         store.insert(([1.0], 1, "a", 0, (1.0, 0)))
 
-        
         result = store.delete_by_cluster(999)
         assert result is True
 
-        
         assert store.count() == 1
 
     def test_delete_by_cluster_empties_cluster_dict(self):
@@ -5828,18 +5296,15 @@ class TestQdrantVectorStoreDeleteByCluster:
         """Test delete_by_cluster on QdrantVectorStore."""
         store = QdrantVectorStore(":memory:", "test_delete_cluster", 2)
 
-        
         store.insert(([1.0, 2.0], 1, "a", 0, (1.0, 0)))
         store.insert(([3.0, 4.0], 2, "b", 0, (1.0, 0)))
         store.insert(([5.0, 6.0], 3, "c", 1, (1.0, 0)))
 
         assert store.count() == 3
 
-        
         result = store.delete_by_cluster(0)
         assert result is True
 
-        
         assert store.count() == 1
 
         qdrant_module._client_cache.clear()
@@ -5855,7 +5320,6 @@ class TestQdrantModuleDeleteVectorsByPayload:
 
         qdrant_module.create_collection(url, collection, 2)
 
-        
         vectors = [
             ([1.0, 0.0], 1, "A", 5),
             ([0.0, 1.0], 2, "B", 5),
@@ -5865,13 +5329,11 @@ class TestQdrantModuleDeleteVectorsByPayload:
 
         assert qdrant_module.count(url, collection) == 3
 
-        
         result = qdrant_module.delete_vectors_by_payload(
             url, collection, "cluster_id", 5
         )
         assert result is True
 
-        
         assert qdrant_module.count(url, collection) == 1
 
         qdrant_module._client_cache.clear()
@@ -5886,13 +5348,11 @@ class TestQdrantModuleDeleteVectorsByPayload:
         vectors = [([1.0, 0.0], 1, "A", 5)]
         qdrant_module.insert_vectors(url, collection, vectors, batch_size_retry=1)
 
-        
         result = qdrant_module.delete_vectors_by_payload(
             url, collection, "cluster_id", 999
         )
         assert result is True
 
-        
         assert qdrant_module.count(url, collection) == 1
 
         qdrant_module._client_cache.clear()
@@ -5901,12 +5361,10 @@ class TestQdrantModuleDeleteVectorsByPayload:
         """Test delete_vectors_by_payload handles errors."""
         url = ":memory:"
 
-        
         result = qdrant_module.delete_vectors_by_payload(
             url, "nonexistent", "key", "value"
         )
 
-        
         assert result is False
 
         qdrant_module._client_cache.clear()
@@ -5922,7 +5380,6 @@ class TestQdrantModuleInsertRetry:
 
         qdrant_module.create_collection(url, collection, 2)
 
-        
         original_client = qdrant_module.get_client(url)
         call_count = [0]
         original_upload = original_client.upload_points
@@ -5940,11 +5397,9 @@ class TestQdrantModuleInsertRetry:
             url, collection, vectors, batch_size_retry=1
         )
 
-        
         assert result is True
         assert qdrant_module.count(url, collection) == 1
 
-        
         original_client.upload_points = original_upload
         qdrant_module._client_cache.clear()
 
@@ -5955,7 +5410,6 @@ class TestQdrantModuleInsertRetry:
 
         qdrant_module.create_collection(url, collection, 2)
 
-        
         original_client = qdrant_module.get_client(url)
         original_upload = original_client.upload_points
 
@@ -5969,10 +5423,8 @@ class TestQdrantModuleInsertRetry:
             url, collection, vectors, batch_size_retry=1
         )
 
-        
         assert result is False
 
-        
         original_client.upload_points = original_upload
         qdrant_module._client_cache.clear()
 
@@ -6032,7 +5484,6 @@ class TestPeerRemoteCallEdgeCases:
         """Test _remote_call RuntimeError fallback (lines 115-116)."""
         mock_comm = MagicMock()
 
-        
         call_count = [0]
 
         async def mock_send(*args):
@@ -6042,20 +5493,17 @@ class TestPeerRemoteCallEdgeCases:
 
         peer = Peer("127.0.0.1", 9999, server_instance=None, communicator=mock_comm)
 
-        
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         try:
-            
+
             result = loop.run_until_complete(asyncio.to_thread(peer.get_id))
-            
-            
+
         finally:
             asyncio.set_event_loop(None)
             loop.close()
 
-        
         result = peer.get_id()
         assert result == 123
 
@@ -6109,18 +5557,16 @@ class TestServerDeleteVectorsByCluster:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s.store.insert((np.array([1.0, 2.0]), 1, "a", 5, (1.0, 0)))
             s.store.insert((np.array([3.0, 4.0]), 2, "b", 5, (1.0, 0)))
             s.store.insert((np.array([5.0, 6.0]), 3, "c", 10, (1.0, 0)))
 
             assert s.count() == 3
 
-            
             result = s.delete_vectors_by_cluster(5)
             assert result is True
 
-            
             assert s.count() == 1
         finally:
             s.stop()
@@ -6134,17 +5580,15 @@ class TestServerAddPeerPingException:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             mock_peer = MagicMock()
             mock_peer.ping.side_effect = Exception("Ping failed!")
             mock_peer.get_id.side_effect = Exception("ID failed!")
 
-            
             with patch("server.Peer", return_value=mock_peer):
-                
+
                 s.add_peer("127.0.0.1", 99999)
 
-            
             assert s.running
         finally:
             s.stop()
@@ -6160,7 +5604,7 @@ class TestServerStopExceptionPaths:
         time.sleep(0.3)
 
         try:
-            
+
             original_stop = s.endpoint.stop
 
             async def failing_stop():
@@ -6168,10 +5612,9 @@ class TestServerStopExceptionPaths:
 
             s.endpoint.stop = failing_stop
 
-            
             s.stop()
         except Exception:
-            
+
             pass
 
     def test_stop_client_endpoint_exception(self):
@@ -6185,7 +5628,7 @@ class TestServerStopExceptionPaths:
 
         try:
             if s.client_endpoint:
-                
+
                 async def failing_stop():
                     raise Exception("Client stop failed!")
 
@@ -6201,8 +5644,7 @@ class TestQdrantModuleCreateCollectionError:
 
     def test_create_collection_exception(self):
         """Test create_collection handles exceptions."""
-        
-        
+
         url = ":memory:"
 
         with patch.object(qdrant_module, "get_client") as mock_get:
@@ -6213,7 +5655,6 @@ class TestQdrantModuleCreateCollectionError:
 
             result = qdrant_module.create_collection(url, "test_fail", 2)
 
-            
             assert result is False
 
         qdrant_module._client_cache.clear()
@@ -6226,16 +5667,14 @@ class TestQdrantHTTPClient:
         """Test get_client with HTTP URL creates gRPC client."""
         qdrant_module._client_cache.clear()
 
-        
-        
         http_url = "http://localhost:6333"
 
         try:
-            
+
             client = qdrant_module.get_client(http_url)
             assert client is not None
         except Exception:
-            
+
             pass
 
         qdrant_module._client_cache.clear()
@@ -6244,12 +5683,11 @@ class TestQdrantHTTPClient:
         """Test get_client handles invalid port in URL."""
         qdrant_module._client_cache.clear()
 
-        
         http_url = "http://localhost"
 
         try:
             client = qdrant_module.get_client(http_url)
-            
+
             assert client is not None
         except Exception:
             pass
@@ -6265,22 +5703,19 @@ class TestServerHeartbeatElectionEdgeCases:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             mock_peer = MagicMock()
             mock_peer.get_id.return_value = 99
             mock_peer.ping.return_value = True
 
             s.peers.append(mock_peer)
 
-            
             for _ in range(10):
                 if 99 in s.failure_detectors:
                     break
                 time.sleep(0.5)
 
-            
-            
-            assert True  
+            assert True
         finally:
             s.stop()
 
@@ -6300,7 +5735,6 @@ class TestServerHeartbeatElectionEdgeCases:
 
             wait_for_full_connectivity([s1, s2, s3])
 
-            
             assert s3.is_coordinator
             assert not s1.is_coordinator or s1.id == 3
         finally:
@@ -6321,14 +5755,11 @@ class TestServerReconcileGetPeerByIdPath:
             s.add_peer(other)
             other.add_peer(s)
 
-            
             wait_for_full_connectivity([s, other])
 
-            
             found = s._get_peer_by_id(1)
             assert found is not None
 
-            
             peer_id = found.get_id()
             assert peer_id == 1
 
@@ -6341,7 +5772,7 @@ class TestServerReconcileGetPeerByIdPath:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             found = s._get_peer_by_id(999)
             assert found is None
         finally:
@@ -6356,11 +5787,9 @@ class TestServerHandleNetworkChangeComplete:
         s = Server(0, True, 10, 1, port=get_free_port())
 
         try:
-            
+
             s._handle_network_change()
 
-            
-            
         finally:
             s.stop()
 
@@ -6370,17 +5799,15 @@ class TestQdrantVectorStoreEnsureCollectionError:
 
     def test_ensure_collection_prints_error(self):
         """Test _ensure_collection prints error on failure."""
-        
+
         store = QdrantVectorStore(":memory:", "test_ensure_err", 2)
 
-        
         store.collection_created = False
 
         with patch.object(qdrant_module, "create_collection", return_value=False):
-            
+
             store._ensure_collection(2)
 
-            
             assert not store.collection_created
 
         qdrant_module._client_cache.clear()
@@ -6402,13 +5829,11 @@ class TestServerSendToPeersHintStoredPath:
             s.status = "clustered"
             s.clusters = [(0, [1.0])]
 
-            
-            s.active_peers = {0}  
+            s.active_peers = {0}
 
             vec = ([1.0], 1, "a", 0, (1.0, 0), frozenset([1]))
             s.send_to_peers([vec])
 
-            
             assert s.hinted_handoff.has_hints_for(1)
         finally:
             s.stop()
@@ -6425,7 +5850,6 @@ class TestServerSearchVectorsEmptyQueries:
             s.status = "clustered"
             s.clusters = [(0, [1.0, 0.0])]
 
-            
             result = s.search_vectors([], top_k=5, top_look=1)
             assert result == []
         finally:
@@ -6446,7 +5870,6 @@ class TestQdrantModuleDeleteCollectionError:
 
             result = qdrant_module.delete_collection(url, "any_collection")
 
-            
             assert result is False
 
         qdrant_module._client_cache.clear()
@@ -6463,16 +5886,13 @@ class TestNetworkConditions:
         s0 = Server(0, True, 100, 1, port=get_free_port())
         s1 = Server(1, False, 100, 1, port=get_free_port())
 
-        
-        
         real_peer_class = Peer
 
         try:
-            
-            s0.heartbeat_interval = 0.5  
+
+            s0.heartbeat_interval = 0.5
             s0.add_peer(s1)
-            
-            
+
             peer_ref = s0.peers[1]
             start = time.time()
             connected = False
@@ -6486,33 +5906,25 @@ class TestNetworkConditions:
             initial_phi = s0.get_peer_phi(s1.id)
             print(f"Initial Phi: {initial_phi}")
 
-            
-            
             original_ping = peer_ref.ping
 
             def slow_ping():
-                
+
                 time.sleep(0.3)
                 return original_ping()
 
-            
             with patch.object(peer_ref, "ping", side_effect=slow_ping):
                 print("Injecting latency...")
-                
+
                 time.sleep(4.0)
 
-                
                 new_phi = s0.get_peer_phi(s1.id)
                 print(f"Phi after latency: {new_phi}")
 
-                
                 assert (
                     new_phi > initial_phi
                 ), "Phi should increase when latency is introduced"
 
-                
-                
-                
                 assert (
                     new_phi < 8.0
                 ), f"False positive! Latency marked node dead. Phi: {new_phi}"
@@ -6538,13 +5950,11 @@ def test_anti_entropy_recovery_no_hints():
     ports = [get_free_port() for _ in range(4)]
     servers = []
     try:
-        
-        
+
         for i in range(4):
-            s = Server(i, i == 0, 100, 2, port=ports[i])  
+            s = Server(i, i == 0, 100, 2, port=ports[i])
             servers.append(s)
 
-        
         for i in range(4):
             for j in range(4):
                 if i != j:
@@ -6552,22 +5962,16 @@ def test_anti_entropy_recovery_no_hints():
 
         wait_for_full_connectivity(servers)
 
-        
-        
         centers = [[10.0, 10.0], [10.0, -10.0], [-10.0, 10.0], [-10.0, -10.0]]
         data = []
         for i in range(100):
             center = centers[i % 4]
-            
+
             vec = [center[0] + (i * 0.01), center[1] + (i * 0.01)]
             data.append((vec, f"init_{i}"))
 
-        
-        
         servers[0].receive_from_client(data)
 
-        
-        
         print("Waiting for clustering...")
         for _ in range(50):
             if servers[0].status == "clustered":
@@ -6576,60 +5980,40 @@ def test_anti_entropy_recovery_no_hints():
 
         assert servers[0].status == "clustered"
 
-        
         time.sleep(2)
 
-        
         print("Partitioning network...")
         partition_network(servers, [[0, 1], [2, 3]])
 
-        
-        
         time.sleep(5)
 
-        
-        
-        
-
-        
         print("Inserting new data into partitions...")
 
-        
         input_a = []
         for i in range(50):
-            vec = [12.0 + i * 0.1, 12.0]  
+            vec = [12.0 + i * 0.1, 12.0]
             input_a.append((vec, f"new_a_{i}"))
         servers[0].receive_from_client(input_a)
 
-        
         input_b = []
         for i in range(50):
-            vec = [-12.0 - i * 0.1, -12.0]  
+            vec = [-12.0 - i * 0.1, -12.0]
             input_b.append((vec, f"new_b_{i}"))
 
-        
-        
-        
         servers[3].receive_from_client(input_b)
 
-        
         time.sleep(2)
 
-        
         print("Sabotaging: Destroying all hinted handoff data...")
         for s in servers:
             s.hinted_handoff.clear()
 
-        
         print("Healing network...")
         heal_network(servers)
         wait_for_full_connectivity(servers)
 
-        
-        
-        
         print("Reconciling...")
-        time.sleep(10)  
+        time.sleep(10)
 
         counts = [s.count() for s in servers]
         total_count = sum(counts)
@@ -6639,9 +6023,6 @@ def test_anti_entropy_recovery_no_hints():
         assert (
             total_count == 400
         ), f"Expected 400 vectors, got {total_count}. Counts: {counts}"
-
-        
-        
 
     finally:
         for s in servers:

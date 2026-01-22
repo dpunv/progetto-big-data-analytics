@@ -36,16 +36,15 @@ from communicator import Communicator
 from endpoint import Endpoint
 
 
-
 class PhiAccrualFailureDetector:
     """Implementation of the Phi Accrual Failure Detector.
 
-    Rather than using a binary determination of node availability, this detector calculates 
-    a suspicion level (phi) based on the statistical distribution of inter-arrival times 
+    Rather than using a binary determination of node availability, this detector calculates
+    a suspicion level (phi) based on the statistical distribution of inter-arrival times
     of heartbeats. This allows for more flexible failure detection in distributed systems.
 
     Reference:
-        Hayashibara, N., Defago, X., Yaced, R., & Katayama, T. (2004). 
+        Hayashibara, N., Defago, X., Yaced, R., & Katayama, T. (2004).
         The φ Accrual Failure Detector.
     """
 
@@ -138,9 +137,7 @@ class PhiAccrualFailureDetector:
         mean = self._cached_mean
         std_dev = max(math.sqrt(self._cached_variance), self.min_std_deviation_ms)
 
-
         y = (time_diff_ms - mean) / std_dev
-
 
         try:
             p = 0.5 * math.erfc(y / math.sqrt(2))
@@ -243,7 +240,6 @@ class HintedHandoff:
         """Clear all hints."""
         with self.lock:
             self.hints.clear()
-
 
 
 from peer.peer import Peer
@@ -377,8 +373,8 @@ class VectorStore:
 class QdrantVectorStore:
     """A thread-safe vector storage wrapper backed by Qdrant.
 
-    This class provides an interface to interact with a Qdrant collection, 
-    preserving the same semantics as the in-memory VectorStore but persisting 
+    This class provides an interface to interact with a Qdrant collection,
+    preserving the same semantics as the in-memory VectorStore but persisting
     vectors to Qdrant. It handles version tracking and batched operations.
     """
 
@@ -450,8 +446,6 @@ class QdrantVectorStore:
             }
             if destinations:
                 q_payload["destinations"] = list(destinations)
-
-
 
             client = qdrant_module.get_client(self.url)
 
@@ -631,7 +625,7 @@ class QdrantVectorStore:
 class Server:
     """The main server node in the distributed vector database.
 
-    Manages peer communication, data sharding/clustering, replication, failure detection, 
+    Manages peer communication, data sharding/clustering, replication, failure detection,
     and vector storage operations.
     """
 
@@ -687,9 +681,7 @@ class Server:
             self._start_client_endpoint(client_port)
 
         self.simulated_unreachable_peers: Set[int] = set()
-        self.active_peers: Set[int] = {
-            id
-        }
+        self.active_peers: Set[int] = {id}
 
         self.failure_detectors: Dict[int, PhiAccrualFailureDetector] = {}
         self.phi_threshold = 8.0
@@ -708,9 +700,7 @@ class Server:
         self.split_queue_lock = threading.Lock()
 
         self.cluster_index = None
-        self.cluster_to_destinations_cache = (
-            None
-        )
+        self.cluster_to_destinations_cache = None
 
         self.lock = threading.RLock()
         self.queue = queue.Queue()
@@ -925,7 +915,6 @@ class Server:
         print(f"DEBUG: Server {self.id} - Deleting vectors for cluster {cluster_id}")
         return self.store.delete_by_cluster(cluster_id)
 
-
     def block_peer(self, peer_id: int):
         """Simulate a network partition blocking this peer."""
         changed = False
@@ -1134,7 +1123,6 @@ class Server:
                         self.hinted_handoff.store_hint(target_id, hints)
                         print(f"Failed to deliver hints to {target_id}: {e}")
 
-
     def get_vector_digest(self) -> Dict[int, Tuple[float, int]]:
         """
         Get digest of all vectors for anti-entropy sync.
@@ -1232,7 +1220,6 @@ class Server:
         """
         return self._should_be_on_peer(vector, self.id)
 
-
     def similarity(self, vector):
         with self.lock:
             current_clusters = list(self.clusters)
@@ -1250,9 +1237,7 @@ class Server:
             if use_all_peers:
                 current_peers = list(self.peers)
             else:
-                current_peers = (
-                    self.get_reachable_peers()
-                )
+                current_peers = self.get_reachable_peers()
 
         if not current_peers:
             return {}
@@ -1380,7 +1365,6 @@ class Server:
 
             if not destinations:
                 dropped_count += 1
-
 
             current_cluster_id = vector[3]
             if current_cluster_id == -1 and cluster_id != -1:
@@ -1588,9 +1572,7 @@ class Server:
                     print(f"DEBUG: Server {self.id} starting CLUSTERING")
                     self.clustering_in_progress = True
                     v_b = self.vector_buffer[:]
-                    self.vector_buffer = (
-                        []
-                    )
+                    self.vector_buffer = []
 
                     t = threading.Thread(
                         target=self._run_clustering_background, args=(v_b,)
@@ -1664,9 +1646,7 @@ class Server:
         n_samples = X.shape[0]
 
         effective_min_k = max(2, min_k)
-        effective_max_k = min(
-            max_k, n_samples - 1
-        )
+        effective_max_k = min(max_k, n_samples - 1)
 
         if effective_max_k < effective_min_k:
             print(
@@ -1787,7 +1767,6 @@ class Server:
 
             satisfied = True
 
-
             for cluster_idx in violation_indices:
                 current_size = counts[cluster_idx]
                 excess = current_size - max_size
@@ -1799,12 +1778,10 @@ class Server:
 
                 member_indices = np.where(labels == cluster_idx)[0]
 
-
                 move_proposals = []
 
                 for idx in member_indices:
                     curr_dist = dists[idx, cluster_idx]
-
 
                     sorted_clusters = np.argsort(dists[idx])
 
@@ -2075,7 +2052,6 @@ class Server:
     def query_from_client(self, vectors: ListOfVectors, top_k=100):
         vectors_with_qid = [(self.get_id(), v) for v in vectors]
         return self.query(vectors_with_qid, "client", top_k=top_k)
-
 
     def get_load_stats(self) -> dict:
         """
@@ -2448,9 +2424,7 @@ class Server:
                 labels = []
                 for v in cluster_vectors:
                     vec_id = v[1]
-                    label_idx = labels_by_vector_id.get(
-                        vec_id, 0
-                    )
+                    label_idx = labels_by_vector_id.get(vec_id, 0)
                     labels.append(label_idx)
                 labels = np.array(labels)
                 print(
@@ -2594,7 +2568,6 @@ class Server:
         for new_cluster_id, data in split_result.items():
             destinations = list(data["destinations"])
 
-
             local_kept = False
             should_force_keep = force_keep_cluster_id == new_cluster_id
 
@@ -2608,7 +2581,6 @@ class Server:
                     local_kept = True
                 continue
 
-
             skipped_destination = None
             if should_force_keep and self.id not in destinations:
                 if len(destinations) > 1:
@@ -2621,9 +2593,7 @@ class Server:
 
             for destination in destinations:
                 if destination == self.id:
-                    if (
-                        not local_kept
-                    ):
+                    if not local_kept:
                         for vec in data["members"]:
                             self.store.insert(vec)
                         print(
@@ -2655,7 +2625,6 @@ class Server:
                     f"DEBUG: Server {self.id} - Force-keeping {len(data['members'])} vectors locally to avoid underload (cluster {new_cluster_id})"
                 )
                 local_kept = True
-
 
         return split_result
 
@@ -2735,9 +2704,7 @@ class Server:
                     )
 
                     projected_with_one = projected_sender_load + vectors_per_subcluster
-                    if (
-                        projected_with_one >= underload_threshold * 0.8
-                    ):
+                    if projected_with_one >= underload_threshold * 0.8:
                         sender_should_keep_one = True
                         print(
                             f"DEBUG: Server {self.id} - Sender would be underloaded "

@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 class ClusterIndex:
     """An HNSW-based index for fast retrieval of nearest clusters.
-    
-    This index is used to route queries to the appropriate clusters by storing 
+
+    This index is used to route queries to the appropriate clusters by storing
     cluster centroids and allowing approximate nearest neighbor search.
     """
 
@@ -47,7 +47,6 @@ class ClusterIndex:
             M=self.M,
         )
         self.hnsw_index.set_ef(50)
-
 
         indices = []
         centroids = []

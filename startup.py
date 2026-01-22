@@ -18,7 +18,7 @@ containers = []
 
 def get_free_port():
     """Finds an available TCP port on localhost.
-    
+
     Returns:
         int: A random available port number.
     """
@@ -90,7 +90,6 @@ def get_docker_port(container_name, internal_port=6333):
     except:
         pass
     return None
-
 
 
 def load_vectors(port, num_vectors=51200):

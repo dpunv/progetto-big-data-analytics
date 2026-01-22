@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 class Peer:
     """Represents a node in the distributed network.
 
-    It abstracts communication with a peer, which can be either the local server instance 
+    It abstracts communication with a peer, which can be either the local server instance
     (direct method calls) or a remote node (network calls via the communicator).
     """
 
@@ -123,8 +123,8 @@ class Peer:
     def _remote_call(self, method_name: str, *args):
         """Helper for making synchronous remote calls via the communicator.
 
-        Handles argument serialization, network transmission, response reception, 
-        errror checking, and deserialization. It manages the asyncio event loop 
+        Handles argument serialization, network transmission, response reception,
+        errror checking, and deserialization. It manages the asyncio event loop
         needed for the asynchronous communicator.
 
         Args:

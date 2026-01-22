@@ -19,7 +19,6 @@ class HTTPCommunicator(BaseCommunicator):
         json_payload = {}
         target_endpoint = f"/{query}"
 
-
         if query == "get_id":
             json_payload = {}
 
